@@ -21,6 +21,9 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/optipreplayer"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -273,4 +276,12 @@ func (b *LesApiBackend) ServiceFilter(ctx context.Context, session *bloombits.Ma
 	for i := 0; i < bloomFilterThreads; i++ {
 		go session.Multiplex(bloomRetrievalBatch, bloomRetrievalWait, b.eth.bloomRequests)
 	}
+}
+
+func (b *LesApiBackend) GetPreplayer(pID uint64) *optipreplayer.Preplayer {
+	return &optipreplayer.Preplayer{}
+}
+
+func (b *LesApiBackend) GetGlobalCache() *cache.GlobalCache {
+	return &cache.GlobalCache{}
 }

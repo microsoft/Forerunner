@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -202,3 +203,40 @@ type blockBody struct {
 
 // blockBodiesData is the network packet for block content distribution.
 type blockBodiesData []*blockBody
+
+type HashesMsg struct {
+	Announces  newBlockHashesData
+	ReceivedAt time.Time
+	Peer       *peer
+}
+
+type HashMsg struct {
+	Announce   hashOrNumber
+	ReceivedAt time.Time
+	Peer       *peer
+}
+
+// newBlockData is the network packet for the block propagation message.
+type BlockMsg struct {
+	Request    newBlockData
+	ReceivedAt time.Time
+	Peer       *peer
+}
+
+type Count struct {
+	firstReceivedHash  int64
+	firstReceivedBlock int64
+	onlyReceivedHash   int64
+	onlyReceivedBlock  int64
+}
+
+func (c *Count) Total() int64 {
+	return c.firstReceivedHash + c.firstReceivedBlock + c.onlyReceivedHash + c.onlyReceivedBlock
+}
+
+func (c *Count) Clear() {
+	c.firstReceivedHash = 0
+	c.firstReceivedBlock = 0
+	c.onlyReceivedHash = 0
+	c.onlyReceivedBlock = 0
+}

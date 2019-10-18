@@ -57,6 +57,20 @@ func (n *proofList) Delete(key []byte) error {
 	panic("not supported")
 }
 
+type deltaDB struct {
+	stateObjects map[common.Address]*stateObject
+	logs         []*types.Log
+	preimages    map[common.Hash][]byte
+}
+
+func newDeltaDB() *deltaDB {
+	return &deltaDB{
+		stateObjects: make(map[common.Address]*stateObject),
+		logs:         make([]*types.Log, 0),
+		preimages:    make(map[common.Hash][]byte),
+	}
+}
+
 // StateDBs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -103,6 +117,18 @@ type StateDB struct {
 	StorageHashes  time.Duration
 	StorageUpdates time.Duration
 	StorageCommits time.Duration
+
+	// MSRA fields !!! don't forget to initialize in New() and Copy()
+	EnableFeeToCoinbase bool       // default true
+	rwRecorder          RWRecorder // RWRecord mode
+
+	primary bool
+	pair    *StateDB
+	delta   *deltaDB
+}
+
+func (self *StateDB) IsEnableFeeToCoinbase() bool {
+	return self.EnableFeeToCoinbase
 }
 
 // Create a new state from a given trie.
@@ -120,7 +146,24 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		logs:                make(map[common.Hash][]*types.Log),
 		preimages:           make(map[common.Hash][]byte),
 		journal:             newJournal(),
+
+		EnableFeeToCoinbase: true,
+		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 	}, nil
+}
+
+func NewRWStateDB(state *StateDB) *StateDB {
+	state.SetRWMode(true)
+	state.EnableFeeToCoinbase = false // RWStateDB default is false
+	return state
+}
+
+func (self *StateDB) SetRWMode(enabled bool) {
+	if enabled {
+		self.rwRecorder = newRWHook()
+	} else {
+		self.rwRecorder = emptyRWRecorder{}
+	}
 }
 
 // setError remembers the first non-nil error it is called with.
@@ -132,6 +175,19 @@ func (s *StateDB) setError(err error) {
 
 func (s *StateDB) Error() error {
 	return s.dbErr
+}
+
+func (self *StateDB) RWRecorder() RWRecorder {
+	return self.rwRecorder
+}
+
+func (self *StateDB) IsRWMode() bool {
+	switch self.rwRecorder.(type) {
+	case *rwRecorderImpl:
+		return true
+	default:
+		return false
+	}
 }
 
 // Reset clears out all ephemeral state objects from the state db, but keeps
@@ -162,7 +218,11 @@ func (s *StateDB) AddLog(log *types.Log) {
 	log.BlockHash = s.bhash
 	log.TxIndex = uint(s.txIndex)
 	log.Index = s.logSize
-	s.logs[s.thash] = append(s.logs[s.thash], log)
+	if s.IsShared() {
+		s.delta.logs = append(s.delta.logs, log)
+	} else {
+		s.logs[s.thash] = append(s.logs[s.thash], log)
+	}
 	s.logSize++
 }
 
@@ -175,16 +235,28 @@ func (s *StateDB) Logs() []*types.Log {
 	for _, lgs := range s.logs {
 		logs = append(logs, lgs...)
 	}
+	if s.IsShared() {
+		return append(logs, s.delta.logs...)
+	}
 	return logs
 }
 
 // AddPreimage records a SHA3 preimage seen by the VM.
 func (s *StateDB) AddPreimage(hash common.Hash, preimage []byte) {
+	if s.IsShared() {
+		if _, ok := s.delta.preimages[hash]; ok {
+			return
+		}
+	}
 	if _, ok := s.preimages[hash]; !ok {
 		s.journal.append(addPreimageChange{hash: hash})
 		pi := make([]byte, len(preimage))
 		copy(pi, preimage)
-		s.preimages[hash] = pi
+		if s.IsShared() {
+			s.delta.preimages[hash] = pi
+		} else {
+			s.preimages[hash] = pi
+		}
 	}
 }
 
@@ -212,31 +284,37 @@ func (s *StateDB) SubRefund(gas uint64) {
 // Exist reports whether the given account address exists in the state.
 // Notably this also returns true for suicided accounts.
 func (s *StateDB) Exist(addr common.Address) bool {
-	return s.getStateObject(addr) != nil
+	so := s.getStateObject(addr)
+	ret := so != nil
+	defer func() { s.rwRecorder._Exist(addr, so, ret) }()
+	return ret
 }
 
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (s *StateDB) Empty(addr common.Address) bool {
 	so := s.getStateObject(addr)
+	ret := so == nil || so.empty()
+	defer func() { s.rwRecorder._Empty(addr, so, ret) }()
 	return so == nil || so.empty()
 }
 
 // Retrieve the balance from the given address or 0 if object not found
-func (s *StateDB) GetBalance(addr common.Address) *big.Int {
+func (s *StateDB) GetBalance(addr common.Address) (ret *big.Int) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetBalance(addr, stateObject, ret) }()
 	if stateObject != nil {
 		return stateObject.Balance()
 	}
 	return common.Big0
 }
 
-func (s *StateDB) GetNonce(addr common.Address) uint64 {
+func (s *StateDB) GetNonce(addr common.Address) (ret uint64) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetNonce(addr, stateObject, ret) }()
 	if stateObject != nil {
 		return stateObject.Nonce()
 	}
-
 	return 0
 }
 
@@ -250,16 +328,18 @@ func (s *StateDB) BlockHash() common.Hash {
 	return s.bhash
 }
 
-func (s *StateDB) GetCode(addr common.Address) []byte {
+func (s *StateDB) GetCode(addr common.Address) (ret []byte) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetCode(addr, stateObject, ret) }()
 	if stateObject != nil {
 		return stateObject.Code(s.db)
 	}
 	return nil
 }
 
-func (s *StateDB) GetCodeSize(addr common.Address) int {
+func (s *StateDB) GetCodeSize(addr common.Address) (ret int) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetCodeSize(addr, stateObject, ret) }()
 	if stateObject == nil {
 		return 0
 	}
@@ -273,8 +353,9 @@ func (s *StateDB) GetCodeSize(addr common.Address) int {
 	return size
 }
 
-func (s *StateDB) GetCodeHash(addr common.Address) common.Hash {
+func (s *StateDB) GetCodeHash(addr common.Address) (ret common.Hash) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetCodeHash(addr, stateObject, ret) }()
 	if stateObject == nil {
 		return common.Hash{}
 	}
@@ -282,8 +363,9 @@ func (s *StateDB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 // GetState retrieves a value from the given account's storage trie.
-func (s *StateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
+func (s *StateDB) GetState(addr common.Address, hash common.Hash) (ret common.Hash) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetState(addr, hash, stateObject, ret) }()
 	if stateObject != nil {
 		return stateObject.GetState(s.db, hash)
 	}
@@ -309,8 +391,9 @@ func (s *StateDB) GetStorageProof(a common.Address, key common.Hash) ([][]byte, 
 }
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
-func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
+func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) (ret common.Hash) {
 	stateObject := s.getStateObject(addr)
+	defer func() { s.rwRecorder._GetCommittedState(addr, hash, stateObject, ret) }()
 	if stateObject != nil {
 		return stateObject.GetCommittedState(s.db, hash)
 	}
@@ -349,6 +432,7 @@ func (s *StateDB) HasSuicided(addr common.Address) bool {
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
+		s.rwRecorder._AddBalance(addr, stateObject)
 		stateObject.AddBalance(amount)
 	}
 }
@@ -357,12 +441,14 @@ func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 func (s *StateDB) SubBalance(addr common.Address, amount *big.Int) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
+		s.rwRecorder._SubBalance(addr, stateObject)
 		stateObject.SubBalance(amount)
 	}
 }
 
 func (s *StateDB) SetBalance(addr common.Address, amount *big.Int) {
 	stateObject := s.GetOrNewStateObject(addr)
+	// no hook for SetBalance
 	if stateObject != nil {
 		stateObject.SetBalance(amount)
 	}
@@ -466,8 +552,14 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// Prefer live objects if any is available
-	if obj := s.stateObjects[addr]; obj != nil {
-		return obj
+	if s.IsShared() {
+		if obj := s.delta.stateObjects[addr]; obj != nil {
+			return obj
+		}
+	} else {
+		if obj := s.stateObjects[addr]; obj != nil {
+			return obj
+		}
 	}
 	// Track the amount of time wasted on loading the object from the database
 	if metrics.EnabledExpensive {
@@ -486,12 +578,21 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
-	s.setStateObject(obj)
+	if s.IsShared() {
+		obj.addDelta()
+		s.setDeltaStateObject(obj)
+	} else {
+		s.setStateObject(obj)
+	}
 	return obj
 }
 
 func (s *StateDB) setStateObject(object *stateObject) {
 	s.stateObjects[object.Address()] = object
+}
+
+func (self *StateDB) setDeltaStateObject(object *stateObject) {
+	self.delta.stateObjects[object.Address()] = object
 }
 
 // Retrieve a state object or create a new state object if nil.
@@ -509,13 +610,20 @@ func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) 
 	prev = s.getDeletedStateObject(addr) // Note, prev might have been deleted, we need that!
 
 	newobj = newObject(s, addr, Account{})
+	if s.IsShared() {
+		newobj.addDelta()
+	}
 	newobj.setNonce(0) // sets the object to dirty
 	if prev == nil {
 		s.journal.append(createObjectChange{account: &addr})
 	} else {
-		s.journal.append(resetObjectChange{prev: prev})
+		s.journal.append(resetObjectChange{prev: prev, account: &addr})
 	}
-	s.setStateObject(newobj)
+	if s.IsShared() {
+		s.setDeltaStateObject(newobj)
+	} else {
+		s.setStateObject(newobj)
+	}
 	return newobj, prev
 }
 
@@ -533,6 +641,10 @@ func (s *StateDB) CreateAccount(addr common.Address) {
 	newObj, prev := s.createObject(addr)
 	if prev != nil {
 		newObj.setBalance(prev.data.Balance)
+		// TODO when rwrecord mode is off
+		// The following might not be necessary.
+		// But let's copy the dirty count to be on the safe side.
+		newObj.dirtyBalanceCount = prev.dirtyBalanceCount
 	}
 }
 
@@ -580,6 +692,12 @@ func (s *StateDB) Copy() *StateDB {
 		logSize:             s.logSize,
 		preimages:           make(map[common.Hash][]byte, len(s.preimages)),
 		journal:             newJournal(),
+
+		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
+		rwRecorder:          emptyRWRecorder{},
+	}
+	if s.IsRWMode() {
+		state.SetRWMode(true) // Copied RWStateDB resets record
 	}
 	// Copy the dirty states, logs, and preimages
 	for addr := range s.journal.dirties {
@@ -626,6 +744,108 @@ func (s *StateDB) Copy() *StateDB {
 	return state
 }
 
+// ShareCopy copy a state db in a share way, consuming little time
+func (s *StateDB) ShareCopy() {
+	if s.IsShared() {
+		return
+	} else {
+		s.primary = true
+		s.delta = newDeltaDB()
+	}
+	statedb := &StateDB{
+		db:                  s.db,
+		trie:                s.db.CopyTrie(s.trie),
+		stateObjectsPending: s.stateObjectsPending,
+		stateObjectsDirty:   s.stateObjectsDirty,
+		logs:                s.logs,
+		journal:             newJournal(),
+		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
+		rwRecorder:          emptyRWRecorder{},
+		primary:             false,
+		delta:               newDeltaDB(),
+	}
+	if s.IsRWMode() {
+		statedb.SetRWMode(true) // Copied RWStateDB resets record
+	}
+	s.pair, statedb.pair = statedb, s
+}
+
+func (s *StateDB) GetPair() *StateDB {
+	return s.pair
+}
+
+func (s *StateDB) IsShared() bool {
+	return s.delta != nil
+}
+
+func (s *StateDB) IsPrimary() bool {
+	return s.delta != nil && s.primary
+}
+
+func (s *StateDB) IsSecondary() bool {
+	return s.delta != nil && !s.primary
+}
+
+func (s *StateDB) UpdatePair() {
+	if s.IsShared() && s.pair.IsShared() {
+		s.updateObject(s.pair)
+		s.updateLogs(s.pair)
+		s.pair.logSize = s.logSize
+		s.updatePreimages(s.pair)
+		s.pair.clearJournalAndRefund()
+		s.pair.nextRevisionId = s.nextRevisionId
+	}
+}
+
+func (s *StateDB) updateObject(db *StateDB) {
+	for addr := range s.journal.dirties {
+		object1, exist := s.delta.stateObjects[addr]
+		if !exist {
+			continue
+		}
+		if object2, ok := db.delta.stateObjects[addr]; ok {
+			if object1.pair == nil || object1.pair != object2 {
+				object1.pair, object2.pair = object2, object1
+				object2.pendingStorage = object1.pendingStorage
+			}
+		} else {
+			object1.shareCopy(db)
+			db.setDeltaStateObject(object1.pair)
+		}
+		object1.updateDelta()
+	}
+}
+
+func (s *StateDB) updateLogs(db *StateDB) {
+	if len(s.delta.logs) > 0 {
+		s.logs[s.thash] = s.delta.logs
+		s.delta.logs = nil
+		db.delta.logs = nil
+	}
+}
+
+func (s *StateDB) updatePreimages(db *StateDB) {
+	for hash, preimage1 := range s.delta.preimages {
+		s.preimages[hash] = preimage1
+	}
+	if len(s.delta.preimages) > 0 {
+		s.delta.preimages = make(map[common.Hash][]byte)
+	}
+	if len(db.delta.preimages) > 0 {
+		db.delta.preimages = make(map[common.Hash][]byte)
+	}
+}
+
+func (s *StateDB) MergeDelta() {
+	s.stateObjects = s.delta.stateObjects
+	for _, object := range s.stateObjects {
+		object.delta = nil
+	}
+	s.preimages = s.delta.preimages
+	s.pair = nil
+	s.delta = nil
+}
+
 // Snapshot returns an identifier for the current revision of the state.
 func (s *StateDB) Snapshot() int {
 	id := s.nextRevisionId
@@ -659,8 +879,17 @@ func (s *StateDB) GetRefund() uint64 {
 // the journal as well as the refunds. Finalise, however, will not push any updates
 // into the tries just yet. Only IntermediateRoot or Commit will do that.
 func (s *StateDB) Finalise(deleteEmptyObjects bool) {
+	isShared := s.IsShared()
 	for addr := range s.journal.dirties {
-		obj, exist := s.stateObjects[addr]
+		var (
+			obj   *stateObject
+			exist bool
+		)
+		if isShared {
+			obj, exist = s.delta.stateObjects[addr]
+		} else {
+			obj, exist = s.stateObjects[addr]
+		}
 		if !exist {
 			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
 			// That tx goes out of gas, and although the notion of 'touched' does not exist there, the
@@ -671,8 +900,12 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			continue
 		}
 		if obj.suicided || (deleteEmptyObjects && obj.empty()) {
-			obj.deleted = true
+			if obj.suicided {
+				s.rwRecorder.UpdateSuicide(addr)
+			}
+			obj.SetDeleted(true)
 		} else {
+			s.rwRecorder.UpdateDirtyStateObject(obj)
 			obj.finalise()
 		}
 		s.stateObjectsPending[addr] = struct{}{}
@@ -714,6 +947,11 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 	s.thash = thash
 	s.bhash = bhash
 	s.txIndex = ti
+	if s.pair != nil {
+		s.pair.thash = thash
+		s.pair.bhash = bhash
+		s.txIndex = ti
+	}
 }
 
 func (s *StateDB) clearJournalAndRefund() {
@@ -764,4 +1002,24 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 		}
 		return nil
 	})
+}
+
+func IntermediateRootCalc(s *StateDB) common.Hash {
+	for addr := range s.stateObjectsPending {
+		obj := s.stateObjects[addr]
+		if obj.deleted {
+			s.deleteStateObject(obj)
+		} else {
+			obj.updateRoot(s.db)
+			s.updateStateObject(obj)
+		}
+	}
+	if len(s.stateObjectsPending) > 0 {
+		s.stateObjectsPending = make(map[common.Address]struct{})
+	}
+	// Track the amount of time wasted on hashing the account trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
+	}
+	return s.trie.Hash()
 }

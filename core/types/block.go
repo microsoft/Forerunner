@@ -19,6 +19,7 @@ package types
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
@@ -161,6 +162,15 @@ type Block struct {
 	// inter-peer block relay.
 	ReceivedAt   time.Time
 	ReceivedFrom interface{}
+}
+
+// MSRA marshal block for logging
+func (b *Block) MarshalJSON() ([]byte, error) {
+	tmpMap := make(map[string]interface{})
+	tmpMap["header"] = b.header
+	tmpMap["uncles"] = b.uncles
+	tmpMap["transactions"] = b.transactions
+	return json.Marshal(tmpMap)
 }
 
 // DeprecatedTd is an old relic for extracting the TD of a block. It is in the

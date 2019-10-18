@@ -1,0 +1,72 @@
+[
+      {
+            "Name": "TxsPriceRk20",
+            "ExecutorNum": 1,
+            "IsTxsInDetector": false,
+            "IsChainHeadDrive": false,
+            "IsTxsNumDrive": false,
+            "PreplayedTxsNumLimit": 0,
+            "IsTxsRatioDrive": false,
+            "PreplayedTxsRatioLimit": 0,
+            "IsBlockCntDrive": false,
+            "PreplayedBlockNumberLimit": 0,
+            "IsPriceRankDrive": true,
+            "PreplayedPriceRankLimit": 20
+      },
+      {
+            "Name": "TxsPriceRk50",
+            "ExecutorNum": 1,
+            "IsTxsInDetector": false,
+            "IsChainHeadDrive": false,
+            "IsTxsNumDrive": false,
+            "PreplayedTxsNumLimit": 0,
+            "IsTxsRatioDrive": false,
+            "PreplayedTxsRatioLimit": 0,
+            "IsBlockCntDrive": false,
+            "PreplayedBlockNumberLimit": 0,
+            "IsPriceRankDrive": true,
+            "PreplayedPriceRankLimit": 50
+      },
+      {
+            "Name": "TxsNumAll",
+            "ExecutorNum": 1,
+            "IsTxsInDetector": false,
+            "IsChainHeadDrive": false,
+            "IsTxsNumDrive": true,
+            "PreplayedTxsNumLimit": 0,
+            "IsTxsRatioDrive": false,
+            "PreplayedTxsRatioLimit": 0,
+            "IsBlockCntDrive": false,
+            "PreplayedBlockNumberLimit": 0,
+            "IsPriceRankDrive": false,
+            "PreplayedPriceRankLimit": 0
+      },
+      {
+            "Name": "TxsInDetector",
+            "ExecutorNum": 1,
+            "IsTxsInDetector": true,
+            "IsChainHeadDrive": true,
+            "IsTxsNumDrive": false,
+            "PreplayedTxsNumLimit": 0,
+            "IsTxsRatioDrive": false,
+            "PreplayedTxsRatioLimit": 0,
+            "IsBlockCntDrive": false,
+            "PreplayedBlockNumberLimit": 0,
+            "IsPriceRankDrive": false,
+            "PreplayedPriceRankLimit": 0
+      },
+      {
+            "Name": "TxsNum250P1",
+            "ExecutorNum": 1,
+            "IsTxsInDetector": false,
+            "IsChainHeadDrive": false,
+            "IsTxsNumDrive": true,
+            "PreplayedTxsNumLimit": 250,
+            "IsTxsRatioDrive": false,
+            "PreplayedTxsRatioLimit": 0,
+            "IsBlockCntDrive": false,
+            "PreplayedBlockNumberLimit": 0,
+            "IsPriceRankDrive": false,
+            "PreplayedPriceRankLimit": 0
+      }
+]

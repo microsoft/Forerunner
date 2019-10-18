@@ -20,6 +20,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -563,9 +564,12 @@ func opBlockhash(pc *uint64, interpreter *EVMInterpreter, contract *Contract, me
 
 	n := interpreter.intPool.get().Sub(interpreter.evm.BlockNumber, common.Big257)
 	if num.Cmp(n) > 0 && num.Cmp(interpreter.evm.BlockNumber) < 0 {
-		stack.push(interpreter.evm.GetHash(num.Uint64()).Big())
+		hash := interpreter.evm.GetHash(num.Uint64())
+		stack.push(hash.Big())
+		interpreter.evm.StateDB.RWRecorder().UpdateRBlockhash(num.Uint64(), hash)
 	} else {
 		stack.push(interpreter.intPool.getZero())
+		interpreter.evm.StateDB.RWRecorder().UpdateRBlockhash(num.Uint64(), common.Hash{})
 	}
 	interpreter.intPool.put(num, n)
 	return nil, nil
@@ -573,26 +577,31 @@ func opBlockhash(pc *uint64, interpreter *EVMInterpreter, contract *Contract, me
 
 func opCoinbase(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	stack.push(interpreter.intPool.get().SetBytes(interpreter.evm.Coinbase.Bytes()))
+	interpreter.evm.StateDB.RWRecorder().UpdateRHeader(cmptypes.Coinbase, interpreter.evm.Coinbase)
 	return nil, nil
 }
 
 func opTimestamp(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.evm.Time)))
+	interpreter.evm.StateDB.RWRecorder().UpdateRHeader(cmptypes.Timestamp, interpreter.evm.Time)
 	return nil, nil
 }
 
 func opNumber(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.evm.BlockNumber)))
+	interpreter.evm.StateDB.RWRecorder().UpdateRHeader(cmptypes.Number, interpreter.evm.BlockNumber)
 	return nil, nil
 }
 
 func opDifficulty(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.evm.Difficulty)))
+	interpreter.evm.StateDB.RWRecorder().UpdateRHeader(cmptypes.Difficulty, interpreter.evm.Difficulty)
 	return nil, nil
 }
 
 func opGasLimit(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	stack.push(math.U256(interpreter.intPool.get().SetUint64(interpreter.evm.GasLimit)))
+	interpreter.evm.StateDB.RWRecorder().UpdateRHeader(cmptypes.GasLimit, interpreter.evm.GasLimit)
 	return nil, nil
 }
 

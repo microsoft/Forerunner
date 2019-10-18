@@ -5431,6 +5431,24 @@ var methods = function () {
         params: 0
     });
 
+    var getPreplay = new Method({
+        name: 'getPreplay',
+        call: 'eth_getPreplayByHash',
+        params: 3,
+    });
+
+    var getFeature = new Method({
+        name: 'getFeature',
+        call: 'eth_getFeatureByHash',
+        params: 6,
+    });
+
+    // var getPreplayTxDistrbutionList = new Method({
+    //     name: 'getPreplayTxDistrbutionList',
+    //     call: 'eth_getPreplayTxDistrbutionListByHash',
+    //     params: 1,
+    // })
+
     return [
         getBalance,
         getStorageAt,
@@ -5454,7 +5472,10 @@ var methods = function () {
         compileLLL,
         compileSerpent,
         submitWork,
-        getWork
+        getWork,
+        getPreplay,
+        getFeature,
+        // getPreplayTxDistrbutionList,
     ];
 };
 

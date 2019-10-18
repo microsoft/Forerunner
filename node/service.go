@@ -17,6 +17,7 @@
 package node
 
 import (
+	"github.com/ethereum/go-ethereum/params"
 	"path/filepath"
 	"reflect"
 
@@ -36,6 +37,14 @@ type ServiceContext struct {
 	services       map[reflect.Type]Service // Index of the already constructed services
 	EventMux       *event.TypeMux           // Event multiplexer used for decoupled notifications
 	AccountManager *accounts.Manager        // Account manager created by the node.
+}
+
+func (ctx *ServiceContext) MSRAChainConfig(c *params.ChainConfig) {
+	c.MSRAChainSettings.NodeName = ctx.config.MSRANodeSettings.NodeName
+	c.MSRAChainSettings.PreplayEnabledChainhead = ctx.config.MSRANodeSettings.PreplayEnabledChainhead
+	c.MSRAChainSettings.PreplayDirChainhead = ctx.config.MSRANodeSettings.PreplayDirChainhead
+	c.MSRAChainSettings.DataLoggerInsertchain = ctx.config.MSRANodeSettings.DataLoggerInsertchain
+	c.MSRAChainSettings.DataLoggerDirInsertchain = ctx.config.MSRANodeSettings.DataLoggerDirInsertchain
 }
 
 // OpenDatabase opens an existing database with the given name (or creates one

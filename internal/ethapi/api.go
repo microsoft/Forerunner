@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -1795,3 +1797,103 @@ func (s *PublicNetAPI) PeerCount() hexutil.Uint {
 func (s *PublicNetAPI) Version() string {
 	return fmt.Sprintf("%d", s.networkVersion)
 }
+
+func (s *PublicNetAPI) Net() *p2p.Server {
+	return s.net
+}
+
+// PublicPreplayAPI is the collection of Ethereum APIs exposed over the public
+// debugging endpoint.
+type PublicPreplayAPI struct {
+	b Backend
+}
+
+// NewPublicPreplayAPI creates a new API definition for the public debug methods
+// of the Ethereum service.
+func NewPublicPreplayAPI(b Backend) *PublicPreplayAPI {
+	return &PublicPreplayAPI{b: b}
+}
+
+// GetPreplayByHash get the transaction preplay result
+func (s *PublicPreplayAPI) GetPreplayByHash(ctx context.Context, hash common.Hash, flagPreplayResult uint64, flagDistributionList uint64) *cache.RPCPrelpayResult {
+
+	globalCache := s.b.GetGlobalCache()
+	result := &cache.RPCPrelpayResult{
+		Status: []string{},
+	}
+
+	result.Status = []string{}
+	if flagPreplayResult == uint64(1) {
+		if preplayResult := globalCache.GetTxPreplay(hash); preplayResult != nil {
+			result.PreplayResult = preplayResult
+		}
+	}
+
+	if flagDistributionList == uint64(1) {
+		if distributionList := globalCache.GetDistributionList(hash); distributionList != nil {
+			result.DistributionList = distributionList
+		}
+	}
+
+	return result
+}
+
+// GetFeatureByHash get the transaction feature result
+func (s *PublicPreplayAPI) GetFeatureByHash(ctx context.Context, hash common.Hash, timestamp uint64, flagNewTimeFeatureList uint64, flagOldTimeFeatureList uint64, flagTraningLists uint64, flagAverageGasUsed uint64) *cache.RPCFeatureResult {
+
+	globalCache := s.b.GetGlobalCache()
+	result := &cache.RPCFeatureResult{
+		Status:              []string{},
+		TxListenTimestamp:   []uint64{},
+		BloConfirmTimestamp: []uint64{},
+		BloListenTimestamp:  []uint64{},
+	}
+
+	if flagNewTimeFeatureList == uint64(1) {
+		if featureList, status, listenTime, confirmTime, comfirmListenTime := globalCache.GetNewTimeFeatureList(hash, timestamp); featureList != nil {
+			result.NewTimeFeatureList = featureList
+			result.Status = append(result.Status, status)
+			result.TxListenTimestamp = append(result.TxListenTimestamp, listenTime)
+			result.BloConfirmTimestamp = append(result.BloConfirmTimestamp, confirmTime)
+			result.BloListenTimestamp = append(result.BloListenTimestamp, comfirmListenTime)
+		}
+	}
+
+	if flagOldTimeFeatureList == uint64(1) {
+		if featureList, status, listenTime, confirmTime, comfirmListenTime := globalCache.GetOldTimeFeatureList(hash); featureList != nil {
+			result.OldTimeFeatureList = featureList
+			result.Status = append(result.Status, status)
+			result.TxListenTimestamp = append(result.TxListenTimestamp, listenTime)
+			result.BloConfirmTimestamp = append(result.BloConfirmTimestamp, confirmTime)
+			result.BloListenTimestamp = append(result.BloListenTimestamp, comfirmListenTime)
+		}
+	}
+
+	if flagTraningLists == uint64(1) {
+		if trainingLists, status, timestamp := globalCache.GetTrainingLists(timestamp); trainingLists != nil {
+			result.TrainingLists = trainingLists
+			result.Status = append(result.Status, status)
+			result.TxListenTimestamp = append(result.TxListenTimestamp, timestamp)
+		}
+	}
+
+	if flagAverageGasUsed != uint64(0) {
+		if averageGasUsed, status, timestamp := globalCache.GetAverageGasUsed(flagAverageGasUsed); flagAverageGasUsed != uint64(0) {
+			result.AverageGasUsed = averageGasUsed
+			result.Status = append(result.Status, status)
+			result.TxListenTimestamp = append(result.TxListenTimestamp, timestamp)
+			result.BloConfirmTimestamp = append(result.BloConfirmTimestamp, timestamp)
+			result.BloListenTimestamp = append(result.BloListenTimestamp, timestamp)
+		}
+	}
+
+	return result
+}
+
+// func (s *PublicPreplayAPI) GetPreplayTxDistrbutionListByHash(ctx context.Context, hash common.Hash) *optipreplayer.TxDistributionList {
+// 	globalCache := s.b.GetGlobalCache()
+// 	if result := globalCache.GetDistributionList(hash); result != nil {
+// 		return result
+// 	}
+// 	return nil
+// }

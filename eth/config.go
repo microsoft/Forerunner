@@ -17,6 +17,7 @@
 package eth
 
 import (
+	"github.com/ethereum/go-ethereum/core/vm"
 	"math/big"
 	"os"
 	"os/user"
@@ -145,6 +146,9 @@ type Config struct {
 
 	// Type of the EVM interpreter ("" for default)
 	EVMInterpreter string
+
+	// settings of msra features
+	MSRAVMSettings vm.MSRAVMConfig
 
 	// RPCGasCap is the global gas cap for eth-call variants.
 	RPCGasCap *big.Int `toml:",omitempty"`

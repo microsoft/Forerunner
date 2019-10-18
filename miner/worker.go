@@ -18,8 +18,12 @@ package miner
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/ioutil"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -351,6 +355,10 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 			commit(false, commitInterruptNewHead)
 
 		case <-timer.C:
+
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				break // pass this case if chainhead-driven preplay enabled
+			}
 			// If mining is running resubmit a new work cycle periodically to pull in
 			// higher priced transactions. Disable this overhead for pending blocks.
 			if w.isRunning() && (w.chainConfig.Clique == nil || w.chainConfig.Clique.Period > 0) {
@@ -376,6 +384,11 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 			}
 
 		case adjust := <-w.resubmitAdjustCh:
+
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				break // pass this case if chainhead-driven preplay enabled
+			}
+
 			// Adjust resubmit interval by feedback.
 			if adjust.inc {
 				before := recommit
@@ -409,6 +422,11 @@ func (w *worker) mainLoop() {
 			w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
 
 		case ev := <-w.chainSideCh:
+
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				break // pass this case if chainhead-driven preplay enabled
+			}
+
 			// Short circuit for duplicate side blocks
 			if _, exist := w.localUncles[ev.Block.Hash()]; exist {
 				continue
@@ -448,6 +466,11 @@ func (w *worker) mainLoop() {
 			}
 
 		case ev := <-w.txsCh:
+
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				break // pass this case if chainhead-driven preplay enabled
+			}
+
 			// Apply transactions to the pending state if we're not mining.
 			//
 			// Note all transactions received may not be continuous with transactions
@@ -613,6 +636,17 @@ func (w *worker) resultLoop() {
 // makeCurrent creates a new environment for the current cycle.
 func (w *worker) makeCurrent(parent *types.Block, header *types.Header) error {
 	state, err := w.chain.StateAt(parent.Root())
+
+	// FIXME
+	// var state vm.StateDB
+	// statedbInstance, err := w.chain.StateAt(parent.Root())
+	//if w.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
+	//	// statedb = state.NewRWStateDB(statedbInstance)
+	//	state = statedbInstance
+	//} else {
+	//	state = statedbInstance
+	//}
+
 	if err != nil {
 		return err
 	}
@@ -695,7 +729,29 @@ func (w *worker) updateSnapshot() {
 func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Address) ([]*types.Log, error) {
 	snap := w.current.state.Snapshot()
 
-	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &coinbase, w.current.gasPool, w.current.state, w.current.header, tx, &w.current.header.GasUsed, *w.chain.GetVMConfig())
+	var err error
+	var receipt *types.Receipt
+
+	cfg := w.chain.GetVMConfig()
+	if !cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.GroundRecord {
+		groundStatedb := state.NewRWStateDB(w.current.state.Copy())
+		groundStatedb.ShareCopy()
+
+		// Record ground truth
+		// log.Info("GroundTruth Miner")
+		// var groundStatedb vm.StateDB
+		// groundStatedb = state.NewRWStateDB(statedb.Copy())
+		groundStatedb.Prepare(tx.Hash(), w.current.header.Hash(), w.current.tcount)
+		groundGasUsed := w.current.header.GasUsed
+		groundGasPool := *w.current.gasPool
+
+		receipt, err, _ = w.chain.Cmpreuse.ApplyTransaction(w.chainConfig, w.chain, nil, &groundGasPool, groundStatedb, w.current.header, tx, &groundGasUsed, *cfg, 0, nil, 2, false)
+		groundStatedb.MergeDelta()
+		//log.Info("GroundTruth Miner Finish")
+	}
+
+	receipt, err = core.ApplyTransaction(w.chainConfig, w.chain, &coinbase, w.current.gasPool, w.current.state, w.current.header, tx, &w.current.header.GasUsed, *cfg)
+
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
 		return nil, err
@@ -704,6 +760,30 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	w.current.receipts = append(w.current.receipts, receipt)
 
 	return receipt.Logs, nil
+}
+
+func (w *worker) logPreplayResult() {
+	_, err := os.Stat(w.chainConfig.MSRAChainSettings.PreplayDirChainhead)
+	if err != nil {
+		os.MkdirAll(w.chainConfig.MSRAChainSettings.PreplayDirChainhead, os.ModePerm)
+	}
+	tmpMap := make(map[string]interface{})
+	tmpMap["actionDoneTimeUnixNano"] = time.Now().UnixNano()
+	tmpMap["actionDoneTime"] = time.Now().Format("2006-01-02T15:04:05Z07:00")
+	tmpMap["nodeName"] = w.chainConfig.MSRAChainSettings.NodeName
+	tmpMap["parentHash"] = w.current.header.ParentHash.Hex()
+	tmpMap["header"] = w.current.header
+	tmpMap["txs"] = w.current.txs
+	tmpMap["receipts"] = w.current.receipts
+	tmpJson, err := json.Marshal(tmpMap)
+	if err != nil {
+		log.Error("Error while marshal", "err", err)
+	}
+	sFilePath := fmt.Sprintf("%s/%d.json", w.chainConfig.MSRAChainSettings.PreplayDirChainhead, w.current.header.Number)
+	err = ioutil.WriteFile(sFilePath, tmpJson, os.ModePerm)
+	if err != nil {
+		log.Error("Error while output json", "err", err)
+	}
 }
 
 func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coinbase common.Address, interrupt *int32) bool {
@@ -717,6 +797,7 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 	}
 
 	var coalescedLogs []*types.Log
+	var cachedTxs []*types.Transaction
 
 	for {
 		// In the following three cases, we will interrupt the execution of the transaction.
@@ -737,12 +818,24 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 					inc:   true,
 				}
 			}
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				w.logPreplayResult()
+			}
 			return atomic.LoadInt32(interrupt) == commitInterruptNewHead
 		}
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
-			log.Trace("Not enough gas for further transactions", "have", w.current.gasPool, "want", params.TxGas)
-			break
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				w.current.gasPool = new(core.GasPool).AddGas(w.current.header.GasLimit)
+				for _, cachedTx := range cachedTxs {
+					txs.Push(cachedTx)
+				}
+				w.logPreplayResult()
+			} else {
+				log.Trace("Not enough gas for further transactions", "have", w.current.gasPool, "want", params.TxGas)
+
+				break
+			}
 		}
 		// Retrieve the next transaction and abort if all done
 		tx := txs.Peek()
@@ -769,6 +862,10 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 		switch err {
 		case core.ErrGasLimitReached:
 			// Pop the current out-of-gas transaction without shifting in the next from the account
+			if w.chainConfig.MSRAChainSettings.PreplayEnabledChainhead {
+				cachedTxs = append(cachedTxs, tx)
+				cachedTxs = append(cachedTxs, tx)
+			}
 			log.Trace("Gas limit exceeded for current block", "sender", from)
 			txs.Pop()
 
@@ -918,6 +1015,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		log.Error("Failed to fetch pending transactions", "err", err)
 		return
 	}
+	log.Debug("Miner pending", "len", len(pending))
 	// Short circuit if there is no available pending transactions
 	if len(pending) == 0 {
 		w.updateSnapshot()

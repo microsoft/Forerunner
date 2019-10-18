@@ -63,7 +63,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	whisper "github.com/ethereum/go-ethereum/whisper/whisperv6"
 	pcsclite "github.com/gballet/go-libpcsclite"
-	cli "gopkg.in/urfave/cli.v1"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var (
@@ -749,6 +749,105 @@ var (
 		Usage: "External EVM configuration (default = built-in interpreter)",
 		Value: "",
 	}
+
+	// MSRA eth toolbox
+	NodeNameFlag = cli.StringFlag{
+		Name:  "nodename",
+		Usage: "Node name to identify server",
+		Value: "",
+	}
+	SilentFlag = cli.BoolFlag{
+		Name:  "silent",
+		Usage: "Enable logging",
+	}
+	LogRootFlag = DirectoryFlag{
+		Name:  "logdir",
+		Usage: "Log directory",
+		Value: DirectoryString("/datadrive/reuse"),
+	}
+
+	PreplayEnabledChainheadFlag = cli.BoolFlag{
+		Name:  "preplay.chainhead",
+		Usage: "Enable chainhead driven preplaying",
+	}
+	PreplayDirChainheadFlag = DirectoryFlag{
+		Name:  "preplaydir.chainhead",
+		Usage: "Log directory for chainhead driven preplay result",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "preplaydata", "chainhead-driven")),
+	}
+
+	CmpResueEnabledFlag = cli.BoolFlag{
+		Name:  "cmpreuse",
+		Usage: "Enable computation reuse",
+	}
+	CmpResueCheckFlag = cli.BoolFlag{
+		Name:  "cmpreuse.check",
+		Usage: "Enable computation reuse dirty write checking",
+	}
+	CmpResueLogFlag = cli.BoolFlag{
+		Name:  "cmpreuse.log",
+		Usage: "Enable computation reuse result logging",
+	}
+	CmpResueLogDirFlag = DirectoryFlag{
+		Name:  "cmpreuse.log.dir",
+		Usage: "Log directory for computation reuse result",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "cmpreuse")),
+	}
+
+	CacheRecordEnabledFlag = cli.BoolFlag{
+		Name:  "cacherecord",
+		Usage: "Enable cache record",
+	}
+	GroundRecordEnabledFlag = cli.BoolFlag{
+		Name:  "groundrecord",
+		Usage: "Enable ground record",
+	}
+	PreplayRecordEnabledFlag = cli.BoolFlag{
+		Name:  "preplayrecord",
+		Usage: "Enable preplay record",
+	}
+
+	DataLoggerFlag = cli.StringFlag{
+		Name:  "datalogger",
+		Usage: "Comma separated list of data structures needs being logged",
+		Value: "",
+	}
+	DataLoggerDirTxpoolSnapFlag = DirectoryFlag{
+		Name:  "dataloggerdir.txpoolsnap",
+		Usage: "Log directory for txpool snapshot",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "logdata", "txpoolsnap")),
+	}
+	DataLoggerDirTxpoolIOFlag = DirectoryFlag{
+		Name:  "dataloggerdir.txpoolio",
+		Usage: "Log directory for tx in and out txpool",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "logdata", "txpoolio")),
+	}
+	DataLoggerDirInsertchainFlag = DirectoryFlag{
+		Name:  "dataloggerdir.insertchain",
+		Usage: "Log directory for insertchain invoking",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "logdata", "insertchain")),
+	}
+
+	RatioFlag = cli.IntFlag{
+		Name:  "ratio",
+		Usage: "External ratio log configuration (default = 1)",
+	}
+
+	// MSRA New flag
+	PreplayFlag = cli.BoolFlag{
+		Name:  "preplay",
+		Usage: "Enable the Transaction Preplay service",
+	}
+
+	FeatureFlag = cli.BoolFlag{
+		Name:  "feature",
+		Usage: "Enable the Feature Collect service",
+	}
+
+	ReuseVerifierFlag = cli.BoolFlag{
+		Name:  "reuseverify",
+		Usage: "Enable the Reuse Verify service",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1162,6 +1261,25 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 		cfg.NoDiscovery = true
 		cfg.DiscoveryV5 = false
 	}
+
+	if ctx.GlobalIsSet(RatioFlag.Name) {
+		cfg.Ratio = ctx.GlobalInt(RatioFlag.Name)
+	} else {
+		cfg.Ratio = 1
+	}
+
+	// New flag
+	if ctx.GlobalIsSet(PreplayFlag.Name) {
+		cfg.EnablePreplay = true
+	} else {
+		cfg.EnablePreplay = false
+	}
+
+	if ctx.GlobalIsSet(FeatureFlag.Name) {
+		cfg.EnableFeature = true
+	} else {
+		cfg.EnableFeature = false
+	}
 }
 
 // SetNodeConfig applies node-related command line flags to the config.
@@ -1174,6 +1292,31 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	setNodeUserIdent(ctx, cfg)
 	setDataDir(ctx, cfg)
 	setSmartCard(ctx, cfg)
+
+	// MSRA config
+	if ctx.GlobalIsSet(NodeNameFlag.Name) {
+		cfg.MSRANodeSettings.NodeName = ctx.GlobalString(NodeNameFlag.Name)
+	}
+
+	if ctx.GlobalBool(PreplayEnabledChainheadFlag.Name) {
+		cfg.MSRANodeSettings.PreplayEnabledChainhead = ctx.GlobalBool(PreplayEnabledChainheadFlag.Name)
+	}
+	if ctx.GlobalIsSet(PreplayDirChainheadFlag.Name) {
+		cfg.MSRANodeSettings.PreplayDirChainhead = ctx.GlobalString(PreplayDirChainheadFlag.Name)
+	}
+	cfg.MSRANodeSettings.DataLoggerInsertchain = false
+	if ctx.GlobalIsSet(DataLoggerFlag.Name) {
+		dataloggerModules := splitAndTrim(ctx.GlobalString(DataLoggerFlag.Name))
+		for _, module := range dataloggerModules {
+			switch module {
+			case "insertchain":
+				cfg.MSRANodeSettings.DataLoggerInsertchain = true
+			}
+		}
+	}
+	if ctx.GlobalIsSet(DataLoggerDirInsertchainFlag.Name) {
+		cfg.MSRANodeSettings.DataLoggerDirInsertchain = ctx.GlobalString(DataLoggerDirInsertchainFlag.Name)
+	}
 
 	if ctx.GlobalIsSet(ExternalSignerFlag.Name) {
 		cfg.ExternalSigner = ctx.GlobalString(ExternalSignerFlag.Name)
@@ -1277,6 +1420,30 @@ func setTxPool(ctx *cli.Context, cfg *core.TxPoolConfig) {
 	}
 	if ctx.GlobalIsSet(TxPoolLifetimeFlag.Name) {
 		cfg.Lifetime = ctx.GlobalDuration(TxPoolLifetimeFlag.Name)
+	}
+
+	if ctx.GlobalIsSet(NodeNameFlag.Name) {
+		cfg.MSRATxPoolSettings.NodeName = ctx.GlobalString(NodeNameFlag.Name)
+	}
+	cfg.MSRATxPoolSettings.DataLoggerTxPoolSnap = false
+	cfg.MSRATxPoolSettings.DataLoggerTxPoolIO = false
+	if ctx.GlobalIsSet(DataLoggerFlag.Name) {
+		dataloggerModules := splitAndTrim(ctx.GlobalString(DataLoggerFlag.Name))
+		for _, module := range dataloggerModules {
+			switch module {
+			case "txpoolsnap":
+				cfg.MSRATxPoolSettings.DataLoggerTxPoolSnap = true
+			case "txpoolio":
+				cfg.MSRATxPoolSettings.DataLoggerTxPoolIO = true
+			}
+		}
+	}
+
+	if ctx.GlobalIsSet(DataLoggerDirTxpoolSnapFlag.Name) {
+		cfg.MSRATxPoolSettings.DataLoggerDirTxPoolSnap = ctx.GlobalString(DataLoggerDirTxpoolSnapFlag.Name)
+	}
+	if ctx.GlobalIsSet(DataLoggerDirTxpoolIOFlag.Name) {
+		cfg.MSRATxPoolSettings.DataLoggerDirTxPoolIO = ctx.GlobalString(DataLoggerDirTxpoolIOFlag.Name)
 	}
 }
 
@@ -1521,6 +1688,25 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		if !ctx.GlobalIsSet(MinerGasPriceFlag.Name) && !ctx.GlobalIsSet(MinerLegacyGasPriceFlag.Name) {
 			cfg.Miner.GasPrice = big.NewInt(1)
 		}
+	}
+	cfg.MSRAVMSettings = vm.MSRAVMConfig{
+		Silent:              ctx.GlobalBool(SilentFlag.Name),
+		LogRoot:             "/datadrive/reuse",
+		CmpReuse:            ctx.GlobalBool(CmpResueEnabledFlag.Name),
+		CmpReuseChecking:    ctx.GlobalBool(CmpResueCheckFlag.Name),
+		CmpReuseLogging:     ctx.GlobalBool(CmpResueLogFlag.Name),
+		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
+		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),
+		CacheRecord:         ctx.GlobalBool(CacheRecordEnabledFlag.Name),
+		GroundRecord:        ctx.GlobalBool(GroundRecordEnabledFlag.Name),
+		PreplayRecord:       ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
+		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
+	}
+	if ctx.GlobalIsSet(CmpResueLogDirFlag.Name) {
+		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpResueLogDirFlag.Name)
+	}
+	if ctx.GlobalIsSet(LogRootFlag.Name) {
+		cfg.MSRAVMSettings.LogRoot = ctx.GlobalString(LogRootFlag.Name)
 	}
 }
 

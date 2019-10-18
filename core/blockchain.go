@@ -18,11 +18,14 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	mrand "math/rand"
+	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -40,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -177,6 +181,10 @@ type BlockChain struct {
 	badBlocks       *lru.Cache                     // Bad block cache
 	shouldPreserve  func(*types.Block) bool        // Function used to determine whether should preserve the given block.
 	terminateInsert func(common.Hash, uint64) bool // Testing hook used to terminate ancient receipt chain insertion.
+
+	// MSRA
+	Cmpreuse  TransactionApplier
+	MSRACache *cache.GlobalCache
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -215,6 +223,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		engine:         engine,
 		vmConfig:       vmConfig,
 		badBlocks:      badBlocks,
+		//Cmpreuse:       &DefaultTransactionApplier{},
 	}
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc, engine)
@@ -298,6 +307,10 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	return bc, nil
 }
 
+func (bc *BlockChain) GetMSRAChainSettings() *params.MSRAChainConfig {
+	return &bc.chainConfig.MSRAChainSettings
+}
+
 func (bc *BlockChain) getProcInterrupt() bool {
 	return atomic.LoadInt32(&bc.procInterrupt) == 1
 }
@@ -319,6 +332,12 @@ func (bc *BlockChain) empty() bool {
 		}
 	}
 	return true
+}
+
+// GetTransactionByHash tries to return an already finalized transaction
+func (bc *BlockChain) GetTransactionByHash(hash common.Hash) (*types.Transaction, common.Hash, uint64, uint64) {
+	// tx, blockHash, blockNumber, index
+	return rawdb.ReadTransaction(bc.db, hash)
 }
 
 // loadLastState loads the last known chain state from the database. This method
@@ -859,6 +878,14 @@ func (bc *BlockChain) procFutureBlocks() {
 		sort.Slice(blocks, func(i, j int) bool {
 			return blocks[i].NumberU64() < blocks[j].NumberU64()
 		})
+
+		if bc.chainConfig.MSRAChainSettings.DataLoggerInsertchain {
+			for i := range blocks {
+				bc.InsertChainWithInvoker(blocks[i:i+1], "procFutureBlocks")
+			}
+			return
+		}
+
 		// Insert one by one as chain insertion needs contiguous ancestry between blocks
 		for i := range blocks {
 			bc.InsertChain(blocks[i : i+1])
@@ -1468,6 +1495,52 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	return n, err
 }
 
+func (bc *BlockChain) InsertChainWithInvoker(chain types.Blocks, invoker string) (int, error) {
+	if bc.chainConfig.MSRAChainSettings.DataLoggerInsertchain {
+		// Assume not write to same file, not lock here
+		bc.chainmu.Lock()
+		bc.insertChainLogger(chain, invoker)
+		bc.chainmu.Unlock()
+	}
+	return bc.InsertChain(chain)
+}
+
+func (bc *BlockChain) insertChainLogger(chain types.Blocks, invoker string) {
+	sForderPath := fmt.Sprintf("%s/%s/", bc.chainConfig.MSRAChainSettings.DataLoggerDirInsertchain, time.Now().Format("20060102"))
+	sFilePath := fmt.Sprintf("%sinsertchain_%s.json", sForderPath, time.Now().Format("20060102T15"))
+	_, err := os.Stat(sForderPath)
+	if err != nil {
+		os.MkdirAll(sForderPath, os.ModePerm)
+	}
+
+	tmpMap := make(map[string]interface{})
+	tmpMap["timestampNano"] = time.Now().UnixNano()
+	tmpMap["timestampReadable"] = time.Now().Format("2006-01-02T15:04:05Z07:00")
+	tmpMap["headerState"] = map[string]interface{}{
+		"currentHash":   bc.CurrentBlock().Hash().Hex(),
+		"currentHeight": bc.CurrentBlock().Number(),
+		"currentTD":     bc.GetTdByHash(bc.CurrentBlock().Hash()).String(),
+		"parentHash":    bc.CurrentBlock().ParentHash().Hex(),
+	}
+	tmpMap["invoker"] = invoker
+	tmpMap["nodeName"] = bc.chainConfig.MSRAChainSettings.NodeName
+	tmpMap["blocks"] = chain
+	tmpJson, err := json.Marshal(tmpMap)
+	if err != nil {
+		log.Error("Error while marshal insertchain invoking")
+	}
+	tmpJson = append(tmpJson, []byte("\n")...)
+	f, err := os.OpenFile(sFilePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Error("Error open insertchain log file", "err", err)
+	}
+	_, err = f.Write(tmpJson)
+	f.Close()
+	if err != nil {
+		log.Error("Error while write insertchain log file", "err", err)
+	}
+}
+
 // insertChain is the internal implementation of InsertChain, which assumes that
 // 1) chains are contiguous, and 2) The chain mutex is held.
 //
@@ -1644,8 +1717,17 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			}
 		}
 		// Process block using the parent state as reference point
+		bc.MSRACache.Pause()
+		runtime.GC()
 		substart := time.Now()
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
+		execTime := time.Since(substart)
+		bc.MSRACache.Continue()
+		if !bc.vmConfig.MSRAVMSettings.Silent {
+			bc.MSRACache.InfoPrint(block, execTime, bc.vmConfig)
+		}
+		cache.ResetLogVar()
+
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
 			atomic.StoreUint32(&followupInterrupt, 1)
@@ -1722,6 +1804,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		stats.processed++
 		stats.usedGas += usedGas
+		stats.execTime += execTime
 
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)

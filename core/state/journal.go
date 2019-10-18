@@ -90,7 +90,8 @@ type (
 		account *common.Address
 	}
 	resetObjectChange struct {
-		prev *stateObject
+		prev    *stateObject
+		account *common.Address // Record Dirty Write
 	}
 	suicideChange struct {
 		account     *common.Address
@@ -102,18 +103,23 @@ type (
 	balanceChange struct {
 		account *common.Address
 		prev    *big.Int
+		after   *big.Int // Record Dirty Write
 	}
 	nonceChange struct {
 		account *common.Address
 		prev    uint64
+		after   uint64 // Record Dirty Write
 	}
 	storageChange struct {
 		account       *common.Address
 		key, prevalue common.Hash
+		aftervalue    common.Hash // Record Dirty Write
 	}
 	codeChange struct {
 		account            *common.Address
 		prevcode, prevhash []byte
+		afterhash          *common.Hash // Record Dirty Write
+		aftercode          []byte
 	}
 
 	// Changes to other state values.
@@ -132,7 +138,11 @@ type (
 )
 
 func (ch createObjectChange) revert(s *StateDB) {
-	delete(s.stateObjects, *ch.account)
+	if s.IsShared() {
+		delete(s.delta.stateObjects, *ch.account)
+	} else {
+		delete(s.stateObjects, *ch.account)
+	}
 	delete(s.stateObjectsDirty, *ch.account)
 }
 
@@ -141,7 +151,11 @@ func (ch createObjectChange) dirtied() *common.Address {
 }
 
 func (ch resetObjectChange) revert(s *StateDB) {
-	s.setStateObject(ch.prev)
+	if s.IsShared() {
+		s.setDeltaStateObject(ch.prev)
+	} else {
+		s.setStateObject(ch.prev)
+	}
 }
 
 func (ch resetObjectChange) dirtied() *common.Address {
@@ -170,7 +184,9 @@ func (ch touchChange) dirtied() *common.Address {
 }
 
 func (ch balanceChange) revert(s *StateDB) {
-	s.getStateObject(*ch.account).setBalance(ch.prev)
+	so := s.getStateObject(*ch.account)
+	so.dirtyBalanceCount--
+	so.setBalance(ch.prev)
 }
 
 func (ch balanceChange) dirtied() *common.Address {
@@ -178,7 +194,9 @@ func (ch balanceChange) dirtied() *common.Address {
 }
 
 func (ch nonceChange) revert(s *StateDB) {
-	s.getStateObject(*ch.account).setNonce(ch.prev)
+	so := s.getStateObject(*ch.account)
+	so.dirtyNonceCount--
+	so.setNonce(ch.prev)
 }
 
 func (ch nonceChange) dirtied() *common.Address {
@@ -186,7 +204,9 @@ func (ch nonceChange) dirtied() *common.Address {
 }
 
 func (ch codeChange) revert(s *StateDB) {
-	s.getStateObject(*ch.account).setCode(common.BytesToHash(ch.prevhash), ch.prevcode)
+	so := s.getStateObject(*ch.account)
+	so.dirtyCodeCount--
+	so.setCode(common.BytesToHash(ch.prevhash), ch.prevcode)
 }
 
 func (ch codeChange) dirtied() *common.Address {
@@ -194,7 +214,12 @@ func (ch codeChange) dirtied() *common.Address {
 }
 
 func (ch storageChange) revert(s *StateDB) {
-	s.getStateObject(*ch.account).setState(ch.key, ch.prevalue)
+	so := s.getStateObject(*ch.account)
+	so.dirtyStorageCount[ch.key]--
+	if so.dirtyStorageCount[ch.key] == 0 {
+		delete(so.dirtyStorageCount, ch.key)
+	}
+	so.setState(ch.key, ch.prevalue)
 }
 
 func (ch storageChange) dirtied() *common.Address {
@@ -210,11 +235,15 @@ func (ch refundChange) dirtied() *common.Address {
 }
 
 func (ch addLogChange) revert(s *StateDB) {
-	logs := s.logs[ch.txhash]
-	if len(logs) == 1 {
-		delete(s.logs, ch.txhash)
+	if s.IsShared() {
+		s.delta.logs = s.delta.logs[:len(s.delta.logs)-1]
 	} else {
-		s.logs[ch.txhash] = logs[:len(logs)-1]
+		logs := s.logs[ch.txhash]
+		if len(logs) == 1 {
+			delete(s.logs, ch.txhash)
+		} else {
+			s.logs[ch.txhash] = logs[:len(logs)-1]
+		}
 	}
 	s.logSize--
 }
@@ -224,7 +253,11 @@ func (ch addLogChange) dirtied() *common.Address {
 }
 
 func (ch addPreimageChange) revert(s *StateDB) {
-	delete(s.preimages, ch.hash)
+	if s.IsShared() {
+		delete(s.delta.preimages, ch.hash)
+	} else {
+		delete(s.preimages, ch.hash)
+	}
 }
 
 func (ch addPreimageChange) dirtied() *common.Address {

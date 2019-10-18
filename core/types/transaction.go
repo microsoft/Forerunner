@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -58,6 +59,7 @@ type txdata struct {
 
 	// This is only used when marshaling to JSON.
 	Hash *common.Hash `json:"hash" rlp:"-"`
+	From *string      `json:"from" rlp:"-"`
 }
 
 type txdataMarshaling struct {
@@ -144,6 +146,13 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 	hash := tx.Hash()
 	data := tx.data
 	data.Hash = &hash
+	// Mainnet ChainID
+	from, err := Sender(NewEIP155Signer(big.NewInt(1)), tx)
+	if err != nil {
+		log.Error("Error while get tx from", "err", err)
+	}
+	fromHash := "0x" + from.Hash().Hex()[26:]
+	data.From = &fromHash
 	return data.MarshalJSON()
 }
 
@@ -327,6 +336,7 @@ type TransactionsByPriceAndNonce struct {
 	txs    map[common.Address]Transactions // Per account nonce-sorted list of transactions
 	heads  TxByPrice                       // Next transaction for each unique account (price heap)
 	signer Signer                          // Signer for the set of transactions
+	// total  int                             // Total number for the set of transactions
 }
 
 // NewTransactionsByPriceAndNonce creates a transaction set that can retrieve
@@ -336,6 +346,7 @@ type TransactionsByPriceAndNonce struct {
 // if after providing it to the constructor.
 func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transactions) *TransactionsByPriceAndNonce {
 	// Initialize a price based heap with the head transactions
+	// total := len(txs)
 	heads := make(TxByPrice, 0, len(txs))
 	for from, accTxs := range txs {
 		heads = append(heads, accTxs[0])
@@ -353,8 +364,54 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transa
 		txs:    txs,
 		heads:  heads,
 		signer: signer,
+		// total:  total,
 	}
 }
+
+// func NewPreplayTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transactions) *TransactionsByPriceAndNonce {
+// 	// Initialize a price based heap with the head transactions
+// 	total := len(txs)
+// 	heads := make(TxByPrice, 0, len(txs))
+
+// 	froms := common.Addresses{}
+// 	for from := range txs {
+// 		froms = append(froms, from)
+// 	}
+// 	sort.Sort(froms)
+
+// 	for _, from := range froms {
+// 		accTxs := txs[from]
+// 		heads = append(heads, accTxs[0])
+// 		// Ensure the sender address is from the signer
+// 		acc, _ := Sender(signer, accTxs[0])
+// 		txs[acc] = accTxs[1:]
+// 		if from != acc {
+// 			delete(txs, from)
+// 		}
+// 	}
+// 	heap.Init(&heads)
+
+// 	// Assemble and return the transaction set
+// 	return &TransactionsByPriceAndNonce{
+// 		txs:    txs,
+// 		heads:  heads,
+// 		signer: signer,
+// 		total:  total,
+// 	}
+// }
+
+// func (t *TransactionsByPriceAndNonce) GetTxsFromAddress(from common.Address) Transactions {
+// 	return t.txs[from]
+// }
+
+// func (t *TransactionsByPriceAndNonce) GetTxsFromAddressandNonce(from common.Address, nonce uint64) *Transaction {
+// 	for _, tx := range t.txs[from] {
+// 		if tx.Nonce() == nonce {
+// 			return tx
+// 		}
+// 	}
+// 	return nil
+// }
 
 // Peek returns the next transaction by price.
 func (t *TransactionsByPriceAndNonce) Peek() *Transaction {
@@ -381,6 +438,58 @@ func (t *TransactionsByPriceAndNonce) Shift() {
 func (t *TransactionsByPriceAndNonce) Pop() {
 	heap.Pop(&t.heads)
 }
+
+// C
+// func (t *TransactionsByPriceAndNonce) Replace(from common.Address, nonce uint64, tx *Transaction) {
+// 	// Search in heap
+// 	// Search in txs
+// 	for idx, tx := range t.txs[from] {
+// 		if tx.Nonce() == nonce {
+// 			t.txs[from][idx] = tx
+// 		}
+// 	}
+// }
+
+// // C: Push transaction into heap.
+func (t *TransactionsByPriceAndNonce) Push(tx *Transaction) {
+	// acc, _ := Sender(t.signer, tx)
+	// if _, ok := t.txs[acc]; !ok {
+	// 	t.txs[acc] = Transactions{}
+	// }
+	// t.txs[acc] = append(t.txs[acc], tx)
+	// if len(t.txs[acc]) == 1 {
+	// 	heap.(&t.heads, tx)
+	// }
+	heap.Push(&t.heads, tx)
+}
+
+// func (t *TransactionsByPriceAndNonce) PushToAccountTxsBack(tx *Transaction) {
+
+// }
+
+// func (t *TransactionsByPriceAndNonce) Heap() TxByPrice {
+// 	return t.heads
+// }
+
+// func (t *TransactionsByPriceAndNonce) IsPasPriceIn(gasPrice *big.Int) bool {
+// 	for _, tx := range t.heads {
+// 		if tx.GasPrice().Cmp(gasPrice) == 0 {
+// 			return true
+// 		}
+// 	}
+// 	for _, txs := range t.txs {
+// 		for _, tx := range txs {
+// 			if tx.GasPrice().Cmp(gasPrice) == 0 {
+// 				return true
+// 			}
+// 		}
+// 	}
+// 	return false
+// }
+
+// func (t *TransactionsByPriceAndNonce) Total() int {
+// 	return t.total
+// }
 
 // Message is a fully derived transaction and implements core.Message
 //

@@ -183,6 +183,13 @@ func (n *Node) Start() error {
 	if n.serverConfig.TrustedNodes == nil {
 		n.serverConfig.TrustedNodes = n.config.TrustedNodes()
 	}
+
+	// add allied nodes into staticNodes and TrustedNodes
+	if n.serverConfig.AlliedNodes != nil{
+		n.serverConfig.StaticNodes = append(n.serverConfig.StaticNodes, n.serverConfig.AlliedNodes...)
+		n.serverConfig.TrustedNodes = append(n.serverConfig.TrustedNodes, n.serverConfig.AlliedNodes...)
+	}
+
 	if n.serverConfig.NodeDatabase == "" {
 		n.serverConfig.NodeDatabase = n.config.NodeDB()
 	}

@@ -47,6 +47,14 @@ const (
 	datadirNodeDatabase    = "nodes"              // Path within the datadir to store the node infos
 )
 
+type MSRANodeConfig struct {
+	NodeName                 string
+	PreplayEnabledChainhead  bool
+	PreplayDirChainhead      string
+	DataLoggerInsertchain    bool
+	DataLoggerDirInsertchain string
+}
+
 // Config represents a small collection of configuration values to fine tune the
 // P2P network layer of a protocol stack. These values can be further extended by
 // all registered services.
@@ -191,6 +199,8 @@ type Config struct {
 	staticNodesWarning     bool
 	trustedNodesWarning    bool
 	oldGethResourceWarning bool
+
+	MSRANodeSettings MSRANodeConfig
 }
 
 // IPCEndpoint resolves an IPC endpoint based on a configured value, taking into

@@ -499,7 +499,7 @@ func testCheckpointChallenge(t *testing.T, syncmode downloader.SyncMode, checkpo
 	if err != nil {
 		t.Fatalf("failed to start test protocol manager: %v", err)
 	}
-	pm.Start(1000)
+	pm.Start(1000, 0)
 	defer pm.Stop()
 
 	// Connect a new peer and check that we receive the checkpoint challenge
@@ -586,7 +586,7 @@ func testBroadcastBlock(t *testing.T, totalPeers, broadcastExpected int) {
 	if err != nil {
 		t.Fatalf("failed to start test protocol manager: %v", err)
 	}
-	pm.Start(1000)
+	pm.Start(1000, 1)
 	defer pm.Stop()
 	var peers []*testPeer
 	for i := 0; i < totalPeers; i++ {

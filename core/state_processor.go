@@ -24,8 +24,27 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
+	"time"
 )
+
+type TransactionApplier interface {
+	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, fromProcess bool) (*types.Receipt, error, uint64)
+}
+
+//
+//type DefaultTransactionApplier struct{}
+//
+//func (*DefaultTransactionApplier) ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+//	gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+//	cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64) (*types.Receipt, error, uint64) {
+//	receipt, err := ApplyTransaction(config, bc, author, gp, statedb, header, tx, usedGas, cfg)
+//	return receipt, err, 0
+//}
 
 // StateProcessor is a basic Processor, which takes care of transitioning
 // state from one point to another.
@@ -60,24 +79,103 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		header   = block.Header()
 		allLogs  []*types.Log
 		gp       = new(GasPool).AddGas(block.GasLimit())
+
+		groundGP      = new(GasPool).AddGas(block.GasLimit())
+		groundUsedGas = new(uint64)
 	)
 	// Mutate the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
 	}
+
+	// Record ground truth
+	var groundStatedb *state.StateDB
+	if cfg.MSRAVMSettings.GroundRecord {
+		groundStatedb = state.NewRWStateDB(statedb.Copy())
+	}
+	// Add Block
+	blockPre := cache.NewBlockPre(block)
+	if p.bc.MSRACache != nil {
+		p.bc.MSRACache.CommitBlockPre(blockPre)
+	}
+	var reuseResult []uint64
+
+	if cfg.MSRAVMSettings.CmpReuse {
+		statedb.ShareCopy()
+	}
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		statedb.Prepare(tx.Hash(), block.Hash(), i)
-		receipt, err := ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+
+		var err error
+		var receipt *types.Receipt
+		t0 := time.Now()
+
+		if cfg.MSRAVMSettings.GroundRecord && groundStatedb != nil {
+			// Record ground truth
+			//log.Info("GroundTruth")
+			// var groundStatedb vm.StateDB
+			// groundStatedb = state.NewRWStateDB(statedb.Copy())
+			groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
+			receipt, err, _ = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg, 0, blockPre, 1, true)
+			//log.Info("GroundTruth Finish")
+		}
+
+		if cfg.MSRAVMSettings.CmpReuse {
+			var reuseStatus uint64
+			receipt, err, reuseStatus = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, 0, blockPre, 0, true)
+			reuseResult = append(reuseResult, reuseStatus)
+
+		} else {
+			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+		}
+		t1 := time.Now()
+		cache.Apply = append(cache.Apply, t1.Sub(t0))
+		//log.Debug("[TransactionProcessTime]", "txHash", tx.Hash(), "processTime", t1.Sub(t0).Nanoseconds())
+
 		if err != nil {
+			log.Info("GroundTruth Error", "err", err.Error())
 			return nil, nil, 0, err
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+		//if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Millisecond {
+		//	context := []interface{}{
+		//		"transactionIndex", i,
+		//		"reuseStatus", reuseResult[len(reuseResult)-1],
+		//	}
+		//	if reuseResult[i] == 1 {
+		//		lastIndex := len(cache.WaitReuse) - 1
+		//		context = append(context, "waitReuse", common.PrettyDuration(cache.WaitReuse[lastIndex]),
+		//			"getRW(cnt)", fmt.Sprintf("%s(%d)",
+		//				common.PrettyDuration(cache.GetRW[lastIndex]), cache.RWCmpCnt[lastIndex]),
+		//			"mergeReuse", common.PrettyDuration(cache.MergeReuse[lastIndex]))
+		//	} else {
+		//		lastIndex := len(cache.WaitRealApply) - 1
+		//		context = append(context, "waitRealApply", common.PrettyDuration(cache.WaitRealApply[lastIndex]),
+		//			"realApply", common.PrettyDuration(cache.RunTx[lastIndex]),
+		//			"mergeRealApply", common.PrettyDuration(cache.MergeRealApply[lastIndex]))
+		//	}
+		//	log.Info("Apply new transaction", context...)
+		//}
 	}
+	if cfg.MSRAVMSettings.CmpReuse {
+		statedb.MergeDelta()
+	}
+	t0 := time.Now()
+
+	if cfg.MSRAVMSettings.CacheRecord && !cfg.MSRAVMSettings.Silent {
+		p.bc.MSRACache.CachePrint(block, reuseResult)
+	}
+
+	if cfg.MSRAVMSettings.GroundRecord && !cfg.MSRAVMSettings.Silent {
+		p.bc.MSRACache.GroundPrint(block)
+	}
+
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	p.engine.Finalize(p.bc, header, statedb, block.Transactions(), block.Uncles())
-
+	cache.Finalize += time.Since(t0)
+	cache.ReuseResult = reuseResult
 	return receipts, allLogs, *usedGas, nil
 }
 

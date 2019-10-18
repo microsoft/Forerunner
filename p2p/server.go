@@ -23,11 +23,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/naoina/toml"
 	"net"
+	"net/http"
+	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -67,6 +71,23 @@ const (
 )
 
 var errServerStopped = errors.New("server stopped")
+
+// These settings ensure that TOML keys use the same names as Go struct fields.
+var tomlSettings = toml.Config{
+	NormFieldName: func(rt reflect.Type, key string) string {
+		return key
+	},
+	FieldToKey: func(rt reflect.Type, field string) string {
+		return field
+	},
+	MissingField: func(rt reflect.Type, field string) error {
+		link := ""
+		if unicode.IsUpper(rune(rt.Name()[0])) && rt.PkgPath() != "main" {
+			link = fmt.Sprintf(", see https://godoc.org/%s#%s for available fields", rt.PkgPath(), rt.Name())
+		}
+		return fmt.Errorf("field '%s' is not defined in %s%s", field, rt.String(), link)
+	},
+}
 
 // Config holds Server options.
 type Config struct {
@@ -116,6 +137,11 @@ type Config struct {
 	// allowed to connect, even above the peer limit.
 	TrustedNodes []*enode.Node
 
+	// Allied nodes are both static nodes and trusted nodes.
+	AlliedNodes []*enode.Node
+	// Web allied node config url path
+	ANConfigUrl string
+
 	// Connectivity can be restricted to certain IP networks.
 	// If this option is set to a non-nil value, only hosts which match one of the
 	// IP networks contained in the list are considered.
@@ -156,6 +182,14 @@ type Config struct {
 
 	// Logger is a custom logger to use with the p2p.Server.
 	Logger log.Logger `toml:",omitempty"`
+
+	Ratio int `toml:",omitempty"`
+
+	// Enable Preplay
+	EnablePreplay bool `toml:",omitempty"`
+
+	// Enable Feature
+	EnableFeature bool `toml:",omitempty"`
 }
 
 // Server manages all peer connections.
@@ -187,11 +221,15 @@ type Server struct {
 	staticNodeResolver nodeResolver
 
 	// Channels into the run loop.
-	quit                    chan struct{}
-	addstatic               chan *enode.Node
-	removestatic            chan *enode.Node
-	addtrusted              chan *enode.Node
-	removetrusted           chan *enode.Node
+	quit          chan struct{}
+	addstatic     chan *enode.Node
+	removestatic  chan *enode.Node
+	addtrusted    chan *enode.Node
+	removetrusted chan *enode.Node
+
+	addallied    chan *enode.Node
+	removeallied chan *enode.Node
+
 	peerOp                  chan peerOpFunc
 	peerOpDone              chan struct{}
 	delpeer                 chan peerDrop
@@ -217,6 +255,8 @@ const (
 	staticDialedConn
 	inboundConn
 	trustedConn
+
+	alliedConn
 )
 
 // conn wraps a network connection with information gathered
@@ -267,6 +307,9 @@ func (f connFlag) String() string {
 	}
 	if f&inboundConn != 0 {
 		s += "-inbound"
+	}
+	if f&alliedConn != 0 {
+		s += "-allied"
 	}
 	if s != "" {
 		s = s[1:]
@@ -465,6 +508,8 @@ func (srv *Server) Start() (err error) {
 	srv.peerOp = make(chan peerOpFunc)
 	srv.peerOpDone = make(chan struct{})
 
+	srv.addallied = make(chan *enode.Node)
+
 	if err := srv.setupLocalNode(); err != nil {
 		return err
 	}
@@ -481,7 +526,60 @@ func (srv *Server) Start() (err error) {
 	dialer := newDialState(srv.localnode.ID(), dynPeers, &srv.Config)
 	srv.loopWG.Add(1)
 	go srv.run(dialer)
+
+	// add a goroutine to monitor the webconfig change, by zx
+	if (srv.ANConfigUrl != "") {
+		srv.loopWG.Add(1)
+		go srv.monitorWebConfig()
+	}
+
 	return nil
+}
+
+type ConfigWapper struct {
+	Node ConfigWapper2
+}
+type ConfigWapper2 struct {
+	P2P Config
+}
+
+func (srv *Server) monitorWebConfig() {
+	srv.log.Info("Start to monitor the node config from web")
+	defer srv.loopWG.Done()
+
+	monitorTicker := time.NewTicker(10 * time.Minute)
+
+monitoring:
+	for {
+		select {
+		case <-monitorTicker.C:
+			srv.log.Debug("start monitor the web config")
+			newCfg := ConfigWapper{}
+			loadWebConfig(srv.ANConfigUrl, &newCfg)
+			for _, newAlliedNode := range newCfg.Node.P2P.AlliedNodes {
+				srv.log.Info("allied nodes", "node", newAlliedNode.String())
+				srv.addallied <- newAlliedNode
+			}
+		case <-srv.quit:
+			monitorTicker.Stop()
+			break monitoring
+		}
+	}
+	srv.log.Info("finished minitor ")
+}
+
+func loadWebConfig(url string, cfg *ConfigWapper) error {
+	client := &http.Client{}
+	response, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	err = tomlSettings.NewDecoder(response.Body).Decode(cfg)
+	// Add file name to errors that have a line number.
+	if _, ok := err.(*toml.LineError); ok {
+		err = errors.New(url + ", " + err.Error())
+	}
+	return err
 }
 
 func (srv *Server) setupLocalNode() error {
@@ -649,6 +747,7 @@ func (srv *Server) run(dialstate dialer) {
 		peers        = make(map[enode.ID]*Peer)
 		inboundCount = 0
 		trusted      = make(map[enode.ID]bool, len(srv.TrustedNodes))
+		allied       = make(map[enode.ID]bool, len(srv.AlliedNodes))
 		taskdone     = make(chan task, maxActiveDialTasks)
 		runningTasks []task
 		queuedTasks  []task // tasks that can't run yet
@@ -657,6 +756,10 @@ func (srv *Server) run(dialstate dialer) {
 	// Trusted peers are loaded on startup or added via AddTrustedPeer RPC.
 	for _, n := range srv.TrustedNodes {
 		trusted[n.ID()] = true
+	}
+
+	for _, n := range srv.AlliedNodes {
+		allied[n.ID()] = true
 	}
 
 	// removes t from runningTasks
@@ -697,6 +800,21 @@ running:
 		case <-srv.quit:
 			// The server was stopped. Run the cleanup logic.
 			break running
+
+		case n := <-srv.addallied: // add new type of nodes, by zx
+			srv.log.Info("Adding allied node", "node", n)
+			// Allied node is both static node and trusted node
+			dialstate.addStatic(n)
+			trusted[n.ID()] = true
+			// Mark any already-connected peer as trusted
+			if p, ok := peers[n.ID()]; ok {
+				p.rw.set(trustedConn, true)
+			}
+
+			allied[n.ID()] = true
+			if p, ok := peers[n.ID()]; ok {
+				p.rw.set(alliedConn, true)
+			}
 
 		case n := <-srv.addstatic:
 			// This channel is used by AddPeer to add to the
@@ -755,6 +873,10 @@ running:
 			if trusted[c.node.ID()] {
 				// Ensure that the trusted flag is set before checking against MaxPeers.
 				c.flags |= trustedConn
+			}
+			if allied[c.node.ID()] {
+				//c.flags |= trustedConn
+				c.flags |= alliedConn
 			}
 			// TODO: track in-progress inbound node IDs (pre-Peer) to avoid dialing them.
 			c.cont <- srv.postHandshakeChecks(peers, inboundCount, c)
@@ -823,7 +945,7 @@ running:
 
 func (srv *Server) postHandshakeChecks(peers map[enode.ID]*Peer, inboundCount int, c *conn) error {
 	switch {
-	case !c.is(trustedConn|staticDialedConn) && len(peers) >= srv.MaxPeers:
+	case !c.is(trustedConn | staticDialedConn) && len(peers) >= srv.MaxPeers:
 		return DiscTooManyPeers
 	case !c.is(trustedConn) && c.is(inboundConn) && inboundCount >= srv.maxInboundConns():
 		return DiscTooManyPeers

@@ -21,6 +21,9 @@ import (
 	"context"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/optipreplayer"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -84,6 +87,10 @@ type Backend interface {
 
 	ChainConfig() *params.ChainConfig
 	CurrentBlock() *types.Block
+
+	// Preplay
+	GetPreplayer(pID uint64) *optipreplayer.Preplayer
+	GetGlobalCache() *cache.GlobalCache
 }
 
 func GetAPIs(apiBackend Backend) []rpc.API {
@@ -128,6 +135,11 @@ func GetAPIs(apiBackend Backend) []rpc.API {
 			Version:   "1.0",
 			Service:   NewPrivateAccountAPI(apiBackend, nonceLock),
 			Public:    false,
+		}, {
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   NewPublicPreplayAPI(apiBackend),
+			Public:    true,
 		},
 	}
 }

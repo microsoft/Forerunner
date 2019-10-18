@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"reflect"
 	"unicode"
@@ -49,6 +50,11 @@ var (
 	configFileFlag = cli.StringFlag{
 		Name:  "config",
 		Usage: "TOML configuration file",
+	}
+
+	alliedNodeFileFlag = cli.StringFlag{
+		Name: "anconfigurl",
+		Usage: "TOML file from web to config allied nodes",
 	}
 )
 
@@ -95,6 +101,20 @@ func loadConfig(file string, cfg *gethConfig) error {
 	return err
 }
 
+func loadWebConfig(url string, cfg *gethConfig) error{
+	client := &http.Client{}
+	response, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	err = tomlSettings.NewDecoder(response.Body).Decode(cfg)
+	// Add file name to errors that have a line number.
+	if _, ok := err.(*toml.LineError); ok {
+		err = errors.New(url + ", " + err.Error())
+	}
+	return err
+}
+
 func defaultNodeConfig() node.Config {
 	cfg := node.DefaultConfig
 	cfg.Name = clientIdentifier
@@ -119,6 +139,15 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 			utils.Fatalf("%v", err)
 		}
 	}
+	// load allied nodes config from the set web url, by zx
+	if anurl := ctx.GlobalString(alliedNodeFileFlag.Name); anurl != "" {
+		if err := loadWebConfig(anurl, &cfg); err != nil {
+			utils.Fatalf("%v", err)
+		}else {
+			cfg.Node.P2P.ANConfigUrl = anurl
+		}
+	}
+	// Done
 
 	// Apply flags.
 	utils.SetNodeConfig(ctx, &cfg.Node)

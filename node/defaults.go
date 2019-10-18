@@ -52,6 +52,14 @@ var DefaultConfig = Config{
 		MaxPeers:   50,
 		NAT:        nat.Any(),
 	},
+
+	MSRANodeSettings: MSRANodeConfig{
+		NodeName:                 "",
+		PreplayEnabledChainhead:  false,
+		PreplayDirChainhead:      filepath.Join(DefaultDataDir(), "preplaydata", "chainhead-driven"),
+		DataLoggerInsertchain:    false,
+		DataLoggerDirInsertchain: filepath.Join(DefaultDataDir(), "logdata", "insertchain"),
+	},
 }
 
 // DefaultDataDir is the default data directory to use for the databases and other

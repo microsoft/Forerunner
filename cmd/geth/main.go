@@ -55,6 +55,9 @@ var (
 	gitDate   = ""
 	// The app that holds all commands and flags.
 	app = utils.NewApp(gitCommit, gitDate, "the go-ethereum command line interface")
+
+	// !!!MSRA FLAGS MOVED TO BOTTOM!!!
+
 	// flags that configure the node
 	nodeFlags = []cli.Flag{
 		utils.IdentityFlag,
@@ -188,6 +191,30 @@ var (
 		utils.MetricsInfluxDBPasswordFlag,
 		utils.MetricsInfluxDBTagsFlag,
 	}
+
+	msraFlags = []cli.Flag{
+		utils.NodeNameFlag,
+		utils.SilentFlag,
+		utils.LogRootFlag,
+		utils.PreplayEnabledChainheadFlag,
+		utils.PreplayDirChainheadFlag,
+		utils.CmpResueEnabledFlag,
+		utils.CmpResueCheckFlag,
+		utils.CmpResueLogFlag,
+		utils.CmpResueLogDirFlag,
+		utils.CacheRecordEnabledFlag,
+		utils.GroundRecordEnabledFlag,
+		utils.PreplayRecordEnabledFlag,
+		utils.DataLoggerFlag,
+		utils.DataLoggerDirTxpoolSnapFlag,
+		utils.DataLoggerDirTxpoolIOFlag,
+		utils.DataLoggerDirInsertchainFlag,
+		utils.RatioFlag,
+		utils.PreplayFlag,
+		utils.FeatureFlag,
+		utils.ReuseVerifierFlag,
+		alliedNodeFileFlag,
+	}
 )
 
 func init() {
@@ -231,6 +258,7 @@ func init() {
 	app.Flags = append(app.Flags, debug.Flags...)
 	app.Flags = append(app.Flags, whisperFlags...)
 	app.Flags = append(app.Flags, metricsFlags...)
+	app.Flags = append(app.Flags, msraFlags...)
 
 	app.Before = func(ctx *cli.Context) error {
 		return debug.Setup(ctx, "")

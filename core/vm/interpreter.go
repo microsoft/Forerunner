@@ -39,6 +39,22 @@ type Config struct {
 	EVMInterpreter   string // External EVM interpreter options
 
 	ExtraEips []int // Additional EIPS that are to be enabled
+
+	MSRAVMSettings MSRAVMConfig
+}
+
+type MSRAVMConfig struct {
+	Silent              bool
+	LogRoot             string
+	CmpReuse            bool
+	CmpReuseChecking    bool
+	CmpReuseLogging     bool
+	CmpReuseLoggingDir  string
+	EnablePreplay       bool
+	CacheRecord         bool
+	GroundRecord        bool
+	PreplayRecord       bool
+	EnableReuseVerifier bool
 }
 
 // Interpreter is used to run Ethereum based contracts and will utilise the
