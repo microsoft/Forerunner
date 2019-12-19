@@ -735,7 +735,6 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	cfg := w.chain.GetVMConfig()
 	if !cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.GroundRecord {
 		groundStatedb := state.NewRWStateDB(w.current.state.Copy())
-		groundStatedb.ShareCopy()
 
 		// Record ground truth
 		// log.Info("GroundTruth Miner")
@@ -745,8 +744,7 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 		groundGasUsed := w.current.header.GasUsed
 		groundGasPool := *w.current.gasPool
 
-		receipt, err, _ = w.chain.Cmpreuse.ApplyTransaction(w.chainConfig, w.chain, nil, &groundGasPool, groundStatedb, w.current.header, tx, &groundGasUsed, *cfg, 0, nil, 2, false)
-		groundStatedb.MergeDelta()
+		receipt, err = w.chain.Cmpreuse.PreplayTransaction(w.chainConfig, w.chain, nil, &groundGasPool, groundStatedb, w.current.header, tx, &groundGasUsed, *cfg, 0, nil, 2)
 		//log.Info("GroundTruth Miner Finish")
 	}
 

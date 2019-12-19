@@ -92,12 +92,12 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 type environment struct {
 	signer types.Signer
 
-	state     *state.StateDB    // apply state changes here
-	ancestors mapset.Set    // ancestor isFetchEnd (used for checking uncle parent validity)
-	family    mapset.Set    // family isFetchEnd (used for checking uncle invalidity)
-	uncles    mapset.Set    // uncle isFetchEnd
-	tcount    int           // Tx count in cycle
-	gasPool   *core.GasPool // available gas used to pack transactions
+	state     *state.StateDB // apply state changes here
+	ancestors mapset.Set     // ancestor isFetchEnd (used for checking uncle parent validity)
+	family    mapset.Set     // family isFetchEnd (used for checking uncle invalidity)
+	uncles    mapset.Set     // uncle isFetchEnd
+	tcount    int            // Tx count in cycle
+	gasPool   *core.GasPool  // available gas used to pack transactions
 
 	Header   *types.Header        `json:"header"`
 	Txs      []*types.Transaction `json:"txs"`
@@ -164,8 +164,8 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 	var err error
 	var receipt *types.Receipt
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
-		// statedb may be switched, snapshot-revert should be finished in ApplyTransaction-RealApply branch
-		receipt, err, _ = e.chain.Cmpreuse.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, *e.chain.GetVMConfig(), e.RoundID, nil, 0, false)
+		// snapshot-revert will be done in PreplayTransaction if it's necessary
+		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, *e.chain.GetVMConfig(), e.RoundID, nil, 0)
 	} else {
 		snap := e.current.state.Snapshot()
 		receipt, err = core.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vm.Config{})
@@ -520,9 +520,6 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 	log.Debug("Start preplay preplay", "currentState", e.trigger.Name)
 
 	// 2. Preplay
-	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
-		e.current.state.ShareCopy()
-	}
 	for {
 		e.chain.MSRACache.PauseForProcess()
 
@@ -743,9 +740,6 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 				break
 			}
 		}
-	}
-	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
-		e.current.state.MergeDelta()
 	}
 	log.Debug("End preplay preplay", "currentState", e.trigger.Name)
 

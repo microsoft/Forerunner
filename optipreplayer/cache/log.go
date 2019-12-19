@@ -18,8 +18,8 @@ type LogBlockInfo struct {
 	BlockFinalize int64         `json:"finalize"`
 	WaitReuse     int64         `json:"reuse"`
 	WaitRealApply int64         `json:"realApply"`
-	UpdatePair    int64         `json:"updatePair"`
 	TxnFinalize   int64         `json:"txFinalize"`
+	UpdatePair    int64         `json:"updatePair"`
 	GetRW         int64         `json:"getRW"`
 	SetDB         int64         `json:"setDB"`
 	RunTx         int64         `json:"runTx"`
@@ -28,7 +28,7 @@ type LogBlockInfo struct {
 	NoPreplay     int           `json:"N"`
 	Miss          int           `json:"M"`
 	Unknown       int           `json:"U"`
-	Reuse         int           `json:"reuseCount"`
+	ReuseGas      int           `json:"reuseGas"`
 	ProcTime      int64         `json:"procTime"`
 	RunMode       string        `json:"runMode"`
 	TxnCount      int           `json:"txnCount"`
@@ -106,9 +106,9 @@ var (
 	SetDB         []time.Duration
 	RunTx         []time.Duration
 
-	ReuseResult []uint64
-	ReuseCount  int
-	RWCmpCnt    []int64
+	ReuseResult   []uint64
+	ReuseGasCount uint64
+	RWCmpCnt      []int64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -136,7 +136,7 @@ func ResetLogVar() {
 	SetDB = make([]time.Duration, 50)
 	RunTx = make([]time.Duration, 50)
 
-	ReuseCount = 0
+	ReuseGasCount = 0
 	RWCmpCnt = make([]int64, 50)
 }
 
@@ -178,8 +178,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		sumApply         = SumDuration(Apply)
 		sumWaitReuse     = SumDuration(WaitReuse)
 		sumWaitRealApply = SumDuration(WaitRealApply)
-		sumUpdatePair    = SumDuration(UpdatePair)
 		sumTxFinalize    = SumDuration(TxFinalize)
+		sumUpdatePair    = SumDuration(UpdatePair)
 		sumGetRW         = SumDuration(GetRW)
 		sumSetDB         = SumDuration(SetDB)
 		sumRunTx         = SumDuration(RunTx)
@@ -190,14 +190,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 	infoResult := &LogBlockInfo{
 		TxnApply:      sumApply.Microseconds(),
 		BlockFinalize: Finalize.Microseconds(),
-		UpdatePair:    sumUpdatePair.Microseconds(),
 		WaitReuse:     sumWaitReuse.Microseconds(),
 		WaitRealApply: sumWaitRealApply.Microseconds(),
 		TxnFinalize:   sumTxFinalize.Microseconds(),
+		UpdatePair:    sumUpdatePair.Microseconds(),
 		GetRW:         sumGetRW.Microseconds(),
 		SetDB:         sumSetDB.Microseconds(),
 		RunTx:         sumRunTx.Microseconds(),
-		Reuse:         ReuseCount,
+		ReuseGas:      int(ReuseGasCount),
 		ProcTime:      procTime.Nanoseconds(),
 		TxnCount:      len(block.Transactions()),
 		Header:        block.Header(),
@@ -236,7 +236,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		infoResult.RunMode = "reuse"
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		preplayCnt := infoResult.Hit + infoResult.Miss + infoResult.Unknown
-		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, reuseRate float64
+		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -244,7 +244,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			MissRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			noInResultRate = float64(noInResultCnt) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
-			reuseRate = float64(infoResult.Reuse) / float64(infoResult.TxnCount)
+			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
 			"Total", fmt.Sprintf("%03d", infoResult.TxnCount),
@@ -254,25 +254,24 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			"Miss", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)", infoResult.Miss, MissRate,
 				noInResultCnt, noInResultRate),
 			"Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
-			"Reuse", fmt.Sprintf("%03d(%.2f)", infoResult.Reuse, reuseRate),
+			"ReuseGas", fmt.Sprintf("%03d(%.2f)", infoResult.ReuseGas, reuseGasRate),
 		}
 		log.Info("BlockReuse", context...)
 
-		context = []interface{}{
-			"apply", common.PrettyDuration(sumApply),
-			"finalize", common.PrettyDuration(Finalize),
-			"waitReuse/RealApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
-			"updatePair", fmt.Sprintf("%.2f", float64(sumUpdatePair)/float64(sumApply)),
-			"txFinalize", fmt.Sprintf("%.2f", float64(sumTxFinalize)/float64(sumApply)),
-		}
-		if sumWaitReuse != 0 {
+		context = []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
+		if infoResult.TxnCount != 0 {
 			context = append(context,
-				"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),
-				"SetDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
-		}
-		if sumWaitRealApply != 0 {
-			context = append(context,
-				"realApply", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
+				"reuse/realApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
+				"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdatePair)/float64(sumApply)))
+			if sumWaitReuse != 0 {
+				context = append(context,
+					"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),
+					"setDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
+			}
+			if sumWaitRealApply != 0 {
+				context = append(context,
+					"runTx", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
+			}
 		}
 		log.Info("Time consuming for each section", context...)
 	}

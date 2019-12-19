@@ -27,13 +27,19 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ivpusic/grpool"
 	"time"
 )
 
 type TransactionApplier interface {
-	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, fromProcess bool) (*types.Receipt, error, uint64)
+		cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller) (*types.Receipt,
+		error, uint64)
+
+	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64) (*types.Receipt, error)
 }
 
 //
@@ -103,6 +109,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.ShareCopy()
 	}
+	controller := NewController()
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		statedb.Prepare(tx.Hash(), block.Hash(), i)
@@ -117,13 +124,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			// var groundStatedb vm.StateDB
 			// groundStatedb = state.NewRWStateDB(statedb.Copy())
 			groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
-			receipt, err, _ = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg, 0, blockPre, 1, true)
+			receipt, err = p.bc.Cmpreuse.PreplayTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg, 0, blockPre, 1)
 			//log.Info("GroundTruth Finish")
 		}
 
 		if cfg.MSRAVMSettings.CmpReuse {
 			var reuseStatus uint64
-			receipt, err, reuseStatus = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, 0, blockPre, 0, true)
+			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, blockPre, p.bc.MSRACache.RoutinePool, controller)
 			reuseResult = append(reuseResult, reuseStatus)
 
 		} else {
@@ -149,13 +156,14 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		//		context = append(context, "waitReuse", common.PrettyDuration(cache.WaitReuse[lastIndex]),
 		//			"getRW(cnt)", fmt.Sprintf("%s(%d)",
 		//				common.PrettyDuration(cache.GetRW[lastIndex]), cache.RWCmpCnt[lastIndex]),
-		//			"mergeReuse", common.PrettyDuration(cache.MergeReuse[lastIndex]))
+		//			"setDB", common.PrettyDuration(cache.SetDB[lastIndex]))
 		//	} else {
 		//		lastIndex := len(cache.WaitRealApply) - 1
 		//		context = append(context, "waitRealApply", common.PrettyDuration(cache.WaitRealApply[lastIndex]),
-		//			"realApply", common.PrettyDuration(cache.RunTx[lastIndex]),
-		//			"mergeRealApply", common.PrettyDuration(cache.MergeRealApply[lastIndex]))
+		//			"realApply", common.PrettyDuration(cache.RunTx[lastIndex]))
 		//	}
+		//	context = append(context, "updatePair", common.PrettyDuration(cache.UpdatePair[len(cache.UpdatePair)-1]),
+		//		"txFinalize", common.PrettyDuration(cache.TxFinalize[len(cache.TxFinalize)-1]))
 		//	log.Info("Apply new transaction", context...)
 		//}
 	}

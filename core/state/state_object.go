@@ -57,12 +57,14 @@ func (s Storage) Copy() Storage {
 }
 
 type deltaObject struct {
-	originStorage Storage
+	originStorage  Storage
+	pendingStorage Storage
 }
 
 func newDeltaObject() *deltaObject {
 	return &deltaObject{
-		originStorage: make(Storage),
+		originStorage:  make(Storage),
+		pendingStorage: make(Storage),
 	}
 }
 
@@ -308,8 +310,13 @@ func (s *stateObject) setState(key, value common.Hash) {
 // finalise moves all dirty storage slots into the pending area to be hashed or
 // committed later. It is invoked at the end of every transaction.
 func (s *stateObject) finalise() {
+	isShared := s.isShared()
 	for key, value := range s.dirtyStorage {
-		s.pendingStorage[key] = value
+		if isShared {
+			s.delta.pendingStorage[key] = value
+		} else {
+			s.pendingStorage[key] = value
+		}
 	}
 	if len(s.dirtyStorage) > 0 {
 		s.dirtyStorage = make(Storage)
@@ -486,20 +493,26 @@ func (s *stateObject) updateDelta() {
 	}
 	obj.data.CodeHash = s.data.CodeHash
 	obj.code = s.code
-	s.updateStorage(s.delta.originStorage)
+	s.updateOriginStorage(s.delta.originStorage)
 	s.delta.originStorage = make(Storage)
 	obj.delta.originStorage = make(Storage)
 	obj.originStorage = s.originStorage
+	for addr, value := range s.delta.pendingStorage {
+		s.pendingStorage[addr] = value
+	}
+	s.delta.pendingStorage = make(Storage)
+	obj.delta.pendingStorage = make(Storage)
 	obj.dirtyStorage = make(Storage)
 	obj.dirtyCode = s.dirtyCode
 	obj.suicided = s.suicided
+	obj.deleted = s.deleted
 	obj.dirtyNonceCount = 0
 	obj.dirtyBalanceCount = 0
 	obj.dirtyCodeCount = 0
 	obj.dirtyStorageCount = make(map[common.Hash]uint)
 }
 
-func (s *stateObject) updateStorage(storage Storage) {
+func (s *stateObject) updateOriginStorage(storage Storage) {
 	if len(storage) == 0 {
 		return
 	}
@@ -583,13 +596,6 @@ func (s *stateObject) Balance() *big.Int {
 
 func (s *stateObject) Nonce() uint64 {
 	return s.data.Nonce
-}
-
-func (s *stateObject) SetDeleted(deleted bool) {
-	s.deleted = deleted
-	if s.isShared() {
-		s.pair.deleted = deleted
-	}
 }
 
 func (s *stateObject) hasDirtyWrite() bool {

@@ -51,6 +51,7 @@ type Frame struct {
 	GlobalCache *cache.GlobalCache
 	preplayers  Preplayers
 	collector   *Collector
+	listener    *Listener
 
 	preplayFlag bool
 	featureFlag bool
@@ -77,6 +78,7 @@ func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engin
 		exitCh:      make(chan struct{}),
 		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil),
 		collector:   NewCollector(eth, config),
+		listener:    NewListener(eth),
 		canStart:    1,
 	}
 	// frame.SetGlobalCache(cache.NewGlobalCache(defaultBlockCacheSize, defaultTxCacheSize, defaultPreplayCacheSize))
@@ -185,6 +187,7 @@ func (f *Frame) SetGlobalCache(globalCache *cache.GlobalCache) {
 
 	f.preplayers.setGlobalCache(globalCache)
 	f.collector.setGlobalCache(globalCache)
+	f.listener.setGlobalCache(globalCache)
 }
 
 func (f *Frame) GetPreplayer(pID uint64) *Preplayer {

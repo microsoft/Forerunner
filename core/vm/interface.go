@@ -68,19 +68,7 @@ type StateDB interface {
 
 	// MSRA needed interface
 	// The following is not belong to the origin interface.
-	// FIXME
-	SetBalance(common.Address, *big.Int)
-	Copy() *state.StateDB
-	Prepare(common.Hash, common.Hash, int)
-	Finalise(bool)
-	IntermediateRoot(bool) common.Hash
-	GetLogs(common.Hash) []*types.Log
-	BlockHash() common.Hash
-	TxIndex() int
-
 	RWRecorder() state.RWRecorder
-	IsRWMode() bool
-	SetRWMode(enabled bool)
 	IsEnableFeeToCoinbase() bool
 }
 
@@ -95,9 +83,4 @@ type CallContext interface {
 	DelegateCall(env *EVM, me ContractRef, addr common.Address, data []byte, gas *big.Int) ([]byte, error)
 	// Create a new contract
 	Create(env *EVM, me ContractRef, data []byte, gas, value *big.Int) ([]byte, common.Address, error)
-}
-
-// for compatibility only
-func IsRWStateDB(db StateDB) bool {
-	return db.IsRWMode()
 }

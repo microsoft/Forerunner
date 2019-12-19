@@ -17,6 +17,8 @@
 package cache
 
 import (
+	"encoding/json"
+	"github.com/ivpusic/grpool"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,6 +74,8 @@ type GlobalCache struct {
 	// BucketMu    sync.RWMutex // No need for global MU?
 	// BucketCache *lru.Cache // Feature Cache
 	pause int32
+
+	RoutinePool *grpool.Pool
 }
 
 // NewGlobalCache create new global cache structure
@@ -95,7 +99,9 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.CreateTimeStamp = time.Now()
 	// g.BucketCache, _ = lru.New(bSize)
 
-	logDir = filepath.Join(logRoot, g.CreateTimeStamp.Format("2006_01_02_15_04_05") + "_" + strconv.FormatInt(g.CreateTimeStamp.Unix(), 10))
+	g.RoutinePool = grpool.NewPool(1, 10)
+
+	logDir = filepath.Join(logRoot, g.CreateTimeStamp.Format("2006_01_02_15_04_05")+"_"+strconv.FormatInt(g.CreateTimeStamp.Unix(), 10))
 	_, err := os.Stat(logDir)
 	if err != nil {
 		os.MkdirAll(logDir, os.ModePerm)
@@ -135,6 +141,9 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	}
 
 	r.CreateTimeStamp = time.Now()
+
+	r.RoutinePool.Release()
+	r.RoutinePool = grpool.NewPool(100, 100)
 
 	return true
 }
@@ -292,6 +301,23 @@ type SimpleResult struct {
 func (r *GlobalCache) CommitGround(groundTruth *SimpleResult) {
 
 	r.GroundCache.Add(groundTruth.TxHash, groundTruth)
+}
+
+func (r *GlobalCache) PrintGround(ground *SimpleResult) {
+	bytes, e := json.Marshal(&LogRWrecord{
+		TxHash:        ground.TxHash,
+		RoundID:       0,
+		Receipt:       ground.Receipt,
+		RWrecord:      ground.RWrecord,
+		Timestamp:     ground.RWTimeStamp,
+		TimestampNano: ground.RWTimeStampNano,
+		Filled:        -1,
+	})
+	if e == nil {
+		log.Info("😋 " + string(bytes))
+	} else {
+		log.Info("😋", "ground", e)
+	}
 }
 
 func (r *GlobalCache) GetGround(hash common.Hash) *SimpleResult {

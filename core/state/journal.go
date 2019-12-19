@@ -140,10 +140,11 @@ type (
 func (ch createObjectChange) revert(s *StateDB) {
 	if s.IsShared() {
 		delete(s.delta.stateObjects, *ch.account)
+		delete(s.delta.stateObjectsDirty, *ch.account)
 	} else {
 		delete(s.stateObjects, *ch.account)
+		delete(s.stateObjectsDirty, *ch.account)
 	}
-	delete(s.stateObjectsDirty, *ch.account)
 }
 
 func (ch createObjectChange) dirtied() *common.Address {

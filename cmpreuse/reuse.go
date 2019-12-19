@@ -6,7 +6,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
@@ -15,6 +14,13 @@ import (
 )
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
+
+const fail = 0
+const hit = 1
+const noCache = 2
+const cacheNoIn = 3
+const cacheNoMatch = 4
+const unknown = 5
 
 // codeHashEquivalent compare two common.Hash
 func codeHashEquivalent(l common.Hash, r common.Hash) bool {
@@ -83,7 +89,7 @@ func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header)
 }
 
 // CheckRState check rw.Rstate
-func CheckRState(rw *cache.RWRecord, statedb vm.StateDB, debugDiff bool) bool {
+func CheckRState(rw *cache.RWRecord, statedb *state.StateDB, debugDiff bool) bool {
 	// turn off rw mode temporarily
 	isRWMode := statedb.IsRWMode()
 	statedb.SetRWMode(false)
@@ -160,7 +166,7 @@ func CheckRState(rw *cache.RWRecord, statedb vm.StateDB, debugDiff bool) bool {
 }
 
 // ApplyRWRecord apply reuse result
-func ApplyRWRecord(statedb vm.StateDB, rw *cache.RWRecord, abort func() bool) {
+func ApplyRWRecord(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
 	for addr, mValues := range rw.WState {
 		for key, value := range mValues {
@@ -201,18 +207,19 @@ func ApplyRWRecord(statedb vm.StateDB, rw *cache.RWRecord, abort func() bool) {
 }
 
 // getValidRW get valid transaction from tx preplay cache
-func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb vm.StateDB, header *types.Header,
-	blockPre *cache.BlockPre, abort func() bool) (*cache.PreplayResult, bool, bool, int64) {
+func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB, header *types.Header,
+	blockPre *cache.BlockPre, abort func() bool) (*cache.PreplayResult, bool, bool, bool, int64) {
 	txPreplay.Mu.Lock()
 	defer txPreplay.Mu.Unlock()
 
-	leastOne := false
-	cmpCnt := int64(0)
+	var leastOne, isAbort bool
+	var cmpCnt int64
 	rwrecordKeys := txPreplay.PreplayResults.RWrecords.Keys()
 
 	// rwrecordKeys are from oldest to newest. iterate them reversely
 	for i := len(rwrecordKeys) - 1; i >= 0; i-- {
 		if abort() {
+			isAbort = true
 			break
 		}
 		rawKey := rwrecordKeys[i].(uint64)
@@ -231,15 +238,15 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 		if CheckRChain(rwrecord, bc, header) && CheckRState(rwrecord, statedb, false) {
 			// update the priority of the correct rwrecord simply
 			txPreplay.PreplayResults.RWrecords.Get(rawKey)
-			return rwrecord.Round, true, leastOne, cmpCnt
+			return rwrecord.Round, true, leastOne, isAbort, cmpCnt
 		}
 	}
-	return nil, false, leastOne, cmpCnt
+	return nil, false, leastOne, isAbort, cmpCnt
 }
 
 // setStateDB use RW to update stateDB, add logs, benefit miner and deduct gas from the pool
-func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb vm.StateDB,
-	header *types.Header, tx *types.Transaction, round *cache.PreplayResult, abort func() bool) {
+func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, statedb *state.StateDB, header *types.Header,
+	tx *types.Transaction, round *cache.PreplayResult, abort func() bool) {
 
 	ApplyRWRecord(statedb, round.RWrecord, abort)
 
@@ -273,55 +280,45 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		}
 		statedb.AddBalance(beneficiary, new(big.Int).Mul(new(big.Int).SetUint64(round.Receipt.GasUsed), tx.GasPrice()))
 	}
-
-	gp.SubGas(round.Receipt.GasUsed)
 }
 
-func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb vm.StateDB,
-	header *types.Header, tx *types.Transaction, c *Controller, blockPre *cache.BlockPre) {
+func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
+	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, isFinish func() bool) (status uint64,
+	round *cache.PreplayResult, cmpCnt int64, d0 time.Duration, d1 time.Duration) {
 
-	var round *cache.PreplayResult
-	var ok, leastOne bool
-	var cmpCnt int64
-	var d0, d1 time.Duration
+	var ok, leastOne, abort bool
 
 	t0 := time.Now()
 	txPreplay := reuse.MSRACache.GetTxPreplay(tx.Hash())
 	if txPreplay == nil || txPreplay.PreplayResults.RWrecords.Len() == 0 {
-		c.reuseStatus = noCache // no cache, quit compete
-		c.wg.Done()
+		status = noCache // no cache, quit compete
 		return
 	}
-	round, ok, leastOne, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, c.IsReuseAbort)
+	round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, isFinish)
 	d0 = time.Since(t0)
 
 	if ok {
-		c.reuseStatus = hit
-	} else {
-		if c.IsReuseAbort() {
-			c.reuseStatus = unknown
+		if err := gp.SubGas(round.Receipt.GasUsed); err == nil {
+			status = hit // cache hit
 		} else {
-			if leastOne {
-				c.reuseStatus = cacheNoMatch // cache but result not match, quit compete
-			} else {
-				c.reuseStatus = cacheNoIn // cache but not in, quit compete
-			}
+			status = fail // fail for gas limit reach, quit compete
+			return
 		}
-		c.wg.Done()
+	} else {
+		switch {
+		case abort:
+			status = unknown // abort before hit or miss
+		case leastOne:
+			status = cacheNoMatch // cache but result not match, quit compete
+		default:
+			status = cacheNoIn // cache but not in, quit compete
+		}
 		return
 	}
 
 	t1 := time.Now()
-	reuse.setStateDB(bc, author, gp, statedb, header, tx, round, c.IsReuseAbort)
+	reuse.setStateDB(bc, author, statedb, header, tx, round, isFinish)
 	d1 = time.Since(t1)
 
-	if c.Finish(true) { // cache hit
-		c.reuseDoneCh <- ReuseResult{
-			gasUsed:  round.Receipt.GasUsed,
-			rwrecord: round.RWrecord,
-
-			duration: [2]time.Duration{d0, d1},
-			cmpCnt:   cmpCnt,
-		} // reuse finish and win compete
-	}
+	return
 }

@@ -58,16 +58,18 @@ func (n *proofList) Delete(key []byte) error {
 }
 
 type deltaDB struct {
-	stateObjects map[common.Address]*stateObject
-	logs         []*types.Log
-	preimages    map[common.Hash][]byte
+	stateObjects      map[common.Address]*stateObject
+	stateObjectsDirty map[common.Address]struct{}
+	logs              []*types.Log
+	preimages         map[common.Hash][]byte
 }
 
 func newDeltaDB() *deltaDB {
 	return &deltaDB{
-		stateObjects: make(map[common.Address]*stateObject),
-		logs:         make([]*types.Log, 0),
-		preimages:    make(map[common.Hash][]byte),
+		stateObjects:      make(map[common.Address]*stateObject),
+		stateObjectsDirty: make(map[common.Address]struct{}),
+		logs:              make([]*types.Log, 0),
+		preimages:         make(map[common.Hash][]byte),
 	}
 }
 
@@ -227,7 +229,12 @@ func (s *StateDB) AddLog(log *types.Log) {
 }
 
 func (s *StateDB) GetLogs(hash common.Hash) []*types.Log {
-	return s.logs[hash]
+	if s.IsShared() && hash == s.thash {
+		return s.delta.logs
+	} else {
+		return s.logs[hash]
+	}
+
 }
 
 func (s *StateDB) Logs() []*types.Log {
@@ -756,7 +763,6 @@ func (s *StateDB) ShareCopy() {
 		db:                  s.db,
 		trie:                s.db.CopyTrie(s.trie),
 		stateObjectsPending: s.stateObjectsPending,
-		stateObjectsDirty:   s.stateObjectsDirty,
 		logs:                s.logs,
 		journal:             newJournal(),
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
@@ -792,6 +798,7 @@ func (s *StateDB) UpdatePair() {
 		s.updateLogs(s.pair)
 		s.pair.logSize = s.logSize
 		s.updatePreimages(s.pair)
+		s.clearJournalAndRefund()
 		s.pair.clearJournalAndRefund()
 		s.pair.nextRevisionId = s.nextRevisionId
 	}
@@ -813,6 +820,7 @@ func (s *StateDB) updateObject(db *StateDB) {
 			db.setDeltaStateObject(object1.pair)
 		}
 		object1.updateDelta()
+		db.delta.stateObjectsDirty[addr] = struct{}{}
 	}
 }
 
@@ -820,6 +828,9 @@ func (s *StateDB) updateLogs(db *StateDB) {
 	if len(s.delta.logs) > 0 {
 		s.logs[s.thash] = s.delta.logs
 		s.delta.logs = nil
+		db.delta.logs = nil
+	}
+	if len(db.delta.logs) > 0 {
 		db.delta.logs = nil
 	}
 }
@@ -841,6 +852,7 @@ func (s *StateDB) MergeDelta() {
 	for _, object := range s.stateObjects {
 		object.delta = nil
 	}
+	s.stateObjectsDirty = s.delta.stateObjectsDirty
 	s.preimages = s.delta.preimages
 	s.pair = nil
 	s.delta = nil
@@ -903,16 +915,22 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			if obj.suicided {
 				s.rwRecorder.UpdateSuicide(addr)
 			}
-			obj.SetDeleted(true)
+			obj.deleted = true
 		} else {
 			s.rwRecorder.UpdateDirtyStateObject(obj)
 			obj.finalise()
 		}
 		s.stateObjectsPending[addr] = struct{}{}
-		s.stateObjectsDirty[addr] = struct{}{}
+		if isShared {
+			s.delta.stateObjectsDirty[addr] = struct{}{}
+		} else {
+			s.stateObjectsDirty[addr] = struct{}{}
+		}
 	}
-	// Invalidate journal because reverting across transactions is not allowed.
-	s.clearJournalAndRefund()
+	if !isShared {
+		// Invalidate journal because reverting across transactions is not allowed.
+		s.clearJournalAndRefund()
+	}
 }
 
 // IntermediateRoot computes the current root hash of the state trie.
@@ -950,7 +968,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 	if s.pair != nil {
 		s.pair.thash = thash
 		s.pair.bhash = bhash
-		s.txIndex = ti
+		s.pair.txIndex = ti
 	}
 }
 
