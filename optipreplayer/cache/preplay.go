@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"encoding/gob"
+	//"github.com/ethereum/go-ethereum/core/state"
 	"math/big"
 	"sort"
 	"sync"
@@ -26,7 +27,7 @@ type TxPreplay struct {
 	PreplayResults *PreplayResults
 
 	// Tx Info
-	TxHash         common.Hash        `json:"txHash"`
+	TxHash common.Hash `json:"txHash"`
 
 	//Currently, this field is useless and was even wrong
 	//From           common.Address     `json:"from"`
@@ -47,6 +48,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults := &PreplayResults{}
 	preplayResults.Rounds, _ = lru.New(roundLimit)
 	preplayResults.RWrecords, _ = lru.New(roundLimit)
+	preplayResults.ReadDeps, _ = lru.New(3)
 	return &TxPreplay{
 		PreplayResults: preplayResults,
 		TxHash:         tx.Hash(),
@@ -56,43 +58,39 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	}
 }
 
-// CreateRound create new round preplay for tx
-func (t *TxPreplay) CreateRound(roundID uint64) bool {
-	_, ok := t.PreplayResults.Rounds.Get(roundID)
+// CreateRound create new round preplay for tx;
+func (t *TxPreplay) CreateOrGetRound(roundID uint64) (*PreplayResult, bool) {
+	round, ok := t.PreplayResults.Rounds.Get(roundID)
 	if ok == true {
-		return false
+		return round.(*PreplayResult), false // false means this roundId already exists
 	}
 
-	t.PreplayResults.Rounds.Add(roundID, &PreplayResult{
+	roundNew := &PreplayResult{
 		RoundID:  roundID,
 		TxHash:   t.TxHash,
 		GasPrice: t.GasPrice,
 		Filled:   -1,
-	})
-	return true
+	}
+
+	t.PreplayResults.Rounds.Add(roundID, roundNew)
+	return roundNew, true // true means this roundId is just created
 }
 
 // GetRound get round by roundID
 func (t *TxPreplay) GetRound(roundID uint64) (*PreplayResult, bool) {
-
 	rawRound, ok := t.PreplayResults.Rounds.Get(roundID)
-
 	if !ok {
 		return nil, false
 	}
-
 	return rawRound.(*PreplayResult), true
 }
 
 // PeekRound peek round by roundID
 func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
-
 	rawRound, ok := t.PreplayResults.Rounds.Peek(roundID)
-
 	if !ok {
 		return nil, false
 	}
-
 	return rawRound.(*PreplayResult), true
 }
 
@@ -100,6 +98,8 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 type PreplayResults struct {
 	Rounds    *lru.Cache `json:"-"`
 	RWrecords *lru.Cache `json:"-"`
+	ReadDeps  *lru.Cache `json:"-"`
+
 }
 
 // PreplayResult record one round result
@@ -115,6 +115,10 @@ type PreplayResult struct {
 	Timestamp     uint64         `json:"timestamp"` // Generation Time
 	TimestampNano uint64         `json:"timestampNano"`
 
+	// fastCheck info
+	BasedBlockHash common.Hash   `json:"basedBlock"`
+	FormerTxs      []common.Hash `json:"formerTxs"`
+
 	// Extra Result
 	CurrentState *CurrentState `json:"-"`
 	ExtraResult  *ExtraResult  `json:"extraResult"`
@@ -122,19 +126,22 @@ type PreplayResult struct {
 	// FlagStatus: 0 will in, 1 in, 2 will not in
 	FlagStatus uint64 `json:"flagStatus"`
 
-	// Filled
+	// Filled by the former round. -1 for no former round has the same RWRecord
 	Filled int64
 }
 
+type StateRW map[common.Address]map[cmptypes.Field]interface{}
+type ChainInfo map[cmptypes.Field]interface{}
 // RWRecord for record
 type RWRecord struct {
 	RWHash string
 	IterMu sync.Mutex
 	// HashOrder [][]byte
 
-	RState map[common.Address]map[cmptypes.Field]interface{}
-	RChain map[cmptypes.Field]interface{}
-	WState map[common.Address]map[cmptypes.Field]interface{}
+	RState     StateRW
+	RAddresses []common.Address
+	RChain     ChainInfo
+	WState     StateRW
 
 	Failed bool
 	Hashed bool
@@ -142,19 +149,38 @@ type RWRecord struct {
 	Round *PreplayResult `json:"-"`
 }
 
+// id of each round result of each tx, TODO: encode this id into a simple type instead of a struct
+type TxExecutionID struct {
+	TxHash  common.Hash
+	RoundID uint64
+}
+
+// record the read state in address level
+type ReadDep struct {
+	BasedBlockHash common.Hash
+	IsNoDep        bool
+	RoundID        uint64
+	// Deprecated: useless currently;
+	RAddress map[common.Address][]TxExecutionID
+	// Deprecated: useless currently; can be got by roundID
+	RWRecord *RWRecord
+}
+
 // NewRWRecord create new RWRecord
 func NewRWRecord(
-	rstate map[common.Address]map[cmptypes.Field]interface{},
+	rstate StateRW,
 	rchain map[cmptypes.Field]interface{},
-	wstate map[common.Address]map[cmptypes.Field]interface{},
+	wstate StateRW,
+	radd []common.Address,
 	failed bool,
 ) *RWRecord {
 	return &RWRecord{
-		RState: rstate,
-		RChain: rchain,
-		WState: wstate,
-		Failed: failed,
-		Hashed: false,
+		RState:     rstate,
+		RAddresses: radd,
+		RChain:     rchain,
+		WState:     wstate,
+		Failed:     failed,
+		Hashed:     false,
 	}
 	// return nil
 }
@@ -180,92 +206,6 @@ func (rw *RWRecord) Equal(rwb *RWRecord) bool {
 	} else {
 		// log.Debug("Right")
 	}
-	// for key := range rw.RChain {
-	// 	switch key {
-	// 	case cmptypes.Gasprice:
-	// 		continue
-	// 	case cmptypes.Coinbase:
-	// 		v := rw.RChain[key].(common.Address)
-	// 		vb, ok := rwb.RChain[key].(common.Address)
-	// 		if !ok || v.Big().Cmp(vb.Big()) != 0 {
-	// 			return false
-	// 		}
-	// 	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty:
-	// 		v := rw.RChain[key].(*big.Int)
-	// 		vb, ok := rwb.RChain[key].(*big.Int)
-	// 		if !ok || v.Cmp(vb) != 0 {
-	// 			return false
-	// 		}
-	// 	case cmptypes.GasLimit:
-	// 		v := rw.RChain[key].(uint64)
-	// 		vb, ok := rwb.RChain[key].(uint64)
-	// 		if !ok || v != vb {
-	// 			return false
-	// 		}
-	// 	case cmptypes.Blockhash:
-	// 		mBlockHash := rw.RChain[key].(map[uint64]common.Hash)
-	// 		mBlockHashb, ok := rwb.RChain[key].(map[uint64]common.Hash)
-
-	// 		if !ok {
-	// 			return false
-	// 		}
-
-	// 		for num, blkHash := range mBlockHash {
-	// 			blkHashb, ok := mBlockHashb[num]
-	// 			if !ok || blkHash.Big().Cmp(blkHashb.Big()) != 0 {
-	// 				return false
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	// for addr, mValues := range rw.RState {
-	// 	for key := range mValues {
-	// 		switch key {
-	// 		case cmptypes.Exist, cmptypes.Empty:
-	// 			v := rw.RState[addr][key].(bool)
-	// 			vb, ok := rwb.RState[addr][key].(bool)
-	// 			if !ok || v != vb {
-	// 				return false
-	// 			}
-	// 		case cmptypes.Balance:
-	// 			v := rw.RState[addr][key].(*big.Int)
-	// 			vb, ok := rwb.RState[addr][key].(*big.Int)
-	// 			if !ok || v.Cmp(vb) != 0 {
-	// 				// log.Info("RState Balance miss", "pve", v, "now", statedb.GetBalance(addr))
-	// 				return false
-	// 			}
-	// 		case cmptypes.Nonce:
-	// 			v := rw.RState[addr][key].(uint64)
-	// 			vb, ok := rwb.RState[addr][key].(uint64)
-	// 			if !ok || v != vb {
-	// 				// log.Info("RState Nonce miss", "pve", v, "now", statedb.GetNonce(addr))
-	// 				return false
-	// 			}
-	// 		case cmptypes.CodeHash:
-	// 			v := rw.RState[addr][key].(common.Hash)
-	// 			vb, ok := rwb.RState[addr][key].(common.Hash)
-	// 			if !ok || v.Big().Cmp(vb.Big()) != 0 {
-	// 				// log.Info("RState CodeHash miss", "pve", v.Big(), "now", statedb.GetCodeHash(addr).Big())
-	// 				return false
-	// 			}
-	// 		case cmptypes.Storage, cmptypes.CommittedStorage:
-	// 			storage := rw.RState[addr][key].(map[common.Hash]common.Hash)
-	// 			storageb, ok := rwb.RState[addr][key].(map[common.Hash]common.Hash)
-
-	// 			if !ok {
-	// 				return false
-	// 			}
-
-	// 			for k, v := range storage {
-	// 				vb, ok := storageb[k]
-	// 				if !ok || v.Big().Cmp(vb.Big()) != 0 {
-	// 					return false
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
 
 	return true
 }
@@ -509,6 +449,7 @@ func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 	return nil
 }
 
+// Deprecated:
 // GetPreplayCacheTxs return all the tx that in cache
 func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions {
 
@@ -543,42 +484,47 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 }
 
 // SetMainResult set the result for a tx
-func (r *GlobalCache) SetMainResult(roundID uint64, hash common.Hash, receipt *types.Receipt, rwRecord *RWRecord) bool {
+func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt *types.Receipt, rwRecord *RWRecord, preBlockHash common.Hash, txPreplay *TxPreplay) bool {
 
 	if receipt == nil || rwRecord == nil {
-		log.Debug("[PreplayCache] Nil Error", "txHash", hash)
+		log.Debug("[PreplayCache] Nil Error", "txHash", txHash)
 		return false
 	}
 
-	txPreplay := r.GetTxPreplay(hash)
-	if txPreplay == nil {
-		log.Debug("[PreplayCache] SetMainResult Error", "txHash", hash)
-		return false
-	}
+	//txPreplay := r.GetTxPreplay(txHash)
+	//if txPreplay == nil {
+	//	log.Debug("[PreplayCache] SetMainResult Error", "txHash", txHash)
+	//	return false
+	//}
 
+	// TODO: this lock might be optimized
 	txPreplay.Mu.Lock()
 	defer txPreplay.Mu.Unlock()
 
-	round, _ := txPreplay.GetRound(roundID)
-	if round == nil {
-		txPreplay.CreateRound(roundID)
-		round, _ = txPreplay.GetRound(roundID)
-	}
+	round, _ := txPreplay.CreateOrGetRound(roundID)
 
 	nowTime := time.Now()
 	round.Timestamp = uint64(nowTime.Unix())
 	round.TimestampNano = uint64(nowTime.UnixNano())
 
+	round.BasedBlockHash = preBlockHash
+	//formerTx := *(statedb.ProcessedTxs)
+	//round.FormerTxs = formerTx[0 : len(formerTx)-1] // the last one is the current tx
+
 	round.Filled = -1
 	roundKeys := txPreplay.PreplayResults.Rounds.Keys()
 
 	// iterate roundKeys reversely
-	for i:= len(roundKeys)-1; i>=0; i--{
+	for i := len(roundKeys) - 1; i >= 0; i-- {
 		rawKey := roundKeys[i].(uint64)
-		// do not need update the priority in LRU probably
+		if rawKey == roundID {
+			continue
+		}
+		// do not need update the priority in LRU
 		rawRoundB, _ := txPreplay.PreplayResults.Rounds.Peek(rawKey)
 		roundB := rawRoundB.(*PreplayResult)
 		if rwRecord.Equal(roundB.RWrecord) {
+			// TODO : this round could be skipped
 			if roundB.Filled == -1 {
 				round.Filled = int64(roundB.RoundID)
 			} else {
@@ -595,6 +541,9 @@ func (r *GlobalCache) SetMainResult(roundID uint64, hash common.Hash, receipt *t
 		rwRecord.Round = round
 		txPreplay.PreplayResults.RWrecords.Add(roundID, rwRecord)
 	}
+
+	//r.SetReadDep(roundID, txHash, txPreplay, rwRecord, statedb, preBlockHash)
+
 	return true
 }
 
@@ -614,11 +563,7 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 	txPreplay.Mu.Lock()
 	defer txPreplay.Mu.Unlock()
 
-	round, _ := txPreplay.GetRound(roundID)
-	if round == nil {
-		txPreplay.CreateRound(roundID)
-		round, _ = txPreplay.GetRound(roundID)
-	}
+	round, _ := txPreplay.CreateOrGetRound(roundID)
 
 	nowTime := time.Now()
 	round.CurrentState = currentState
@@ -626,6 +571,73 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 	round.ExtraResult.Timestamp = uint64(nowTime.Unix())
 	round.ExtraResult.TimestampNano = uint64(nowTime.UnixNano())
 
+	return true
+}
+
+// SetReadDep set the read dep info for a tx in a given round
+func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *TxPreplay, rwRecord *RWRecord, preBlockHash common.Hash, isNoDep bool) bool {
+	if txPreplay == nil {
+		log.Debug("[PreplayCache] SetMainResult Error", "txHash", txHash)
+		return false
+	}
+	if rwRecord == nil {
+		return false
+	}
+	txPreplay.Mu.Lock()
+	defer txPreplay.Mu.Unlock()
+
+	if isNoDep {
+		//readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(preBlockHash)
+		readDep := &ReadDep{
+			BasedBlockHash: preBlockHash,
+			IsNoDep:        isNoDep,
+			RoundID:        roundID, // TODO might be the first round which has the same rw record
+		}
+		txPreplay.PreplayResults.ReadDeps.Add(preBlockHash, readDep)
+		//
+		//if !ok {
+		//	readDep = &ReadDep{
+		//		BasedBlockHash: preBlockHash,
+		//		IsNoDep:        isNoDep,
+		//		RoundID:        roundID,
+		//	}
+		//	txPreplay.PreplayResults.ReadDeps.Add(preBlockHash, readDep)
+		//} else {
+		//	// debug code: readDep is supposed to be the same the current TODO: this is wrong . RChain
+		//	//preReadDep := readDep.(*ReadDep)
+		//	//preRes, ok := txPreplay.PreplayResults.Rounds.Peek(preReadDep.RoundID)
+		//	//curRes, ok2 := txPreplay.PreplayResults.Rounds.Peek(roundID)
+		//	//if ok && ok2 {
+		//	//	preFilled := preRes.(*PreplayResult).Filled
+		//	//	curFilled := curRes.(*PreplayResult).Filled
+		//	//	if preFilled == -1{
+		//	//		if !(curFilled == int64(preReadDep.RoundID)){
+		//	//			panic("the preplay res should be the same")
+		//	//		}
+		//	//	}else {
+		//	//		if !(curFilled == preFilled){
+		//	//			panic("the preplay res should be the same")
+		//	//		}
+		//	//	}
+		//	//}
+		//}
+	} else {
+		// TODO: handle tx with depended txs ; key might be blockhash + txhash
+		// key := preBlockHash + preTxHashes
+		//readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(key)
+		//if !ok {
+		//	readDep = &ReadDep{
+		//		BasedBlockHash: preBlockHash,
+		//		IsNoDep:        isNoDep,
+		//	}
+		//	txPreplay.PreplayResults.ReadDeps.Add(key, readDep)
+		//} else {
+		//	curReadDep := readDep.(*ReadDep)
+		//	curReadDep.BasedBlockHash = preBlockHash
+		//	curReadDep.IsNoDep = isNoDep
+		//}
+
+	}
 	return true
 }
 
@@ -672,38 +684,3 @@ func (r *GlobalCache) NewTimeStamp() int64 {
 	}
 	return r.PreplayTimestamp + r.TimestampField
 }
-
-// func (r *GlobalCache) GetPreplayTxCnt(block *types.Block) (uint64, uint64, uint64) {
-
-// 	// Super RLock
-// 	r.ResultMu.RLock()
-// 	defer func() {
-// 		r.ResultMu.RUnlock()
-// 	}()
-
-// 	willTxCnt := uint64(0)
-// 	inTxCnt := uint64(0)
-// 	willNotTxCnt := uint64(0)
-
-// 	for _, tx := range block.Body().Transactions {
-
-// 		txHash := tx.Hash()
-
-// 		preplayResult := r.GetTxPreplay(txHash)
-// 		if preplayResult != nil {
-// 			if preplayResult.FlagStatus == 0 {
-// 				willTxCnt++
-// 			}
-
-// 			if preplayResult.FlagStatus == 1 {
-// 				inTxCnt++
-// 			}
-
-// 			if preplayResult.FlagStatus == 2 {
-// 				willNotTxCnt++
-// 			}
-// 		}
-// 	}
-
-// 	return willTxCnt, inTxCnt, willNotTxCnt
-// }

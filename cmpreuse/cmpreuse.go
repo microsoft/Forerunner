@@ -3,6 +3,7 @@
 package cmpreuse
 
 import (
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -45,19 +46,19 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 }
 
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (uint64, *cache.PreplayResult) {
+	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (cmptypes.ReuseStatus, *cache.PreplayResult) {
 
 	t := time.Now()
 	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish)
 
-	if status == hit && c.TryFinish() {
+	if status == cmptypes.Hit && c.TryFinish() {
 		c.StopEvm()
 		cache.WaitReuse = append(cache.WaitReuse, time.Since(t))
 		cache.GetRW = append(cache.GetRW, d0)
 		cache.SetDB = append(cache.SetDB, d1)
 		cache.ReuseGasCount += round.Receipt.GasUsed
 		cache.RWCmpCnt = append(cache.RWCmpCnt, cmpCnt)
-		return hit, round // reuse finish and win compete
+		return cmptypes.Hit, round // reuse finish and win compete
 	} else {
 		return status, nil // reuse finish but lost compete
 	}
@@ -115,7 +116,7 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller) (*types.Receipt,
-	error, uint64) {
+	error, cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
 		panic("ReuseTransaction can only be used for process and statedb must be shared and not be RW mode.")
@@ -123,7 +124,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
-		return nil, err, fail
+		return nil, err, cmptypes.Fail
 	}
 
 	reuseGp, reuseDB := *gp, statedb

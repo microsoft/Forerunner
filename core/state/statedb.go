@@ -127,6 +127,8 @@ type StateDB struct {
 	primary bool
 	pair    *StateDB
 	delta   *deltaDB
+
+	ProcessedTxs *[]common.Hash // txs which have been processed after the base block
 }
 
 func (self *StateDB) IsEnableFeeToCoinbase() bool {
@@ -151,6 +153,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 
 		EnableFeeToCoinbase: true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
+		ProcessedTxs:        &[]common.Hash{},
 	}, nil
 }
 
@@ -405,6 +408,27 @@ func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) (ret 
 		return stateObject.GetCommittedState(s.db, hash)
 	}
 	return common.Hash{}
+}
+
+// IsInPending return whether a state object is in statePanding
+func (s *StateDB) IsInPending(addr common.Address) bool {
+	_, ok := s.stateObjectsPending[addr]
+	return ok
+}
+func (s *StateDB) PendingAddress() []common.Address {
+	var res []common.Address
+	for addr := range s.stateObjectsPending{
+		res = append(res, addr)
+	}
+	return res
+}
+
+func (s *StateDB) StateObjectAddress() []common.Address {
+	var res []common.Address
+	for addr := range s.stateObjects{
+		res = append(res, addr)
+	}
+	return res
 }
 
 // Database retrieves the low level database supporting the lower level trie ops.
@@ -970,6 +994,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 		s.pair.bhash = bhash
 		s.pair.txIndex = ti
 	}
+	*s.ProcessedTxs = append(*s.ProcessedTxs, thash)
 }
 
 func (s *StateDB) clearJournalAndRefund() {

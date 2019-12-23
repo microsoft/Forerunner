@@ -228,6 +228,7 @@ func (r *GlobalCache) BucketPrint(timestamp uint64) {
 	}
 }
 
+// Deprecated:
 // RealTimePrint print block by block
 func (r *GlobalCache) RealTimePrint(block *types.Block) {
 

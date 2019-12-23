@@ -17,6 +17,7 @@
 package core
 
 import (
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -35,7 +36,7 @@ type TransactionApplier interface {
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller) (*types.Receipt,
-		error, uint64)
+		error, cmptypes.ReuseStatus)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -104,7 +105,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if p.bc.MSRACache != nil {
 		p.bc.MSRACache.CommitBlockPre(blockPre)
 	}
-	var reuseResult []uint64
+	var reuseResult []cmptypes.ReuseStatus
 
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.ShareCopy()
@@ -129,7 +130,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 
 		if cfg.MSRAVMSettings.CmpReuse {
-			var reuseStatus uint64
+			var reuseStatus cmptypes.ReuseStatus
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, blockPre, p.bc.MSRACache.RoutinePool, controller)
 			reuseResult = append(reuseResult, reuseStatus)
 

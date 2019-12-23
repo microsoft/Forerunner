@@ -15,13 +15,6 @@ import (
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
-const fail = 0
-const hit = 1
-const noCache = 2
-const cacheNoIn = 3
-const cacheNoMatch = 4
-const unknown = 5
-
 // codeHashEquivalent compare two common.Hash
 func codeHashEquivalent(l common.Hash, r common.Hash) bool {
 	if l == emptyCodeHash {
@@ -36,56 +29,97 @@ func codeHashEquivalent(l common.Hash, r common.Hash) bool {
 // CheckRChain check rw.Rchain
 func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header) bool {
 	for key, value := range rw.RChain {
-		switch key {
-		case cmptypes.Coinbase:
-			v := value.(common.Address)
-			// fixed with direct ==
-			if v != header.Coinbase {
-				// log.Info("RChain Coinbase miss", "pve", v, "now", header.Coinbase)
-				return false
-			}
-		case cmptypes.Timestamp:
-			v := value.(*big.Int)
-			if v.Uint64() != header.Time {
-				// log.Info("RChain Timestamp miss", "pve", v, "now", header.Time)
-				return false
-			}
-		case cmptypes.Number:
-			v := value.(*big.Int)
-			if v.Cmp(header.Number) != 0 {
-				// log.Info("RChain Number miss", "pve", v, "now", header.Number)
-				return false
-			}
-		case cmptypes.Difficulty:
-			v := value.(*big.Int)
-			if v.Cmp(header.Difficulty) != 0 {
-				// log.Info("RChain Difficulty miss", "pve", v, "now", header.Difficulty)
-				return false
-			}
-		case cmptypes.GasLimit:
-			v := value.(uint64)
-			if v != header.GasLimit {
-				// log.Info("RChain GasLimit miss", "pve", v, "now", header.GasLimit)
-				return false
-			}
-		case cmptypes.Blockhash:
-			mBlockHash := value.(map[uint64]common.Hash)
-			currentNum := header.Number.Uint64()
-			getHashFn := core.GetHashFn(header, bc)
-			for num, blkHash := range mBlockHash {
-				if num > (currentNum-257) && num < currentNum {
-					if blkHash != getHashFn(num) {
-						// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
-						return false
-					}
-				} else if blkHash.Big().Cmp(common.Big0) != 0 {
-					// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
-					return false
-				}
-			}
+		if !CheckRChainField(key, value, bc, header) {
+			return false
 		}
+		//switch key {
+		//case cmptypes.Coinbase:
+		//	v := value.(common.Address)
+		//	// fixed with direct ==
+		//	if v != header.Coinbase {
+		//		// log.Info("RChain Coinbase miss", "pve", v, "now", header.Coinbase)
+		//		return false
+		//	}
+		//case cmptypes.Timestamp:
+		//	v := value.(*big.Int)
+		//	if v.Uint64() != header.Time {
+		//		// log.Info("RChain Timestamp miss", "pve", v, "now", header.Time)
+		//		return false
+		//	}
+		//case cmptypes.Number:
+		//	v := value.(*big.Int)
+		//	if v.Cmp(header.Number) != 0 {
+		//		// log.Info("RChain Number miss", "pve", v, "now", header.Number)
+		//		return false
+		//	}
+		//case cmptypes.Difficulty:
+		//	v := value.(*big.Int)
+		//	if v.Cmp(header.Difficulty) != 0 {
+		//		// log.Info("RChain Difficulty miss", "pve", v, "now", header.Difficulty)
+		//		return false
+		//	}
+		//case cmptypes.GasLimit:
+		//	v := value.(uint64)
+		//	if v != header.GasLimit {
+		//		// log.Info("RChain GasLimit miss", "pve", v, "now", header.GasLimit)
+		//		return false
+		//	}
+		//case cmptypes.Blockhash:
+		//	mBlockHash := value.(map[uint64]common.Hash)
+		//	currentNum := header.Number.Uint64()
+		//	getHashFn := core.GetHashFn(header, bc)
+		//	for num, blkHash := range mBlockHash {
+		//		if num > (currentNum-257) && num < currentNum {
+		//			if blkHash != getHashFn(num) {
+		//				// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
+		//				return false
+		//			}
+		//		} else if blkHash.Big().Cmp(common.Big0) != 0 {
+		//			// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
+		//			return false
+		//		}
+		//	}
+		//}
 	}
 	return true
+}
+
+func CheckRChainField(key cmptypes.Field, value interface{}, bc core.ChainContext, header *types.Header) bool {
+	switch key {
+	case cmptypes.Coinbase:
+		v := value.(common.Address)
+		// fixed with direct ==
+		return v == header.Coinbase
+	case cmptypes.Timestamp:
+		v := value.(*big.Int)
+		return v.Uint64() == header.Time
+	case cmptypes.Number:
+		v := value.(*big.Int)
+		return v.Cmp(header.Number) == 0
+	case cmptypes.Difficulty:
+		v := value.(*big.Int)
+		return v.Cmp(header.Difficulty) == 0
+	case cmptypes.GasLimit:
+		v := value.(uint64)
+		return v == header.GasLimit
+	case cmptypes.Blockhash:
+		mBlockHash := value.(map[uint64]common.Hash)
+		currentNum := header.Number.Uint64()
+		getHashFn := core.GetHashFn(header, bc)
+		for num, blkHash := range mBlockHash {
+			if num > (currentNum-257) && num < currentNum {
+				if blkHash != getHashFn(num) {
+					// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
+					return false
+				}
+			} else if blkHash.Big().Cmp(common.Big0) != 0 {
+				// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // CheckRState check rw.Rstate
@@ -165,6 +199,49 @@ func CheckRState(rw *cache.RWRecord, statedb *state.StateDB, debugDiff bool) boo
 	return true
 }
 
+func GetRChainField(loc *cache.Location, bc core.ChainContext, header *types.Header) interface{} {
+	switch loc.Field {
+	case cmptypes.Coinbase:
+		return header.Coinbase
+	case cmptypes.Timestamp:
+		return header.Time
+	case cmptypes.Number:
+		return header.Number
+	case cmptypes.Difficulty:
+		return header.Difficulty
+	case cmptypes.GasLimit:
+		return header.GasLimit
+	case cmptypes.Blockhash:
+		getHashFn := core.GetHashFn(header, bc)
+		number := loc.Loc.(uint64)
+		return getHashFn(number)
+	}
+	return nil
+}
+
+func GetRStateValue(addrLoc *cache.AddrLocation, statedb *state.StateDB) interface{} {
+	addr := addrLoc.Address
+	switch addrLoc.Location.Field {
+	case cmptypes.Exist:
+		return statedb.Exist(addr)
+	case cmptypes.Empty:
+		return statedb.Empty(addr)
+	case cmptypes.Balance:
+		return statedb.GetBalance(addr)
+	case cmptypes.Nonce:
+		return statedb.GetNonce(addr)
+	case cmptypes.CodeHash:
+		return statedb.GetCodeHash(addr)
+	case cmptypes.Storage:
+		position := addrLoc.Location.Loc.(common.Hash)
+		return statedb.GetState(addr, position)
+	case cmptypes.CommittedStorage:
+		position := addrLoc.Location.Loc.(common.Hash)
+		return statedb.GetCommittedState(addr, position)
+	}
+	return nil
+}
+
 // ApplyRWRecord apply reuse result
 func ApplyRWRecord(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
@@ -204,6 +281,43 @@ func ApplyRWRecord(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool
 		}
 		statedb.Suicide(addr)
 	}
+}
+
+func (reuse *Cmpreuse) fastCheckProcessOrder(txPreplay *cache.TxPreplay, db *state.StateDB, header *types.Header, blockPre *cache.BlockPre) {
+	// TODO
+}
+
+func (reuse *Cmpreuse) fastCheckRState(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
+	header *types.Header, blockPre *cache.BlockPre) (*cache.PreplayResult, bool) {
+	readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(header.ParentHash)
+	if ok {
+		dep := readDep.(*cache.ReadDep)
+		if !dep.IsNoDep {
+			return nil, false
+		}
+		res, ok2 := txPreplay.PreplayResults.Rounds.Peek(dep.RoundID)
+		if ok2 {
+			preplayRes := res.(*cache.PreplayResult)
+			record := preplayRes.RWrecord
+			// can not use this as result
+			if blockPre != nil && blockPre.ListenTimeNano < record.Round.TimestampNano {
+				return nil, false
+			}
+
+			if !CheckRChain(record, bc, header) {
+				return nil, false
+			}
+			// check whether addresses in record have been changed in current pending of statedb
+			for _, addr := range record.RAddresses {
+				if statedb.IsInPending(addr) {
+					return nil, false
+				}
+			}
+
+			return preplayRes, true
+		}
+	}
+	return nil, false
 }
 
 // getValidRW get valid transaction from tx preplay cache
@@ -283,7 +397,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 }
 
 func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, isFinish func() bool) (status uint64,
+	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, isFinish func() bool) (status cmptypes.ReuseStatus,
 	round *cache.PreplayResult, cmpCnt int64, d0 time.Duration, d1 time.Duration) {
 
 	var ok, leastOne, abort bool
@@ -291,29 +405,42 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	t0 := time.Now()
 	txPreplay := reuse.MSRACache.GetTxPreplay(tx.Hash())
 	if txPreplay == nil || txPreplay.PreplayResults.RWrecords.Len() == 0 {
-		status = noCache // no cache, quit compete
+		status = cmptypes.NoCache // no cache, quit compete
 		return
 	}
-	round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, isFinish)
-	d0 = time.Since(t0)
 
+	round, ok = reuse.fastCheckRState(txPreplay, bc, statedb, header, blockPre)
 	if ok {
-		if err := gp.SubGas(round.Receipt.GasUsed); err == nil {
-			status = hit // cache hit
+		if round.RWrecord == nil {
+			panic(" > > > > > > > > > > > > > > fastcheck return nil rwrecord")
+		}
+		cmpCnt = 1
+		status = cmptypes.FastHit
+		d0 = time.Since(t0)
+	} else {
+		round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, isFinish)
+		d0 = time.Since(t0)
+		if ok {
+			if round.RWrecord == nil {
+				panic(" > > > > > > > > > > > > > > getValidRW return nil rwrecord")
+			}
+			if err := gp.SubGas(round.Receipt.GasUsed); err == nil {
+				status = cmptypes.Hit // cache hit
+			} else {
+				status = cmptypes.Fail // fail for gas limit reach, quit compete
+				return
+			}
 		} else {
-			status = fail // fail for gas limit reach, quit compete
+			switch {
+			case abort:
+				status = cmptypes.Unknown // abort before hit or miss
+			case leastOne:
+				status = cmptypes.CacheNoMatch // cache but result not match, quit compete
+			default:
+				status = cmptypes.CacheNoIn // cache but not in, quit compete
+			}
 			return
 		}
-	} else {
-		switch {
-		case abort:
-			status = unknown // abort before hit or miss
-		case leastOne:
-			status = cacheNoMatch // cache but result not match, quit compete
-		default:
-			status = cacheNoIn // cache but not in, quit compete
-		}
-		return
 	}
 
 	t1 := time.Now()

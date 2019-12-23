@@ -3,6 +3,7 @@ package cache
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -28,6 +29,8 @@ type LogBlockInfo struct {
 	NoPreplay     int           `json:"N"`
 	Miss          int           `json:"M"`
 	Unknown       int           `json:"U"`
+	FastHit       int           `json:"F"`
+	Reuse         int           `json:"reuseCount"`
 	ReuseGas      int           `json:"reuseGas"`
 	ProcTime      int64         `json:"procTime"`
 	RunMode       string        `json:"runMode"`
@@ -103,10 +106,11 @@ var (
 	UpdatePair    []time.Duration
 	TxFinalize    []time.Duration
 	GetRW         []time.Duration
+	FastGetRW     []time.Duration
 	SetDB         []time.Duration
 	RunTx         []time.Duration
 
-	ReuseResult   []uint64
+	ReuseResult   []cmptypes.ReuseStatus
 	ReuseGasCount uint64
 	RWCmpCnt      []int64
 )
@@ -133,6 +137,7 @@ func ResetLogVar() {
 	UpdatePair = make([]time.Duration, 50)
 	TxFinalize = make([]time.Duration, 50)
 	GetRW = make([]time.Duration, 50)
+	FastGetRW = make([]time.Duration, 50)
 	SetDB = make([]time.Duration, 50)
 	RunTx = make([]time.Duration, 50)
 
@@ -181,6 +186,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		sumTxFinalize    = SumDuration(TxFinalize)
 		sumUpdatePair    = SumDuration(UpdatePair)
 		sumGetRW         = SumDuration(GetRW)
+		//sumFastGetRW     = SumDuration(FastGetRW)
 		sumSetDB         = SumDuration(SetDB)
 		sumRunTx         = SumDuration(RunTx)
 
@@ -212,17 +218,20 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 				infoResult.NoListen++
 			}
 			switch ReuseResult[index] {
-			case 1:
+			case cmptypes.Hit:
 				infoResult.Hit++
-			case 2:
+			case cmptypes.NoCache:
 				infoResult.NoPreplay++
-			case 3:
+			case cmptypes.CacheNoIn:
 				infoResult.Miss++
 				noInResultCnt++
-			case 4:
+			case cmptypes.CacheNoMatch:
 				infoResult.Miss++
-			case 5:
+			case cmptypes.Unknown:
 				infoResult.Unknown++
+			case cmptypes.FastHit:
+				infoResult.FastHit++
+				infoResult.Hit++
 			}
 		}
 	}
@@ -236,7 +245,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		infoResult.RunMode = "reuse"
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		preplayCnt := infoResult.Hit + infoResult.Miss + infoResult.Unknown
-		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, reuseGasRate float64
+		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, fastHitRate, reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -244,6 +253,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			MissRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			noInResultRate = float64(noInResultCnt) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
+			fastHitRate = float64(infoResult.FastHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -254,6 +264,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			"Miss", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)", infoResult.Miss, MissRate,
 				noInResultCnt, noInResultRate),
 			"Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
+			"FastHit", fmt.Sprintf("%03d(%.2f)", infoResult.FastHit, fastHitRate),
 			"ReuseGas", fmt.Sprintf("%03d(%.2f)", infoResult.ReuseGas, reuseGasRate),
 		}
 		log.Info("BlockReuse", context...)
@@ -287,7 +298,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 }
 
 // CachePrint print reuse result of all txns in a block to block folder
-func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []uint64) {
+func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.ReuseStatus) {
 
 	cacheResult := &LogBlockCache{
 		NoListen:  []*types.Transaction{},

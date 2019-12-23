@@ -24,7 +24,8 @@ type RWRecorder interface {
 	RWDump() (
 		map[common.Address]map[cmptypes.Field]interface{},
 		map[cmptypes.Field]interface{},
-		map[common.Address]map[cmptypes.Field]interface{})
+		map[common.Address]map[cmptypes.Field]interface{},
+		[]common.Address)
 
 	UpdateRHeader(field cmptypes.Field, val interface{})
 	UpdateRBlockhash(num uint64, val common.Hash)
@@ -61,7 +62,8 @@ func (h emptyRWRecorder) RWClear() {
 func (h emptyRWRecorder) RWDump() (
 	map[common.Address]map[cmptypes.Field]interface{},
 	map[cmptypes.Field]interface{},
-	map[common.Address]map[cmptypes.Field]interface{}) {
+	map[common.Address]map[cmptypes.Field]interface{},
+	[]common.Address) {
 	panic("Enable RWRecord mode to use RWDump!")
 }
 
@@ -105,9 +107,10 @@ func (h emptyRWRecorder) UpdateDirtyStateObject(so *stateObject) {
 }
 
 type rwRecorderImpl struct {
-	RState map[common.Address]map[cmptypes.Field]interface{}
-	RChain map[cmptypes.Field]interface{}
-	WState map[common.Address]map[cmptypes.Field]interface{}
+	RState          map[common.Address]map[cmptypes.Field]interface{}
+	RStateAddresses []common.Address
+	RChain          map[cmptypes.Field]interface{}
+	WState          map[common.Address]map[cmptypes.Field]interface{}
 }
 
 func (h *rwRecorderImpl) _Exist(addr common.Address, so *stateObject, ret bool) {
@@ -198,9 +201,10 @@ func (h *rwRecorderImpl) UpdateDirtyStateObject(so *stateObject) {
 
 func newRWHook() *rwRecorderImpl {
 	return &rwRecorderImpl{
-		RState: make(map[common.Address]map[cmptypes.Field]interface{}),
-		RChain: make(map[cmptypes.Field]interface{}),
-		WState: make(map[common.Address]map[cmptypes.Field]interface{}),
+		RState:          make(map[common.Address]map[cmptypes.Field]interface{}),
+		RStateAddresses: []common.Address{},
+		RChain:          make(map[cmptypes.Field]interface{}),
+		WState:          make(map[common.Address]map[cmptypes.Field]interface{}),
 	}
 }
 
@@ -213,13 +217,14 @@ func (h *rwRecorderImpl) DirtyDump() map[string]interface{} {
 }
 
 func (h *rwRecorderImpl) RWDump() (map[common.Address]map[cmptypes.Field]interface{},
-	map[cmptypes.Field]interface{}, map[common.Address]map[cmptypes.Field]interface{}) {
-	return h.RState, h.RChain, h.WState
+	map[cmptypes.Field]interface{}, map[common.Address]map[cmptypes.Field]interface{}, []common.Address) {
+	return h.RState, h.RChain, h.WState, h.RStateAddresses
 }
 
 // no need
 func (h *rwRecorderImpl) RWClear() {
 	h.RState = make(map[common.Address]map[cmptypes.Field]interface{})
+	h.RStateAddresses = []common.Address{}
 	h.RChain = make(map[cmptypes.Field]interface{})
 	h.WState = make(map[common.Address]map[cmptypes.Field]interface{})
 }
@@ -243,18 +248,12 @@ func (h *rwRecorderImpl) UpdateRBlockhash(num uint64, val common.Hash) {
 func (h *rwRecorderImpl) UpdateRAccount(addr common.Address, field cmptypes.Field, val interface{}) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = make(map[cmptypes.Field]interface{})
+		h.RStateAddresses = append(h.RStateAddresses, addr)
 	}
 
 	if _, ok := h.RState[addr][field]; !ok {
 		h.RState[addr][field] = val
 	}
-	//else {
-	//	if _, ok := val.(*debugInfo); !ok {
-	//		if _, ok := x.(*debugInfo); ok {
-	//			self.RState[addr][field] = val
-	//		}
-	//	}
-	//}
 }
 
 func (h *rwRecorderImpl) UpdateRBalance(so *stateObject, addr common.Address) {
@@ -284,6 +283,7 @@ func (h *rwRecorderImpl) UpdateRCodeXXX(so *stateObject, addr common.Address) {
 func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Field, input common.Hash, val common.Hash) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = make(map[cmptypes.Field]interface{})
+		h.RStateAddresses = append(h.RStateAddresses, addr)
 	}
 	if _, ok := h.RState[addr][field]; !ok {
 		h.RState[addr][field] = make(map[common.Hash]common.Hash)

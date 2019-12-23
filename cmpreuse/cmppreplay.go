@@ -1,6 +1,7 @@
 package cmpreuse
 
 import (
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -13,23 +14,23 @@ import (
 
 var AlwaysFalse = func() bool { return false }
 
-func (reuse *Cmpreuse) setMainResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord) {
-	if ok := reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord); ok {
-		return
+func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, preBlockHash common.Hash, isNoDep bool)(){
+	if receipt == nil || rwrecord == nil {
+		panic("cmpreuse: receit or rwrecord should not be nil")
 	}
-	nowTime := time.Now()
-	reuse.MSRACache.CommitTxListen(&cache.TxListen{
-		Tx: tx,
-		//From:            ,
-		ListenTime:      uint64(nowTime.Unix()),
-		ListenTimeNano:  uint64(nowTime.UnixNano()),
-		ConfirmTime:     0,
-		ConfirmBlockNum: 0,
-	})
-	reuse.MSRACache.CommitTxRreplay(cache.NewTxPreplay(tx))
-	reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord)
-}
 
+	txHash := tx.Hash()
+	txPreplay := reuse.MSRACache.GetTxPreplay(txHash)
+	if txPreplay == nil {
+		txPreplay = reuse.addNewTx(tx)
+	}
+	reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord, preBlockHash, txPreplay)
+	if !isNoDep {
+		return // record this condition when isNoDep is true only
+	}
+	reuse.MSRACache.SetReadDep(roundID, txHash, txPreplay, rwrecord, preBlockHash, isNoDep)
+
+}
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
 	nowTime := time.Now()
 	groundResult := &cache.SimpleResult{
@@ -46,6 +47,20 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 	case 2:
 		reuse.MSRACache.PrintGround(groundResult)
 	}
+}
+
+func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
+	//nowTime := time.Now()
+	//reuse.MSRACache.CommitTxListen(&cache.TxListen{
+	//	Tx:              tx,
+	//	ListenTime:      uint64(nowTime.Unix()),
+	//	ListenTimeNano:  uint64(nowTime.UnixNano()),
+	//	ConfirmTime:     0,
+	//	ConfirmBlockNum: 0,
+	//})
+	txPreplay := cache.NewTxPreplay(tx)
+	reuse.MSRACache.CommitTxRreplay(txPreplay)
+	return txPreplay
 }
 
 // PreplayTransaction attempts to preplay a transaction to the given state
@@ -84,25 +99,50 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		gas      uint64
 		failed   bool
 	)
+	isNoDep := true
+	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse);
+		reuseStatus == cmptypes.Hit || reuseStatus == cmptypes.FastHit {
 
-	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse); reuseStatus == hit {
+		if groundFlag == 0 {
+			isNoDep = IsNoDep(round.RWrecord.RAddresses, statedb)
+		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		rwrecord = round.RWrecord
 	} else {
 		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, core.NewController(), msg)
-		if err == nil {
-			receipt = reuse.finalise(config, statedb, header, tx, usedGas, gas, failed, msg)
+		if groundFlag == 0 {
+			_, _, _, rAddresses := statedb.RWRecorder().RWDump()
+			isNoDep = IsNoDep(rAddresses, statedb)
 		}
 
-		// Record RWSet
-		rstate, rchain, wstate := statedb.RWRecorder().RWDump()
-		rwrecord = cache.NewRWRecord(rstate, rchain, wstate, failed)
+		if err == nil {
+			receipt = reuse.finalise(config, statedb, header, tx, usedGas, gas, failed, msg)
+			rstate, rchain, wstate, radd := statedb.RWRecorder().RWDump()
+			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, radd, failed)
+		}
+
 		statedb.RWRecorder().RWClear() // Write set got
 	}
+
+	if err != nil {
+		return nil, err
+	}
 	if groundFlag == 0 {
-		reuse.setMainResult(roundID, tx, receipt, rwrecord)
+		reuse.setAllResult(roundID, tx, receipt, rwrecord, header.ParentHash, isNoDep)
 	} else {
 		reuse.commitGround(tx, receipt, rwrecord, groundFlag)
 	}
 	return receipt, err
+}
+
+// SetReadDep set the read dep info for a tx in a given round
+func IsNoDep(raddresses []common.Address, statedb *state.StateDB) bool {
+	isNoDep := true
+	for _, addr := range raddresses {
+		if statedb.IsInPending(addr) {
+			isNoDep = false
+			break
+		}
+	}
+	return isNoDep
 }

@@ -733,6 +733,7 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	var receipt *types.Receipt
 
 	cfg := w.chain.GetVMConfig()
+	// FIXME
 	if !cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.GroundRecord {
 		groundStatedb := state.NewRWStateDB(w.current.state.Copy())
 

@@ -3,6 +3,7 @@
 package cmptypes
 
 type Field int
+
 const (
 	// Chain info
 	Blockhash Field = iota + 1
@@ -25,4 +26,16 @@ const (
 	// Write State
 	DirtyStorage
 	Suicided
+)
+
+type ReuseStatus int
+
+const (
+	Fail ReuseStatus = iota
+	Hit
+	NoCache
+	CacheNoIn
+	CacheNoMatch
+	Unknown
+	FastHit
 )
