@@ -37,7 +37,6 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 	d := time.Since(t)
 
 	if c.TryFinish() {
-		cache.WaitRealApply = append(cache.WaitRealApply, time.Since(t))
 		cache.RunTx = append(cache.RunTx, d)
 		return gas, failed, err // apply finish and win compete
 	} else {
@@ -48,17 +47,15 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
 	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (cmptypes.ReuseStatus, *cache.PreplayResult) {
 
-	t := time.Now()
 	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish)
 
 	if status == cmptypes.Hit && c.TryFinish() {
 		c.StopEvm()
-		cache.WaitReuse = append(cache.WaitReuse, time.Since(t))
 		cache.GetRW = append(cache.GetRW, d0)
 		cache.SetDB = append(cache.SetDB, d1)
 		cache.ReuseGasCount += round.Receipt.GasUsed
 		cache.RWCmpCnt = append(cache.RWCmpCnt, cmpCnt)
-		return cmptypes.Hit, round // reuse finish and win compete
+		return status, round // reuse finish and win compete
 	} else {
 		return status, nil // reuse finish but lost compete
 	}
@@ -137,17 +134,23 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	var realApplyErr error
 	var realApply sync.WaitGroup
 	realApply.Add(1)
+	realApplyStart := time.Now()
 	routinePool.JobQueue <- func() {
 		gasUsed, failed, realApplyErr = reuse.tryRealApplyTransaction(config, bc, author, &applyGp, applyDB, header, cfg, controller, msg)
 		realApply.Done()
 	}
 
+	reuseStart := time.Now()
 	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre); round != nil {
+		waitReuse := time.Since(reuseStart)
+
 		t0 := time.Now()
 		receipt := reuse.finalise(config, reuseDB, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
+		waitStart := time.Now()
 		realApply.Wait() // can only updatePair after real apply is completed
+		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart) + waitReuse)
 
 		t1 := time.Now()
 		reuseDB.UpdatePair()
@@ -157,6 +160,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		return receipt, nil, reuseStatus // reuse first
 	} else {
 		realApply.Wait() //wait for real apply result set
+		cache.WaitRealApply = append(cache.WaitRealApply, time.Since(realApplyStart))
 
 		t0 := time.Now()
 		var receipt *types.Receipt
