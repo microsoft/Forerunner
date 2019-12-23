@@ -14,7 +14,7 @@ import (
 
 var AlwaysFalse = func() bool { return false }
 
-func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, preBlockHash common.Hash, isNoDep bool) {
+func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, preBlockHash common.Hash, isNoDep bool)(){
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receit or rwrecord should not be nil")
 	}
@@ -111,15 +111,14 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	} else {
 		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, core.NewController(), msg)
 		if groundFlag == 0 {
-			_, _, _, rAddresses, _ := statedb.RWRecorder().RWDump()
+			_, _, _, rAddresses := statedb.RWRecorder().RWDump()
 			isNoDep = IsNoDep(rAddresses, statedb)
 		}
 
 		if err == nil {
 			receipt = reuse.finalise(config, statedb, header, tx, usedGas, gas, failed, msg)
-			// Record RWSet
-			rstate, rchain, wstate, radd, wobject := statedb.RWRecorder().RWDump()
-			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, radd, wobject, failed)
+			rstate, rchain, wstate, radd := statedb.RWRecorder().RWDump()
+			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, radd, failed)
 		}
 
 		statedb.RWRecorder().RWClear() // Write set got

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
@@ -99,6 +99,7 @@ type PreplayResults struct {
 	Rounds    *lru.Cache `json:"-"`
 	RWrecords *lru.Cache `json:"-"`
 	ReadDeps  *lru.Cache `json:"-"`
+
 }
 
 // PreplayResult record one round result
@@ -129,17 +130,18 @@ type PreplayResult struct {
 	Filled int64
 }
 
+type StateRW map[common.Address]map[cmptypes.Field]interface{}
+type ChainInfo map[cmptypes.Field]interface{}
 // RWRecord for record
 type RWRecord struct {
 	RWHash string
 	IterMu sync.Mutex
 	// HashOrder [][]byte
 
-	RState     map[common.Address]*state.ReadState
+	RState     StateRW
 	RAddresses []common.Address
-	RChain     state.ReadChain
-	WState     map[common.Address]*state.WriteState
-	WObject    state.ObjectMap
+	RChain     ChainInfo
+	WState     StateRW
 
 	Failed bool
 	Hashed bool
@@ -166,20 +168,19 @@ type ReadDep struct {
 
 // NewRWRecord create new RWRecord
 func NewRWRecord(
-	rstate map[common.Address]*state.ReadState,
-	rchain state.ReadChain,
-	wstate map[common.Address]*state.WriteState,
+	rstate StateRW,
+	rchain map[cmptypes.Field]interface{},
+	wstate StateRW,
 	radd []common.Address,
-	wobject state.ObjectMap,
 	failed bool,
 ) *RWRecord {
 	return &RWRecord{
-		RState:  rstate,
-		RChain:  rchain,
-		WState:  wstate,
-		WObject: wobject,
-		Failed:  failed,
-		Hashed:  false,
+		RState:     rstate,
+		RAddresses: radd,
+		RChain:     rchain,
+		WState:     wstate,
+		Failed:     failed,
+		Hashed:     false,
 	}
 	// return nil
 }
@@ -227,51 +228,53 @@ func (rw *RWRecord) GetHash() string {
 
 	var res [][]byte
 
-	if rw.RChain.Blockhash != nil {
-		for _, blkHash := range rw.RChain.Blockhash {
-			res = append(res, GetBytes(blkHash.Big().String()))
+	for key := range rw.RChain {
+		switch key {
+		case cmptypes.Coinbase:
+			v := rw.RChain[key].(common.Address)
+			res = append(res, GetBytes(v.String()))
+		case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty:
+			v := rw.RChain[key].(*big.Int)
+			res = append(res, GetBytes(v.String()))
+		case cmptypes.GasLimit:
+			v := rw.RChain[key].(uint64)
+			res = append(res, GetBytes(v))
+		case cmptypes.Blockhash:
+			mBlockHash, ok := rw.RChain[key].(map[uint64]common.Hash)
+			if ok {
+				for _, blkHash := range mBlockHash {
+					res = append(res, GetBytes(blkHash.Big().String()))
+				}
+			} else {
+				mBlockHash := rw.RChain[key].(map[uint64]*big.Int)
+				for _, blkHash := range mBlockHash {
+					res = append(res, GetBytes(blkHash.String()))
+				}
+			}
+
 		}
-	}
-	if rw.RChain.Coinbase != nil {
-		res = append(res, GetBytes(rw.RChain.Coinbase.Hex()))
-	}
-	if rw.RChain.Timestamp != nil {
-		res = append(res, GetBytes(rw.RChain.Timestamp.String()))
-	}
-	if rw.RChain.Number != nil {
-		res = append(res, GetBytes(rw.RChain.Number.String()))
-	}
-	if rw.RChain.Difficulty != nil {
-		res = append(res, GetBytes(rw.RChain.Difficulty.String()))
-	}
-	if rw.RChain.GasLimit != nil {
-		res = append(res, GetBytes(*rw.RChain.GasLimit))
 	}
 
-	for _, rstate := range rw.RState {
-		if rstate.Balance != nil {
-			res = append(res, GetBytes(rstate.Balance.String()))
-		}
-		if rstate.Nonce != nil {
-			res = append(res, GetBytes(*rstate.Nonce))
-		}
-		if rstate.CodeHash != nil {
-			res = append(res, GetBytes(rstate.CodeHash.Hex()))
-		}
-		if rstate.Exist != nil {
-			res = append(res, GetBytes(*rstate.Exist))
-		}
-		if rstate.Empty != nil {
-			res = append(res, GetBytes(*rstate.Empty))
-		}
-		if rstate.Storage != nil {
-			for _, v := range rstate.Storage {
-				res = append(res, GetBytes(v.Hex()))
-			}
-		}
-		if rstate.CommittedStorage != nil {
-			for _, v := range rstate.CommittedStorage {
-				res = append(res, GetBytes(v.Hex()))
+	for addr, mValues := range rw.RState {
+		for key := range mValues {
+			switch key {
+			case cmptypes.Exist, cmptypes.Empty:
+				v := rw.RState[addr][key].(bool)
+				res = append(res, GetBytes(v))
+			case cmptypes.Balance:
+				v := rw.RState[addr][key].(*big.Int)
+				res = append(res, GetBytes(v.String()))
+			case cmptypes.Nonce:
+				v := rw.RState[addr][key].(uint64)
+				res = append(res, GetBytes(v))
+			case cmptypes.CodeHash:
+				v := rw.RState[addr][key].(common.Hash)
+				res = append(res, GetBytes(v.String()))
+			case cmptypes.Storage, cmptypes.CommittedStorage:
+				storage := rw.RState[addr][key].(map[common.Hash]common.Hash)
+				for _, v := range storage {
+					res = append(res, GetBytes(v.String()))
+				}
 			}
 		}
 	}

@@ -33,7 +33,7 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 		return
 	}
 	_, gas, failed, err = core.ApplyMessage(evm, msg, gp)
-	if err != nil {
+	if err != nil || evm.Cancelled() {
 		statedb.RevertToSnapshot(snap)
 		if statedb.IsRWMode() {
 			statedb.RWRecorder().RWClear()

@@ -829,22 +829,6 @@ func (s *StateDB) UpdatePair() {
 }
 
 func (s *StateDB) updateObject(db *StateDB) {
-	for addr := range db.journal.dirties {
-		if _, ok := s.journal.dirties[addr]; ok {
-			continue
-		}
-		object1, exist := s.delta.stateObjects[addr]
-		if !exist {
-			delete(db.delta.stateObjects, addr)
-			continue
-		}
-		if object2, ok := db.delta.stateObjects[addr]; ok {
-			if object1.pair == nil || object1.pair != object2 {
-				s.linkObject(object1, object2)
-			}
-			object1.updatePair()
-		}
-	}
 	for addr := range s.journal.dirties {
 		object1, exist := s.delta.stateObjects[addr]
 		if !exist {
@@ -852,9 +836,9 @@ func (s *StateDB) updateObject(db *StateDB) {
 		}
 		if object2, ok := db.delta.stateObjects[addr]; ok {
 			if object1.pair == nil || object1.pair != object2 {
-				s.linkObject(object1, object2)
+				object1.pair, object2.pair = object2, object1
+				object2.pendingStorage = object1.pendingStorage
 			}
-			object1.updatePair()
 		} else {
 			object1.shareCopy(db)
 			db.setDeltaStateObject(object1.pair)
@@ -862,12 +846,6 @@ func (s *StateDB) updateObject(db *StateDB) {
 		object1.updateDelta()
 		db.delta.stateObjectsDirty[addr] = struct{}{}
 	}
-}
-
-func (s *StateDB) linkObject(object1, object2 *stateObject) {
-	object1.pair, object2.pair = object2, object1
-	object2.originStorage = object1.originStorage
-	object2.pendingStorage = object1.pendingStorage
 }
 
 func (s *StateDB) updateLogs(db *StateDB) {
@@ -966,7 +944,6 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			s.rwRecorder.UpdateDirtyStateObject(obj)
 			obj.finalise()
 		}
-		s.rwRecorder.UpdateWObject(addr, obj)
 		s.stateObjectsPending[addr] = struct{}{}
 		if isShared {
 			s.delta.stateObjectsDirty[addr] = struct{}{}

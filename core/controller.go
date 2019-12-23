@@ -16,7 +16,7 @@ const Continue = 0
 const abort = 1
 
 func NewController() (c *Controller) {
-	return new(Controller)
+	return &Controller{}
 }
 
 func (c *Controller) Reset() {
