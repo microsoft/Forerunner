@@ -46,6 +46,7 @@ type LogBlockCache struct {
 	NoPreplay     []*LogBlockCacheItem `json:"N"`
 	Miss          []*LogBlockCacheItem `json:"M"`
 	Unknown       []*LogBlockCacheItem `json:"U"`
+	FastHit       []*LogBlockCacheItem `json:"F"`
 	Timestamp     uint64               `json:"processTime"` // Generation Time
 	TimestampNano uint64               `json:"processTimeNano"`
 }
@@ -187,8 +188,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		sumUpdatePair    = SumDuration(UpdatePair)
 		sumGetRW         = SumDuration(GetRW)
 		//sumFastGetRW     = SumDuration(FastGetRW)
-		sumSetDB         = SumDuration(SetDB)
-		sumRunTx         = SumDuration(RunTx)
+		sumSetDB = SumDuration(SetDB)
+		sumRunTx = SumDuration(RunTx)
 
 		sumCmpCount = SumCount(RWCmpCnt)
 	)
@@ -307,6 +308,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 		NoPreplay: []*LogBlockCacheItem{},
 		Miss:      []*LogBlockCacheItem{},
 		Unknown:   []*LogBlockCacheItem{},
+		FastHit:   []*LogBlockCacheItem{},
 	}
 
 	listenTxCnt := uint64(0)
@@ -325,7 +327,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 	processTimeNano := blockPre.ListenTimeNano
 
 	if len(reuseResult) != 0 {
-		reuseCnt := [6]uint64{}
+		reuseCnt := [7]uint64{}
 		for index, tx := range block.Transactions() {
 			reuseCnt[reuseResult[index]]++
 
@@ -389,6 +391,9 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 
 			case 5:
 				cacheResult.Unknown = append(cacheResult.Unknown, txCache)
+
+			case 6:
+				cacheResult.FastHit = append(cacheResult.FastHit, txCache)
 
 			default:
 				// Do nothing

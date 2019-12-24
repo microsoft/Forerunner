@@ -1,6 +1,7 @@
 package cmpreuse
 
 import (
+	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -28,58 +29,40 @@ func codeHashEquivalent(l common.Hash, r common.Hash) bool {
 
 // CheckRChain check rw.Rchain
 func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header) bool {
-	for key, value := range rw.RChain {
-		if !CheckRChainField(key, value, bc, header) {
-			return false
+	if rw.RChain.Coinbase != nil && header.Coinbase != *rw.RChain.Coinbase {
+		// log.Info("RChain Coinbase miss", "pve", *rw.RChain.Coinbase, "now", header.Coinbase)
+		return false
+	}
+	if rw.RChain.Timestamp != nil && header.Time != rw.RChain.Timestamp.Uint64() {
+		// log.Info("RChain Timestamp miss", "pve", rw.RChain.Timestamp, "now", header.Time)
+		return false
+	}
+	if rw.RChain.Number != nil && header.Number.Cmp(rw.RChain.Number) != 0 {
+		// log.Info("RChain Number miss", "pve", rw.RChain.Number, "now", header.Number)
+		return false
+	}
+	if rw.RChain.Difficulty != nil && header.Difficulty.Cmp(rw.RChain.Difficulty) != 0 {
+		// log.Info("RChain Difficulty miss", "pve", rw.RChain.Difficulty, "now", header.Difficulty)
+		return false
+	}
+	if rw.RChain.GasLimit != nil && header.GasLimit != *rw.RChain.GasLimit {
+		// log.Info("RChain GasLimit miss", "pve", rw.RChain.GasLimit, "now", header.GasLimit)
+		return false
+	}
+	if rw.RChain.Blockhash != nil {
+		currentNum := header.Number.Uint64()
+		getHashFn := core.GetHashFn(header, bc)
+		for num, blkHash := range rw.RChain.Blockhash {
+			if num > (currentNum-257) && num < currentNum {
+				if blkHash != getHashFn(num) {
+					// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
+					return false
+				}
+			} else if blkHash.Big().Cmp(common.Big0) != 0 {
+				// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
+				return false
+			}
 		}
-		//switch key {
-		//case cmptypes.Coinbase:
-		//	v := value.(common.Address)
-		//	// fixed with direct ==
-		//	if v != header.Coinbase {
-		//		// log.Info("RChain Coinbase miss", "pve", v, "now", header.Coinbase)
-		//		return false
-		//	}
-		//case cmptypes.Timestamp:
-		//	v := value.(*big.Int)
-		//	if v.Uint64() != header.Time {
-		//		// log.Info("RChain Timestamp miss", "pve", v, "now", header.Time)
-		//		return false
-		//	}
-		//case cmptypes.Number:
-		//	v := value.(*big.Int)
-		//	if v.Cmp(header.Number) != 0 {
-		//		// log.Info("RChain Number miss", "pve", v, "now", header.Number)
-		//		return false
-		//	}
-		//case cmptypes.Difficulty:
-		//	v := value.(*big.Int)
-		//	if v.Cmp(header.Difficulty) != 0 {
-		//		// log.Info("RChain Difficulty miss", "pve", v, "now", header.Difficulty)
-		//		return false
-		//	}
-		//case cmptypes.GasLimit:
-		//	v := value.(uint64)
-		//	if v != header.GasLimit {
-		//		// log.Info("RChain GasLimit miss", "pve", v, "now", header.GasLimit)
-		//		return false
-		//	}
-		//case cmptypes.Blockhash:
-		//	mBlockHash := value.(map[uint64]common.Hash)
-		//	currentNum := header.Number.Uint64()
-		//	getHashFn := core.GetHashFn(header, bc)
-		//	for num, blkHash := range mBlockHash {
-		//		if num > (currentNum-257) && num < currentNum {
-		//			if blkHash != getHashFn(num) {
-		//				// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
-		//				return false
-		//			}
-		//		} else if blkHash.Big().Cmp(common.Big0) != 0 {
-		//			// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
-		//			return false
-		//		}
-		//	}
-		//}
 	}
 	return true
 }
@@ -129,69 +112,54 @@ func CheckRState(rw *cache.RWRecord, statedb *state.StateDB, debugDiff bool) boo
 	statedb.SetRWMode(false)
 	defer statedb.SetRWMode(isRWMode)
 
-	for addr, mValues := range rw.RState {
-		for key, value := range mValues {
-			switch key {
-			case cmptypes.Exist:
-				v := value.(bool)
-				if v != statedb.Exist(addr) {
+	for addr, rstate := range rw.RState {
+		if rstate.Exist != nil && *rstate.Exist != statedb.Exist(addr) {
+			if debugDiff {
+				log.Info("RState Exist miss", "addr", addr, "pve", *rstate.Exist, "now", statedb.Exist(addr))
+			}
+			return false
+		}
+		if rstate.Empty != nil && *rstate.Empty != statedb.Empty(addr) {
+			if debugDiff {
+				log.Info("RState Empty miss", "addr", addr, "pve", *rstate.Empty, "now", statedb.Empty(addr))
+			}
+			return false
+		}
+		if rstate.Balance != nil && rstate.Balance.Cmp(statedb.GetBalance(addr)) != 0 {
+			if debugDiff {
+				log.Info("RState Balance miss", "addr", addr, "pve", rstate.Balance, "now", statedb.GetBalance(addr))
+			}
+			return false
+		}
+		if rstate.Nonce != nil && *rstate.Nonce != statedb.GetNonce(addr) {
+			if debugDiff {
+				log.Info("RState Nonce miss", "addr", addr, "pve", *rstate.Nonce, "now", statedb.GetNonce(addr))
+			}
+			return false
+		}
+		if rstate.CodeHash != nil && !codeHashEquivalent(*rstate.CodeHash, statedb.GetCodeHash(addr)) {
+			if debugDiff {
+				log.Info("RState CodeHash miss", "addr", addr, "pve", *rstate.CodeHash, "now", statedb.GetCodeHash(addr).Big())
+			}
+			return false
+		}
+		if rstate.Storage != nil {
+			for k, v := range rstate.Storage {
+				if statedb.GetState(addr, k) != v {
 					if debugDiff {
-						log.Info("RState Exist miss", "addr", addr, "pve", v, "now", statedb.Exist(addr))
+						log.Info("RState Storage miss", "addr", addr, "pve", v.Big(), "now", statedb.GetState(addr, k).Big())
 					}
 					return false
 				}
-			case cmptypes.Empty:
-				v := value.(bool)
-				if v != statedb.Empty(addr) {
+			}
+		}
+		if rstate.CommittedStorage != nil {
+			for k, v := range rstate.CommittedStorage {
+				if statedb.GetCommittedState(addr, k) != v {
 					if debugDiff {
-						log.Info("RState Empty miss", "addr", addr, "pve", v, "now", statedb.Empty(addr))
+						log.Info("RState CommittedStorage miss", "addr", addr, "pve", v.Big(), "now", statedb.GetCommittedState(addr, k).Big())
 					}
 					return false
-				}
-			case cmptypes.Balance:
-				v := value.(*big.Int)
-				if v.Cmp(statedb.GetBalance(addr)) != 0 {
-					if debugDiff {
-						log.Info("RState Balance miss", "addr", addr, "pve", v, "now", statedb.GetBalance(addr))
-					}
-					return false
-				}
-			case cmptypes.Nonce:
-				v := value.(uint64)
-				if v != statedb.GetNonce(addr) {
-					if debugDiff {
-						log.Info("RState Nonce miss", "addr", addr, "pve", v, "now", statedb.GetNonce(addr))
-					}
-					return false
-				}
-			case cmptypes.CodeHash:
-				v := value.(common.Hash)
-				w := statedb.GetCodeHash(addr)
-				if !codeHashEquivalent(v, w) {
-					if debugDiff {
-						log.Info("RState CodeHash miss", "addr", addr, "pve", v.Big(), "now", statedb.GetCodeHash(addr).Big())
-					}
-					return false
-				}
-			case cmptypes.Storage:
-				storage := value.(map[common.Hash]common.Hash)
-				for k, v := range storage {
-					if statedb.GetState(addr, k) != v {
-						if debugDiff {
-							log.Info("RState Storage miss", "addr", addr, "pve", v.Big(), "now", statedb.GetState(addr, k).Big())
-						}
-						return false
-					}
-				}
-			case cmptypes.CommittedStorage:
-				storage := value.(map[common.Hash]common.Hash)
-				for k, v := range storage {
-					if statedb.GetCommittedState(addr, k) != v {
-						if debugDiff {
-							log.Info("RState CommittedStorage miss", "addr", addr, "pve", v.Big(), "now", statedb.GetCommittedState(addr, k).Big())
-						}
-						return false
-					}
 				}
 			}
 		}
@@ -199,79 +167,80 @@ func CheckRState(rw *cache.RWRecord, statedb *state.StateDB, debugDiff bool) boo
 	return true
 }
 
-func GetRChainField(loc *cache.Location, bc core.ChainContext, header *types.Header) interface{} {
-	switch loc.Field {
-	case cmptypes.Coinbase:
-		return header.Coinbase
-	case cmptypes.Timestamp:
-		return header.Time
-	case cmptypes.Number:
-		return header.Number
-	case cmptypes.Difficulty:
-		return header.Difficulty
-	case cmptypes.GasLimit:
-		return header.GasLimit
-	case cmptypes.Blockhash:
-		getHashFn := core.GetHashFn(header, bc)
-		number := loc.Loc.(uint64)
-		return getHashFn(number)
-	}
-	return nil
-}
-
-func GetRStateValue(addrLoc *cache.AddrLocation, statedb *state.StateDB) interface{} {
-	addr := addrLoc.Address
-	switch addrLoc.Location.Field {
-	case cmptypes.Exist:
-		return statedb.Exist(addr)
-	case cmptypes.Empty:
-		return statedb.Empty(addr)
-	case cmptypes.Balance:
-		return statedb.GetBalance(addr)
-	case cmptypes.Nonce:
-		return statedb.GetNonce(addr)
-	case cmptypes.CodeHash:
-		return statedb.GetCodeHash(addr)
-	case cmptypes.Storage:
-		position := addrLoc.Location.Loc.(common.Hash)
-		return statedb.GetState(addr, position)
-	case cmptypes.CommittedStorage:
-		position := addrLoc.Location.Loc.(common.Hash)
-		return statedb.GetCommittedState(addr, position)
-	}
-	return nil
-}
+//func GetRChainField(loc *cache.Location, bc core.ChainContext, header *types.Header) interface{} {
+//	switch loc.Field {
+//	case cmptypes.Coinbase:
+//		return header.Coinbase
+//	case cmptypes.Timestamp:
+//		return header.Time
+//	case cmptypes.Number:
+//		return header.Number
+//	case cmptypes.Difficulty:
+//		return header.Difficulty
+//	case cmptypes.GasLimit:
+//		return header.GasLimit
+//	case cmptypes.Blockhash:
+//		getHashFn := core.GetHashFn(header, bc)
+//		number := loc.Loc.(uint64)
+//		return getHashFn(number)
+//	}
+//	return nil
+//}
+//
+//func GetRStateValue(addrLoc *cache.AddrLocation, statedb *state.StateDB) interface{} {
+//	addr := addrLoc.Address
+//	switch addrLoc.Location.Field {
+//	case cmptypes.Exist:
+//		return statedb.Exist(addr)
+//	case cmptypes.Empty:
+//		return statedb.Empty(addr)
+//	case cmptypes.Balance:
+//		return statedb.GetBalance(addr)
+//	case cmptypes.Nonce:
+//		return statedb.GetNonce(addr)
+//	case cmptypes.CodeHash:
+//		return statedb.GetCodeHash(addr)
+//	case cmptypes.Storage:
+//		position := addrLoc.Location.Loc.(common.Hash)
+//		return statedb.GetState(addr, position)
+//	case cmptypes.CommittedStorage:
+//		position := addrLoc.Location.Loc.(common.Hash)
+//		return statedb.GetCommittedState(addr, position)
+//	}
+//	return nil
+//}
 
 // ApplyRWRecord apply reuse result
 func ApplyRWRecord(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
-	for addr, mValues := range rw.WState {
-		for key, value := range mValues {
-			if abort() {
-				return
-			}
-			switch key {
-			case cmptypes.Suicided:
-				// Make sure Suicide is called after other mod operations to ensure that a state_object is always there
-				// Otherwise, Suicide will fail to mark the state_object as suicided
-				// Without deferring, it might cause trouble when a new account gets created and suicides within the same transaction
-				// In that case, as we apply write sets out of order, if Suicide is applied before other mod operations to the account,
-				// the account will be left in the state causing mismatch.
-				suicideAddr = append(suicideAddr, addr)
-			case cmptypes.Nonce:
-				v := value.(uint64)
-				statedb.SetNonce(addr, v)
-			case cmptypes.Balance:
-				v := value.(*big.Int)
-				statedb.SetBalance(addr, v)
-			case cmptypes.Code:
-				v := value.(state.Code)
-				statedb.SetCode(addr, v)
-			case cmptypes.DirtyStorage:
-				dirtyStorage := value.(map[common.Hash]common.Hash)
-				for k, v := range dirtyStorage {
-					statedb.SetState(addr, k, v)
-				}
+	for addr, wstate := range rw.WState {
+		if abort() {
+			return
+		}
+		object, ok := rw.WObject[addr]
+		if !ok {
+			panic(fmt.Sprintf("WState WObject miss, addr = %s", addr.Hex()))
+		}
+		if wstate.Suicided != nil && object.Suicide() {
+			// Make sure Suicide is called after other mod operations to ensure that a state_object is always there
+			// Otherwise, Suicide will fail to mark the state_object as suicided
+			// Without deferring, it might cause trouble when a new account gets created and suicides within the same transaction
+			// In that case, as we apply write sets out of order, if Suicide is applied before other mod operations to the account,
+			// the account will be left in the state causing mismatch.
+			suicideAddr = append(suicideAddr, addr)
+		}
+		if wstate.Nonce != nil {
+			statedb.SetNonce(addr, object.Nonce())
+		}
+		if wstate.Balance != nil {
+			statedb.SetBalance(addr, object.Balance())
+		}
+		if wstate.Code != nil {
+			statedb.SetCode(addr, object.Code(nil))
+		}
+		if wstate.DirtyStorage != nil {
+			for k := range wstate.DirtyStorage {
+				statedb.SetState(addr, k, object.GetState(nil, k))
 			}
 		}
 	}

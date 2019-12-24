@@ -68,6 +68,8 @@ func newDeltaObject() *deltaObject {
 	}
 }
 
+type ObjectMap map[common.Address]*stateObject
+
 // stateObject represents an Ethereum account which is being modified.
 //
 // The usage pattern is as follows:
@@ -485,7 +487,7 @@ func (s *stateObject) addDelta() {
 	}
 }
 
-func (s *stateObject) updateDelta() {
+func (s *stateObject) updatePair() {
 	obj := s.pair
 	obj.data.Nonce = s.data.Nonce
 	if obj.data.Balance.Cmp(s.data.Balance) != 0 {
@@ -493,14 +495,7 @@ func (s *stateObject) updateDelta() {
 	}
 	obj.data.CodeHash = s.data.CodeHash
 	obj.code = s.code
-	s.updateOriginStorage(s.delta.originStorage)
-	s.delta.originStorage = make(Storage)
 	obj.delta.originStorage = make(Storage)
-	obj.originStorage = s.originStorage
-	for addr, value := range s.delta.pendingStorage {
-		s.pendingStorage[addr] = value
-	}
-	s.delta.pendingStorage = make(Storage)
 	obj.delta.pendingStorage = make(Storage)
 	obj.dirtyStorage = make(Storage)
 	obj.dirtyCode = s.dirtyCode
@@ -512,19 +507,25 @@ func (s *stateObject) updateDelta() {
 	obj.dirtyStorageCount = make(map[common.Hash]uint)
 }
 
+func (s *stateObject) updateDelta() {
+	s.updateOriginStorage(s.delta.originStorage)
+	s.delta.originStorage = make(Storage)
+	for addr, value := range s.delta.pendingStorage {
+		s.pendingStorage[addr] = value
+	}
+	s.delta.pendingStorage = make(Storage)
+}
+
 func (s *stateObject) updateOriginStorage(storage Storage) {
 	if len(storage) == 0 {
 		return
 	}
-	if len(s.originStorage) == 0 {
-		s.originStorage = storage
-	} else {
-		if len(storage) > len(s.originStorage) {
-			s.originStorage, storage = storage, s.originStorage
-		}
-		for addr, value := range storage {
-			s.originStorage[addr] = value
-		}
+	if len(storage) > len(s.originStorage) {
+		s.originStorage, storage = storage, s.originStorage
+		s.pair.originStorage = s.originStorage
+	}
+	for addr, value := range storage {
+		s.originStorage[addr] = value
 	}
 }
 
@@ -596,6 +597,11 @@ func (s *stateObject) Balance() *big.Int {
 
 func (s *stateObject) Nonce() uint64 {
 	return s.data.Nonce
+}
+
+// TODO need to be remove
+func (s *stateObject) Suicide() bool {
+	return s.suicided
 }
 
 func (s *stateObject) hasDirtyWrite() bool {
