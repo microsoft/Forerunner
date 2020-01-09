@@ -3,7 +3,6 @@ package cache
 import (
 	"bytes"
 	"encoding/gob"
-
 	"math/big"
 	"sort"
 	"sync"
@@ -109,10 +108,11 @@ type PreplayResult struct {
 	GasPrice *big.Int    `json:"gasPrice"`
 
 	// Main Result
-	Receipt       *types.Receipt `json:"receipt"`
-	RWrecord      *RWRecord      `json:"rwrecord"`
-	Timestamp     uint64         `json:"timestamp"` // Generation Time
-	TimestampNano uint64         `json:"timestampNano"`
+	Receipt       *types.Receipt  `json:"receipt"`
+	RWrecord      *RWRecord       `json:"rwrecord"`
+	WObjects      state.ObjectMap `json:"wobjects"`
+	Timestamp     uint64          `json:"timestamp"` // Generation Time
+	TimestampNano uint64          `json:"timestampNano"`
 
 	// fastCheck info
 	BasedBlockHash common.Hash   `json:"basedBlock"`
@@ -139,7 +139,6 @@ type RWRecord struct {
 	RAddresses []common.Address
 	RChain     state.ReadChain
 	WState     map[common.Address]*state.WriteState
-	WObject    state.ObjectMap
 
 	Failed bool
 	Hashed bool
@@ -169,7 +168,6 @@ func NewRWRecord(
 	rstate map[common.Address]*state.ReadState,
 	rchain state.ReadChain,
 	wstate map[common.Address]*state.WriteState,
-	wobject state.ObjectMap,
 	radd []common.Address,
 	failed bool,
 ) *RWRecord {
@@ -178,7 +176,6 @@ func NewRWRecord(
 		RAddresses: radd,
 		RChain:     rchain,
 		WState:     wstate,
-		WObject:    wobject,
 		Failed:     failed,
 		Hashed:     false,
 	}
@@ -482,7 +479,8 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 }
 
 // SetMainResult set the result for a tx
-func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt *types.Receipt, rwRecord *RWRecord, preBlockHash common.Hash, txPreplay *TxPreplay) bool {
+func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt *types.Receipt, rwRecord *RWRecord,
+	wobjects state.ObjectMap, preBlockHash common.Hash, txPreplay *TxPreplay) bool {
 
 	if receipt == nil || rwRecord == nil {
 		log.Debug("[PreplayCache] Nil Error", "txHash", txHash)
@@ -502,6 +500,7 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 	round, _ := txPreplay.CreateOrGetRound(roundID)
 
 	nowTime := time.Now()
+	round.WObjects = wobjects
 	round.Timestamp = uint64(nowTime.Unix())
 	round.TimestampNano = uint64(nowTime.UnixNano())
 

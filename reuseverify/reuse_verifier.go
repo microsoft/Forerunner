@@ -78,8 +78,8 @@ func (p *RWRecordBlockProcessor) ApplyTransaction(tx *types.Transaction) (receip
 }
 
 func (p *RWRecordBlockProcessor) getRWRecord() *cache.RWRecord {
-	rstate, rchain, wstate, radd, _ := p.statedb.RWRecorder().RWDump()
-	rw := cache.NewRWRecord(rstate, rchain, wstate, make(state.ObjectMap), radd, false)
+	rstate, rchain, wstate, radd := p.statedb.RWRecorder().RWDump()
+	rw := cache.NewRWRecord(rstate, rchain, wstate, radd, false)
 	return rw
 }
 
@@ -188,7 +188,7 @@ func (v *ReuseVerifier) TestBlock(block *types.Block, statedb *state.StateDB, cf
 			return false
 		}
 
-		cmpreuse.ApplyRWRecord(testDb, rw, cmpreuse.AlwaysFalse)
+		cmpreuse.ApplyWStates(testDb, rw, cmpreuse.AlwaysFalse)
 
 		testDb.Finalise(true)
 		root2 := state.IntermediateRootCalc(testDb).Bytes()

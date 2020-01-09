@@ -90,12 +90,12 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 	return receipt
 }
 
-// ReuseTransaction attempts to apply a transaction to the given state database
+// ReuseTransaction attempts to reuse a transaction to the given state database
 // and uses the input parameters for its environment. It returns the receipt
 // for the transaction and an error if the transaction failed, indicating the
 // block was invalid.
 // Cmpreuse.ReuseTransaction used for only one scenario:
-// 		process the block with reusing preplay results
+// 		process the block with reusing preplay results, execute transaction concurrently
 // external args (comparing with core.ApplyTransaction)
 //		`blockPre`:
 //			used to help `getValidRW` skip rounds which are later then `blockPre`
@@ -153,8 +153,8 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart) + waitReuse)
 
 		t1 := time.Now()
-		reuseDB.UpdatePair()
-		cache.UpdatePair = append(cache.UpdatePair, time.Since(t1))
+		reuseDB.Update()
+		cache.Update = append(cache.Update, time.Since(t1))
 
 		*gp = reuseGp
 		return receipt, nil, reuseStatus // reuse first
@@ -170,8 +170,8 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
 		t1 := time.Now()
-		applyDB.UpdatePair()
-		cache.UpdatePair = append(cache.UpdatePair, time.Since(t1))
+		applyDB.Update()
+		cache.Update = append(cache.Update, time.Since(t1))
 
 		*gp = applyGp
 		return receipt, realApplyErr, reuseStatus // real apply first

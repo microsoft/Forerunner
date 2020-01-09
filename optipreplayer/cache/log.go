@@ -20,7 +20,7 @@ type LogBlockInfo struct {
 	WaitReuse     int64         `json:"reuse"`
 	WaitRealApply int64         `json:"realApply"`
 	TxnFinalize   int64         `json:"txFinalize"`
-	UpdatePair    int64         `json:"updatePair"`
+	Update        int64         `json:"updatePair"`
 	GetRW         int64         `json:"getRW"`
 	SetDB         int64         `json:"setDB"`
 	RunTx         int64         `json:"runTx"`
@@ -104,7 +104,7 @@ var (
 	Finalize      time.Duration
 	WaitReuse     []time.Duration
 	WaitRealApply []time.Duration
-	UpdatePair    []time.Duration
+	Update        []time.Duration
 	TxFinalize    []time.Duration
 	GetRW         []time.Duration
 	FastGetRW     []time.Duration
@@ -135,7 +135,7 @@ func ResetLogVar() {
 	Finalize = 0
 	WaitReuse = make([]time.Duration, 50)
 	WaitRealApply = make([]time.Duration, 50)
-	UpdatePair = make([]time.Duration, 50)
+	Update = make([]time.Duration, 50)
 	TxFinalize = make([]time.Duration, 50)
 	GetRW = make([]time.Duration, 50)
 	FastGetRW = make([]time.Duration, 50)
@@ -185,7 +185,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		sumWaitReuse     = SumDuration(WaitReuse)
 		sumWaitRealApply = SumDuration(WaitRealApply)
 		sumTxFinalize    = SumDuration(TxFinalize)
-		sumUpdatePair    = SumDuration(UpdatePair)
+		sumUpdate        = SumDuration(Update)
 		sumGetRW         = SumDuration(GetRW)
 		//sumFastGetRW     = SumDuration(FastGetRW)
 		sumSetDB = SumDuration(SetDB)
@@ -200,7 +200,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		WaitReuse:     sumWaitReuse.Microseconds(),
 		WaitRealApply: sumWaitRealApply.Microseconds(),
 		TxnFinalize:   sumTxFinalize.Microseconds(),
-		UpdatePair:    sumUpdatePair.Microseconds(),
+		Update:        sumUpdate.Microseconds(),
 		GetRW:         sumGetRW.Microseconds(),
 		SetDB:         sumSetDB.Microseconds(),
 		RunTx:         sumRunTx.Microseconds(),
@@ -274,7 +274,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		if infoResult.TxnCount != 0 {
 			context = append(context,
 				"reuse/realApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
-				"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdatePair)/float64(sumApply)))
+				"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
 			if sumWaitReuse != 0 {
 				context = append(context,
 					"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),

@@ -410,11 +410,12 @@ func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) (ret 
 	return common.Hash{}
 }
 
-// IsInPending return whether a state object is in statePanding
+// IsInPending return whether a state object is in statePending
 func (s *StateDB) IsInPending(addr common.Address) bool {
 	_, ok := s.stateObjectsPending[addr]
 	return ok
 }
+
 func (s *StateDB) PendingAddress() []common.Address {
 	var res []common.Address
 	for addr := range s.stateObjectsPending {
@@ -723,6 +724,7 @@ func (s *StateDB) Copy() *StateDB {
 		logSize:             s.logSize,
 		preimages:           make(map[common.Hash][]byte, len(s.preimages)),
 		journal:             newJournal(),
+		ProcessedTxs:        &[]common.Hash{},
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		rwRecorder:          emptyRWRecorder{},
@@ -816,7 +818,7 @@ func (s *StateDB) IsSecondary() bool {
 	return s.delta != nil && !s.primary
 }
 
-func (s *StateDB) UpdatePair() {
+func (s *StateDB) Update() {
 	if s.IsShared() && s.pair.IsShared() {
 		s.updateObject(s.pair)
 		s.updateLogs(s.pair)
@@ -851,12 +853,18 @@ func (s *StateDB) updateObject(db *StateDB) {
 			continue
 		}
 		if object2, ok := db.delta.stateObjects[addr]; ok {
-			if object1.pair == nil || object1.pair != object2 {
+			if object1.pair == nil || object1.pair == object2 {
 				s.linkObject(object1, object2)
+				object1.updatePair()
+			} else {
+				db.setDeltaStateObject(object1.pair)
 			}
-			object1.updatePair()
 		} else {
-			object1.shareCopy(db)
+			if object1.pair == nil {
+				object1.shareCopy(db)
+			} else {
+				object1.updatePair()
+			}
 			db.setDeltaStateObject(object1.pair)
 		}
 		object1.updateDelta()
@@ -1068,6 +1076,17 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 		}
 		return nil
 	})
+}
+
+func (s *StateDB) ApplyStateObject(object *stateObject) {
+	object.db = s
+	object.pair.db = s.pair
+	s.journal.dirties[object.address]++
+	if s.IsShared() {
+		s.setDeltaStateObject(object)
+	} else {
+		s.setStateObject(object)
+	}
 }
 
 func IntermediateRootCalc(s *StateDB) common.Hash {

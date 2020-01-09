@@ -14,9 +14,22 @@ import (
 
 var AlwaysFalse = func() bool { return false }
 
-func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, preBlockHash common.Hash, isNoDep bool) {
+// SetReadDep set the read dep info for a tx in a given round
+func IsNoDep(raddresses []common.Address, statedb *state.StateDB) bool {
+	isNoDep := true
+	for _, addr := range raddresses {
+		if statedb.IsInPending(addr) {
+			isNoDep = false
+			break
+		}
+	}
+	return isNoDep
+}
+
+func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord,
+	wobjects state.ObjectMap, preBlockHash common.Hash, isNoDep bool) {
 	if receipt == nil || rwrecord == nil {
-		panic("cmpreuse: receit or rwrecord should not be nil")
+		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
 
 	txHash := tx.Hash()
@@ -24,7 +37,7 @@ func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, recei
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx)
 	}
-	reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord, preBlockHash, txPreplay)
+	reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord, wobjects, preBlockHash, txPreplay)
 	if !isNoDep {
 		return // record this condition when isNoDep is true only
 	}
@@ -94,12 +107,13 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	}
 
 	var (
+		isNoDep  = true
 		receipt  *types.Receipt
 		rwrecord *cache.RWRecord
+		wobjects state.ObjectMap
 		gas      uint64
 		failed   bool
 	)
-	isNoDep := true
 	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse);
 		reuseStatus == cmptypes.Hit || reuseStatus == cmptypes.FastHit {
 
@@ -108,42 +122,30 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		rwrecord = round.RWrecord
+		wobjects = statedb.RWRecorder().WObjectDump()
 	} else {
 		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, core.NewController(), msg)
 		if groundFlag == 0 {
-			_, _, _, rAddresses, _ := statedb.RWRecorder().RWDump()
+			_, _, _, rAddresses := statedb.RWRecorder().RWDump()
 			isNoDep = IsNoDep(rAddresses, statedb)
 		}
 
+		defer statedb.RWRecorder().RWClear() // Write set got
 		if err == nil {
 			receipt = reuse.finalise(config, statedb, header, tx, usedGas, gas, failed, msg)
 			// Record RWSet
-			rstate, rchain, wstate, radd, wobject := statedb.RWRecorder().RWDump()
-			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, wobject, radd, failed)
+			rstate, rchain, wstate, radd := statedb.RWRecorder().RWDump()
+			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, radd, failed)
+			wobjects = statedb.RWRecorder().WObjectDump()
+		} else {
+			return nil, err
 		}
-
-		statedb.RWRecorder().RWClear() // Write set got
 	}
 
-	if err != nil {
-		return nil, err
-	}
 	if groundFlag == 0 {
-		reuse.setAllResult(roundID, tx, receipt, rwrecord, header.ParentHash, isNoDep)
+		reuse.setAllResult(roundID, tx, receipt, rwrecord, wobjects, header.ParentHash, isNoDep)
 	} else {
 		reuse.commitGround(tx, receipt, rwrecord, groundFlag)
 	}
 	return receipt, err
-}
-
-// SetReadDep set the read dep info for a tx in a given round
-func IsNoDep(raddresses []common.Address, statedb *state.StateDB) bool {
-	isNoDep := true
-	for _, addr := range raddresses {
-		if statedb.IsInPending(addr) {
-			isNoDep = false
-			break
-		}
-	}
-	return isNoDep
 }

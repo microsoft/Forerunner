@@ -210,38 +210,66 @@ func CheckRState(rw *cache.RWRecord, statedb *state.StateDB, debugDiff bool) boo
 //	return nil
 //}
 
-// ApplyRWRecord apply reuse result
-func ApplyRWRecord(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
+// ApplyWState apply one write state for one address, return whether this account is suicided.
+func ApplyWState(statedb *state.StateDB, addr common.Address, wstate *state.WriteState) bool {
+	if wstate.Nonce != nil {
+		statedb.SetNonce(addr, *wstate.Nonce)
+	}
+	if wstate.Balance != nil {
+		statedb.SetBalance(addr, wstate.Balance)
+	}
+	if wstate.Code != nil {
+		statedb.SetCode(addr, *wstate.Code)
+	}
+	if wstate.DirtyStorage != nil {
+		for k, v := range wstate.DirtyStorage {
+			statedb.SetState(addr, k, v)
+		}
+	}
+	// Make sure Suicide is called after other mod operations to ensure that a state_object is always there
+	// Otherwise, Suicide will fail to mark the state_object as suicided
+	// Without deferring, it might cause trouble when a new account gets created and suicides within the same transaction
+	// In that case, as we apply write sets out of order, if Suicide is applied before other mod operations to the account,
+	// the account will be left in the state causing mismatch.
+	return wstate.Suicided != nil && *wstate.Suicided
+}
+
+// ApplyWStates apply write state for each address in wstate
+func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
 	for addr, wstate := range rw.WState {
 		if abort() {
 			return
 		}
-		object, ok := rw.WObject[addr]
-		if !ok {
-			panic(fmt.Sprintf("WState WObject miss, addr = %s", addr.Hex()))
-		}
-		if wstate.Suicided != nil && object.Suicide() {
-			// Make sure Suicide is called after other mod operations to ensure that a state_object is always there
-			// Otherwise, Suicide will fail to mark the state_object as suicided
-			// Without deferring, it might cause trouble when a new account gets created and suicides within the same transaction
-			// In that case, as we apply write sets out of order, if Suicide is applied before other mod operations to the account,
-			// the account will be left in the state causing mismatch.
+		if ApplyWState(statedb, addr, wstate) {
 			suicideAddr = append(suicideAddr, addr)
 		}
-		if wstate.Nonce != nil {
-			statedb.SetNonce(addr, object.Nonce())
+	}
+	for _, addr := range suicideAddr {
+		if abort() {
+			return
 		}
-		if wstate.Balance != nil {
-			statedb.SetBalance(addr, object.Balance())
+		statedb.Suicide(addr)
+	}
+}
+
+func ApplyWObjects(statedb *state.StateDB, rw *cache.RWRecord, wobject state.ObjectMap, abort func() bool) {
+	var suicideAddr []common.Address
+	for addr, object := range wobject {
+		if abort() {
+			return
 		}
-		if wstate.Code != nil {
-			statedb.SetCode(addr, object.Code(nil))
-		}
-		if wstate.DirtyStorage != nil {
-			for k := range wstate.DirtyStorage {
-				statedb.SetState(addr, k, object.GetState(nil, k))
+		if object == nil {
+			wstate, ok := rw.WState[addr]
+			if !ok {
+				panic(fmt.Sprintf("Write object miss, addr = %s", addr.Hex()))
 			}
+			if ApplyWState(statedb, addr, wstate) {
+				suicideAddr = append(suicideAddr, addr)
+			}
+		} else {
+			statedb.ApplyStateObject(object)
+			wobject[addr] = nil
 		}
 	}
 	for _, addr := range suicideAddr {
@@ -268,6 +296,9 @@ func (reuse *Cmpreuse) fastCheckRState(txPreplay *cache.TxPreplay, bc core.Chain
 		if ok2 {
 			preplayRes := res.(*cache.PreplayResult)
 			record := preplayRes.RWrecord
+			if record == nil {
+				return nil, false
+			}
 			// can not use this as result
 			if blockPre != nil && blockPre.ListenTimeNano < record.Round.TimestampNano {
 				return nil, false
@@ -329,9 +360,13 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 
 // setStateDB use RW to update stateDB, add logs, benefit miner and deduct gas from the pool
 func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, statedb *state.StateDB, header *types.Header,
-	tx *types.Transaction, round *cache.PreplayResult, abort func() bool) {
+	tx *types.Transaction, round *cache.PreplayResult, status cmptypes.ReuseStatus, abort func() bool) {
 
-	ApplyRWRecord(statedb, round.RWrecord, abort)
+	if status == cmptypes.FastHit && !statedb.IsRWMode() {
+		ApplyWObjects(statedb, round.RWrecord, round.WObjects, abort)
+	} else {
+		ApplyWStates(statedb, round.RWrecord, abort)
+	}
 
 	if abort() {
 		return
@@ -380,26 +415,20 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 
 	round, ok = reuse.fastCheckRState(txPreplay, bc, statedb, header, blockPre)
 	if ok {
+		d0 = time.Since(t0)
 		if round.RWrecord == nil {
 			panic(" > > > > > > > > > > > > > > fastcheck return nil rwrecord")
 		}
 		cmpCnt = 1
-		// FIXME
 		status = cmptypes.FastHit
-		d0 = time.Since(t0)
 	} else {
 		round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, isFinish)
-		d0 = time.Since(t0)
 		if ok {
+			d0 = time.Since(t0)
 			if round.RWrecord == nil {
 				panic(" > > > > > > > > > > > > > > getValidRW return nil rwrecord")
 			}
-			if err := gp.SubGas(round.Receipt.GasUsed); err == nil {
-				status = cmptypes.Hit // cache hit
-			} else {
-				status = cmptypes.Fail // fail for gas limit reach, quit compete
-				return
-			}
+			status = cmptypes.Hit // cache hit
 		} else {
 			switch {
 			case abort:
@@ -412,9 +441,13 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 			return
 		}
 	}
+	if err := gp.SubGas(round.Receipt.GasUsed); err != nil {
+		status = cmptypes.Fail // fail for gas limit reach, quit compete
+		return
+	}
 
 	t1 := time.Now()
-	reuse.setStateDB(bc, author, statedb, header, tx, round, isFinish)
+	reuse.setStateDB(bc, author, statedb, header, tx, round, status, isFinish)
 	d1 = time.Since(t1)
 
 	return

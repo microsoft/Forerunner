@@ -33,6 +33,10 @@ import (
 )
 
 type TransactionApplier interface {
+	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+		cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, cmptypes.ReuseStatus)
+
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller) (*types.Receipt,
@@ -163,7 +167,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		//		context = append(context, "waitRealApply", common.PrettyDuration(cache.WaitRealApply[lastIndex]),
 		//			"realApply", common.PrettyDuration(cache.RunTx[lastIndex]))
 		//	}
-		//	context = append(context, "updatePair", common.PrettyDuration(cache.UpdatePair[len(cache.UpdatePair)-1]),
+		//	context = append(context, "updatePair", common.PrettyDuration(cache.Update[len(cache.Update)-1]),
 		//		"txFinalize", common.PrettyDuration(cache.TxFinalize[len(cache.TxFinalize)-1]))
 		//	log.Info("Apply new transaction", context...)
 		//}

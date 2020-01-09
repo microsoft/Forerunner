@@ -33,6 +33,9 @@ type WriteState struct {
 	Suicided     *bool
 }
 
+type ReadStates map[common.Address]*ReadState
+type WriteStates map[common.Address]*WriteState
+
 type RWRecorder interface {
 	_Exist(addr common.Address, so *stateObject, ret bool)
 	_Empty(addr common.Address, so *stateObject, ret bool)
@@ -48,7 +51,8 @@ type RWRecorder interface {
 	UpdateSuicide(addr common.Address)
 	UpdateDirtyStateObject(so *stateObject)
 	RWClear()
-	RWDump() (map[common.Address]*ReadState, ReadChain, map[common.Address]*WriteState, []common.Address, map[common.Address]*stateObject)
+	RWDump() (ReadStates, ReadChain, WriteStates, []common.Address)
+	WObjectDump() map[common.Address]*stateObject
 
 	UpdateRHeader(field cmptypes.Field, val interface{})
 	UpdateRBlockhash(num uint64, val common.Hash)
@@ -83,13 +87,12 @@ func (h emptyRWRecorder) UpdateWStorage(addr common.Address, input common.Hash, 
 func (h emptyRWRecorder) RWClear() {
 }
 
-func (h emptyRWRecorder) RWDump() (
-	map[common.Address]*ReadState,
-	ReadChain,
-	map[common.Address]*WriteState,
-	[]common.Address,
-	map[common.Address]*stateObject) {
+func (h emptyRWRecorder) RWDump() (ReadStates, ReadChain, WriteStates, []common.Address) {
 	panic("Enable RWRecord mode to use RWDump!")
+}
+
+func (h emptyRWRecorder) WObjectDump() map[common.Address]*stateObject {
+	panic("Enable RWRecord mode to use WObjectDump!")
 }
 
 func (h emptyRWRecorder) _Exist(addr common.Address, so *stateObject, ret bool) {
@@ -135,10 +138,10 @@ func (h emptyRWRecorder) UpdateWObject(addr common.Address, object *stateObject)
 }
 
 type rwRecorderImpl struct {
-	RState          map[common.Address]*ReadState
-	RStateAddresses []common.Address
+	RState          ReadStates
 	RChain          ReadChain
-	WState          map[common.Address]*WriteState
+	WState          WriteStates
+	RStateAddresses []common.Address
 	WObject         map[common.Address]*stateObject
 }
 
@@ -230,10 +233,10 @@ func (h *rwRecorderImpl) UpdateDirtyStateObject(so *stateObject) {
 
 func newRWHook() *rwRecorderImpl {
 	return &rwRecorderImpl{
-		RState:          make(map[common.Address]*ReadState),
-		RStateAddresses: []common.Address{},
+		RState:          make(ReadStates),
 		RChain:          ReadChain{},
-		WState:          make(map[common.Address]*WriteState),
+		WState:          make(WriteStates),
+		RStateAddresses: []common.Address{},
 		WObject:         make(map[common.Address]*stateObject),
 	}
 }
@@ -243,20 +246,23 @@ func (h *rwRecorderImpl) DirtyDump() map[string]interface{} {
 	tmpMap["RState"] = h.RState
 	tmpMap["RChain"] = h.RChain
 	tmpMap["WState"] = h.WState
-	tmpMap["WObject"] = h.WObject
 	return tmpMap
 }
 
-func (h *rwRecorderImpl) RWDump() (map[common.Address]*ReadState, ReadChain, map[common.Address]*WriteState, []common.Address, map[common.Address]*stateObject) {
-	return h.RState, h.RChain, h.WState, h.RStateAddresses, h.WObject
+func (h *rwRecorderImpl) RWDump() (ReadStates, ReadChain, WriteStates, []common.Address) {
+	return h.RState, h.RChain, h.WState, h.RStateAddresses
+}
+
+func (h *rwRecorderImpl) WObjectDump() map[common.Address]*stateObject {
+	return h.WObject
 }
 
 // no need
 func (h *rwRecorderImpl) RWClear() {
-	h.RState = make(map[common.Address]*ReadState)
-	h.RStateAddresses = []common.Address{}
+	h.RState = make(ReadStates)
 	h.RChain = ReadChain{}
-	h.WState = make(map[common.Address]*WriteState)
+	h.WState = make(WriteStates)
+	h.RStateAddresses = []common.Address{}
 	h.WObject = make(map[common.Address]*stateObject)
 }
 
@@ -390,6 +396,8 @@ func (h *rwRecorderImpl) UpdateWStorage(addr common.Address, key common.Hash, va
 
 func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject) {
 	cpy := object.deepCopy(object.db)
-	cpy.addDelta()
+	cpy.delta = newDeltaObject()
+	cpy.Code(cpy.db.db)
+	cpy.shareCopy(cpy.db)
 	h.WObject[addr] = cpy
 }
