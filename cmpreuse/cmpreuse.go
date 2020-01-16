@@ -45,11 +45,11 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 }
 
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (cmptypes.ReuseStatus, *cache.PreplayResult) {
+	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
-	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish)
+	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true)
 
-	if (status == cmptypes.Hit || status == cmptypes.FastHit) && c.TryFinish() {
+	if status.BaseStatus == cmptypes.Hit && c.TryFinish() {
 		c.StopEvm()
 		cache.GetRW = append(cache.GetRW, d0)
 		cache.SetDB = append(cache.SetDB, d1)
@@ -113,7 +113,7 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller) (*types.Receipt,
-	error, cmptypes.ReuseStatus) {
+	error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
 		panic("ReuseTransaction can only be used for process and statedb must be shared and not be RW mode.")
@@ -121,7 +121,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
-		return nil, err, cmptypes.Fail
+		return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
 	}
 
 	reuseGp, reuseDB := *gp, statedb
@@ -150,7 +150,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		waitStart := time.Now()
 		realApply.Wait() // can only updatePair after real apply is completed
-		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart) + waitReuse)
+		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
 
 		t1 := time.Now()
 		reuseDB.Update()

@@ -37,13 +37,28 @@ func (reuse *Cmpreuse) setAllResult(roundID uint64, tx *types.Transaction, recei
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx)
 	}
+
+	txPreplay.Mu.Lock()
+	defer txPreplay.Mu.Unlock()
+
 	reuse.MSRACache.SetMainResult(roundID, tx.Hash(), receipt, rwrecord, wobjects, preBlockHash, txPreplay)
+	reuse.setResTrie(roundID, txPreplay, rwrecord, receipt.BlockNumber.Uint64())
+
 	if !isNoDep {
 		return // record this condition when isNoDep is true only
 	}
 	reuse.MSRACache.SetReadDep(roundID, txHash, txPreplay, rwrecord, preBlockHash, isNoDep)
 
+
 }
+
+func (reuse *Cmpreuse) setResTrie(roundID uint64, txPreplay *cache.TxPreplay, record *cache.RWRecord, curBlockNumber uint64) {
+	trie := txPreplay.PreplayResults.RWRecordTrie
+	//txPreplay.Mu.Lock()
+	//defer txPreplay.Mu.Unlock()
+	Insert(trie, record, curBlockNumber)
+}
+
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
 	nowTime := time.Now()
 	groundResult := &cache.SimpleResult{
@@ -114,11 +129,11 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		gas      uint64
 		failed   bool
 	)
-	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse);
-		reuseStatus == cmptypes.Hit || reuseStatus == cmptypes.FastHit {
+	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false);
+		reuseStatus.BaseStatus == cmptypes.Hit {
 
 		if groundFlag == 0 {
-			isNoDep = IsNoDep(round.RWrecord.RAddresses, statedb)
+			isNoDep = IsNoDep(round.RWrecord.ReadDetail.ReadAddress, statedb)
 		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		rwrecord = round.RWrecord
@@ -126,16 +141,16 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	} else {
 		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, core.NewController(), msg)
 		if groundFlag == 0 {
-			_, _, _, rAddresses := statedb.RWRecorder().RWDump()
-			isNoDep = IsNoDep(rAddresses, statedb)
+			_, _, _, readDetail := statedb.RWRecorder().RWDump()
+			isNoDep = IsNoDep(readDetail.ReadAddress, statedb)
 		}
 
 		defer statedb.RWRecorder().RWClear() // Write set got
 		if err == nil {
 			receipt = reuse.finalise(config, statedb, header, tx, usedGas, gas, failed, msg)
 			// Record RWSet
-			rstate, rchain, wstate, radd := statedb.RWRecorder().RWDump()
-			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, radd, failed)
+			rstate, rchain, wstate, readDetail := statedb.RWRecorder().RWDump()
+			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, readDetail, failed)
 			wobjects = statedb.RWRecorder().WObjectDump()
 		} else {
 			return nil, err

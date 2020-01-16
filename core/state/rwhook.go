@@ -51,7 +51,8 @@ type RWRecorder interface {
 	UpdateSuicide(addr common.Address)
 	UpdateDirtyStateObject(so *stateObject)
 	RWClear()
-	RWDump() (ReadStates, ReadChain, WriteStates, []common.Address)
+	//RWDump() (map[common.Address]*ReadState, ReadChain, map[common.Address]*WriteState, *cmptypes.ReadDetail, map[common.Address]*stateObject)
+	RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes.ReadDetail)
 	WObjectDump() map[common.Address]*stateObject
 
 	UpdateRHeader(field cmptypes.Field, val interface{})
@@ -87,7 +88,7 @@ func (h emptyRWRecorder) UpdateWStorage(addr common.Address, input common.Hash, 
 func (h emptyRWRecorder) RWClear() {
 }
 
-func (h emptyRWRecorder) RWDump() (ReadStates, ReadChain, WriteStates, []common.Address) {
+func (h emptyRWRecorder) RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes.ReadDetail) {
 	panic("Enable RWRecord mode to use RWDump!")
 }
 
@@ -138,11 +139,11 @@ func (h emptyRWRecorder) UpdateWObject(addr common.Address, object *stateObject)
 }
 
 type rwRecorderImpl struct {
-	RState          ReadStates
-	RChain          ReadChain
-	WState          WriteStates
-	RStateAddresses []common.Address
-	WObject         map[common.Address]*stateObject
+	RState     ReadStates
+	RChain     ReadChain
+	WState     WriteStates
+	ReadDetail *cmptypes.ReadDetail
+	WObject    map[common.Address]*stateObject
 }
 
 func (h *rwRecorderImpl) _Exist(addr common.Address, so *stateObject, ret bool) {
@@ -236,7 +237,7 @@ func newRWHook() *rwRecorderImpl {
 		RState:          make(ReadStates),
 		RChain:          ReadChain{},
 		WState:          make(WriteStates),
-		RStateAddresses: []common.Address{},
+		ReadDetail: cmptypes.NewReadDetail(),
 		WObject:         make(map[common.Address]*stateObject),
 	}
 }
@@ -249,8 +250,8 @@ func (h *rwRecorderImpl) DirtyDump() map[string]interface{} {
 	return tmpMap
 }
 
-func (h *rwRecorderImpl) RWDump() (ReadStates, ReadChain, WriteStates, []common.Address) {
-	return h.RState, h.RChain, h.WState, h.RStateAddresses
+func (h *rwRecorderImpl) RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes.ReadDetail) {
+	return h.RState, h.RChain, h.WState, h.ReadDetail
 }
 
 func (h *rwRecorderImpl) WObjectDump() map[common.Address]*stateObject {
@@ -262,25 +263,50 @@ func (h *rwRecorderImpl) RWClear() {
 	h.RState = make(ReadStates)
 	h.RChain = ReadChain{}
 	h.WState = make(WriteStates)
-	h.RStateAddresses = []common.Address{}
+	h.ReadDetail = cmptypes.NewReadDetail()
 	h.WObject = make(map[common.Address]*stateObject)
 }
 
 func (h *rwRecorderImpl) UpdateRHeader(field cmptypes.Field, val interface{}) {
+	var value interface{}
+	// Make sure all kinds of value should be simple types instead of struct or slice
 	switch field {
 	case cmptypes.Coinbase:
-		coinbase := val.(common.Address)
-		h.RChain.Coinbase = &coinbase
+		if h.RChain.Coinbase == nil {
+			coinbase := val.(common.Address)
+			h.RChain.Coinbase = &coinbase
+			value = coinbase
+		}
 	case cmptypes.Timestamp:
-		h.RChain.Timestamp = val.(*big.Int)
+		if h.RChain.Timestamp == nil {
+			h.RChain.Timestamp = val.(*big.Int)
+			value = val.(*big.Int).Uint64() // Time in `Header` in block.go is uint64
+		}
 	case cmptypes.Number:
-		h.RChain.Number = val.(*big.Int)
+		if h.RChain.Number == nil {
+			h.RChain.Number = val.(*big.Int)
+			value = common.BigToHash(val.(*big.Int)) // Number in `Header` in block.go is *big.Int
+		}
 	case cmptypes.Difficulty:
-		h.RChain.Difficulty = val.(*big.Int)
+		if h.RChain.Difficulty == nil {
+			h.RChain.Difficulty = val.(*big.Int)
+			value = common.BigToHash(val.(*big.Int)) // Difficulty in `Header` in block.go is *big.Int
+		}
 	case cmptypes.GasLimit:
-		gasLimit := val.(uint64)
-		h.RChain.GasLimit = &gasLimit
+		if h.RChain.GasLimit == nil {
+			gasLimit := val.(uint64)
+			h.RChain.GasLimit = &gasLimit
+			value = gasLimit // GasLimit in `Header` in block.go is uint64
+		}
 	}
+
+	if value != nil {
+		addLoc := cmptypes.AddrLocation{IsChain: true, Field: field}
+		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: value}
+		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
+		h.ReadDetail.IsBlockSensitive = true
+	}
+
 }
 
 func (h *rwRecorderImpl) UpdateRBlockhash(num uint64, val common.Hash) {
@@ -289,30 +315,57 @@ func (h *rwRecorderImpl) UpdateRBlockhash(num uint64, val common.Hash) {
 	}
 	if _, ok := h.RChain.Blockhash[num]; !ok {
 		h.RChain.Blockhash[num] = val
+
+		addLoc := cmptypes.AddrLocation{IsChain: true, Field: cmptypes.Blockhash, Loc: num}
+		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: val}
+		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
+		h.ReadDetail.IsBlockSensitive = true
 	}
 }
 
 func (h *rwRecorderImpl) UpdateRAccount(addr common.Address, field cmptypes.Field, val interface{}) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = new(ReadState)
-		h.RStateAddresses = append(h.RStateAddresses, addr)
+		h.ReadDetail.ReadAddress = append(h.ReadDetail.ReadAddress, addr)
 	}
+	var value interface{}
+
 	state := h.RState[addr]
 	switch field {
 	case cmptypes.Balance:
-		state.Balance = val.(*big.Int)
+		if state.Balance == nil {
+			state.Balance = val.(*big.Int)
+			value = common.BigToHash(val.(*big.Int)) // convert complex type to simple type: bytes[32]
+		}
 	case cmptypes.Nonce:
-		nonce := val.(uint64)
-		state.Nonce = &nonce
+		if state.Nonce == nil {
+			nonce := val.(uint64)
+			state.Nonce = &nonce
+			value = nonce
+		}
 	case cmptypes.CodeHash:
-		codeHash := val.(common.Hash)
-		state.CodeHash = &codeHash
+		if state.CodeHash == nil {
+			codeHash := val.(common.Hash)
+			state.CodeHash = &codeHash
+			value = codeHash
+		}
 	case cmptypes.Exist:
-		exist := val.(bool)
-		state.Exist = &exist
+		if state.Exist == nil {
+			exist := val.(bool)
+			state.Exist = &exist
+			value = exist
+		}
 	case cmptypes.Empty:
-		empty := val.(bool)
-		state.Empty = &empty
+		if state.Empty == nil {
+			empty := val.(bool)
+			state.Empty = &empty
+			value = empty
+		}
+	}
+
+	if value != nil {
+		addLoc := cmptypes.AddrLocation{Address: addr, Field: field}
+		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: value})
 	}
 }
 
@@ -343,7 +396,7 @@ func (h *rwRecorderImpl) UpdateRCodeXXX(so *stateObject, addr common.Address) {
 func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Field, key common.Hash, val common.Hash) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = new(ReadState)
-		h.RStateAddresses = append(h.RStateAddresses, addr)
+		h.ReadDetail.ReadAddress = append(h.ReadDetail.ReadAddress, addr)
 	}
 	state := h.RState[addr]
 	if field == cmptypes.Storage {
@@ -352,6 +405,11 @@ func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Fiel
 		}
 		if _, ok := state.Storage[key]; !ok {
 			state.Storage[key] = val
+
+			addLoc := cmptypes.AddrLocation{Address: addr, Field: field, Loc: key}
+			newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: val}
+			h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
+
 		}
 	}
 	if field == cmptypes.CommittedStorage {
@@ -360,6 +418,10 @@ func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Fiel
 		}
 		if _, ok := state.CommittedStorage[key]; !ok {
 			state.CommittedStorage[key] = val
+
+			addLoc := &cmptypes.AddrLocation{Address: addr, Field: field, Loc: key}
+			newAlv := &cmptypes.AddrLocValue{AddLoc: addLoc, Value: val}
+			h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
 		}
 	}
 }

@@ -35,12 +35,12 @@ import (
 type TransactionApplier interface {
 	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, cmptypes.ReuseStatus)
+		cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, *cmptypes.ReuseStatus)
 
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller) (*types.Receipt,
-		error, cmptypes.ReuseStatus)
+		error, *cmptypes.ReuseStatus)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -109,7 +109,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if p.bc.MSRACache != nil {
 		p.bc.MSRACache.CommitBlockPre(blockPre)
 	}
-	var reuseResult []cmptypes.ReuseStatus
+	var reuseResult []*cmptypes.ReuseStatus
 
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.ShareCopy()
@@ -134,7 +134,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 
 		if cfg.MSRAVMSettings.CmpReuse {
-			var reuseStatus cmptypes.ReuseStatus
+			var reuseStatus *cmptypes.ReuseStatus
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, blockPre, p.bc.MSRACache.RoutinePool, controller)
 			reuseResult = append(reuseResult, reuseStatus)
 

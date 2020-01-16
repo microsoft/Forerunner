@@ -29,7 +29,7 @@ import (
 //		5: abort before hit or miss;
 func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, cmptypes.ReuseStatus) {
+	cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsShared() || statedb.IsRWMode() {
 		panic("ApplyTransaction can only be used for process and statedb must not be shared and not be RW mode.")
@@ -37,11 +37,11 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
-		return nil, err, cmptypes.Fail
+		return nil, err, &cmptypes.ReuseStatus{BaseStatus:cmptypes.Fail}
 	}
 
-	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse);
-		reuseStatus == cmptypes.Hit || reuseStatus == cmptypes.FastHit {
+	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false);
+		reuseStatus.BaseStatus == cmptypes.Hit  {
 		receipt := reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		return receipt, nil, reuseStatus
 	} else {

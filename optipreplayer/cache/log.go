@@ -29,7 +29,9 @@ type LogBlockInfo struct {
 	NoPreplay     int           `json:"N"`
 	Miss          int           `json:"M"`
 	Unknown       int           `json:"U"`
-	FastHit       int           `json:"F"`
+	IteraHit      int           `json:"IH"`
+	FastHit       int           `json:"FH"`
+	TrieHit       int           `json:"TH"`
 	Reuse         int           `json:"reuseCount"`
 	ReuseGas      int           `json:"reuseGas"`
 	ProcTime      int64         `json:"procTime"`
@@ -111,7 +113,7 @@ var (
 	SetDB         []time.Duration
 	RunTx         []time.Duration
 
-	ReuseResult   []cmptypes.ReuseStatus
+	ReuseResult   []*cmptypes.ReuseStatus
 	ReuseGasCount uint64
 	RWCmpCnt      []int64
 )
@@ -218,9 +220,17 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			if txListen == nil || txListen.ListenTimeNano > processTimeNano {
 				infoResult.NoListen++
 			}
-			switch ReuseResult[index] {
+			switch ReuseResult[index].BaseStatus {
 			case cmptypes.Hit:
 				infoResult.Hit++
+				switch ReuseResult[index].HitType {
+				case cmptypes.IteraHit:
+					infoResult.IteraHit++
+				case cmptypes.FastHit:
+					infoResult.FastHit++
+				case cmptypes.TrieHit:
+					infoResult.TrieHit++
+				}
 			case cmptypes.NoCache:
 				infoResult.NoPreplay++
 			case cmptypes.CacheNoIn:
@@ -230,10 +240,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 				infoResult.Miss++
 			case cmptypes.Unknown:
 				infoResult.Unknown++
-			case cmptypes.FastHit:
-				infoResult.FastHit++
-				infoResult.Hit++
 			}
+
 		}
 	}
 
@@ -246,7 +254,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		infoResult.RunMode = "reuse"
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		preplayCnt := infoResult.Hit + infoResult.Miss + infoResult.Unknown
-		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, fastHitRate, reuseGasRate float64
+		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, iteraHitRate, fastHitRate, trieHitRate, reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -254,7 +262,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			MissRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			noInResultRate = float64(noInResultCnt) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
+			iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
 			fastHitRate = float64(infoResult.FastHit) / float64(infoResult.TxnCount)
+			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -265,7 +275,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			"Miss", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)", infoResult.Miss, MissRate,
 				noInResultCnt, noInResultRate),
 			"Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
+			"IteraHit", fmt.Sprintf("%03d(%.2f)", infoResult.IteraHit, iteraHitRate),
 			"FastHit", fmt.Sprintf("%03d(%.2f)", infoResult.FastHit, fastHitRate),
+			"TrieHit", fmt.Sprintf("%03d(%.2f)", infoResult.TrieHit, trieHitRate),
 			"ReuseGas", fmt.Sprintf("%03d(%.2f)", infoResult.ReuseGas, reuseGasRate),
 		}
 		log.Info("BlockReuse", context...)
@@ -299,7 +311,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 }
 
 // CachePrint print reuse result of all txns in a block to block folder
-func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.ReuseStatus) {
+func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.ReuseStatus) {
 
 	cacheResult := &LogBlockCache{
 		NoListen:  []*types.Transaction{},
@@ -329,7 +341,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 	if len(reuseResult) != 0 {
 		reuseCnt := [7]uint64{}
 		for index, tx := range block.Transactions() {
-			reuseCnt[reuseResult[index]]++
+			reuseCnt[reuseResult[index].BaseStatus]++
 
 			txListen := r.GetTxListen(tx.Hash())
 			if txListen == nil || txListen.ListenTimeNano > processTimeNano {
@@ -376,7 +388,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 				txCache.ReducedRounds = nil
 			}
 
-			switch reuseResult[index] {
+			switch reuseResult[index].BaseStatus {
 			case 0:
 				cacheResult.Error = append(cacheResult.Error, txCache)
 
@@ -391,9 +403,6 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []cmptypes.Reus
 
 			case 5:
 				cacheResult.Unknown = append(cacheResult.Unknown, txCache)
-
-			case 6:
-				cacheResult.FastHit = append(cacheResult.FastHit, txCache)
 
 			default:
 				// Do nothing

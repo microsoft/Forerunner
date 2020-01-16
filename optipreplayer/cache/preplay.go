@@ -3,11 +3,13 @@ package cache
 import (
 	"bytes"
 	"encoding/gob"
+
 	"math/big"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -48,6 +50,8 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults.Rounds, _ = lru.New(roundLimit)
 	preplayResults.RWrecords, _ = lru.New(roundLimit)
 	preplayResults.ReadDeps, _ = lru.New(3)
+
+	preplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
 	return &TxPreplay{
 		PreplayResults: preplayResults,
 		TxHash:         tx.Hash(),
@@ -95,9 +99,10 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds    *lru.Cache `json:"-"`
-	RWrecords *lru.Cache `json:"-"`
-	ReadDeps  *lru.Cache `json:"-"`
+	Rounds       *lru.Cache `json:"-"`
+	RWrecords    *lru.Cache `json:"-"`
+	ReadDeps     *lru.Cache `json:"-"`
+	RWRecordTrie *cmptypes.PreplayResTrie
 }
 
 // PreplayResult record one round result
@@ -136,7 +141,7 @@ type RWRecord struct {
 	// HashOrder [][]byte
 
 	RState     map[common.Address]*state.ReadState
-	RAddresses []common.Address
+	ReadDetail *cmptypes.ReadDetail
 	RChain     state.ReadChain
 	WState     map[common.Address]*state.WriteState
 
@@ -168,22 +173,22 @@ func NewRWRecord(
 	rstate map[common.Address]*state.ReadState,
 	rchain state.ReadChain,
 	wstate map[common.Address]*state.WriteState,
-	radd []common.Address,
+	rdetail *cmptypes.ReadDetail,
 	failed bool,
 ) *RWRecord {
 	return &RWRecord{
 		RState:     rstate,
-		RAddresses: radd,
 		RChain:     rchain,
 		WState:     wstate,
+		ReadDetail: rdetail,
 		Failed:     failed,
 		Hashed:     false,
 	}
-	// return nil
 }
 
 // Equal judge equal
-func (rw *RWRecord) Equal(rwb *RWRecord) bool {
+func (rw *RWRecord) Equal(rwi cmptypes.RecordHolder) bool {
+	rwb, _ := rwi.(*RWRecord)
 	// print(rw.GetHash().String())
 	if rw == nil && rwb == nil {
 		return true
@@ -291,6 +296,10 @@ func (rw *RWRecord) Dump() map[string]interface{} {
 	tmpMap["RChain"] = rw.RChain
 	tmpMap["WState"] = rw.WState
 	return tmpMap
+}
+
+func (rw *RWRecord) GetPreplayRes() interface{} {
+	return rw.Round
 }
 
 // CurrentState Extra Result part 1
@@ -450,7 +459,6 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 
 	// r.PreplayMu.RLock()
 	// defer r.PreplayMu.RUnlock()
-
 	// cacheTxs := make(map[common.Address]types.Transactions)
 	// keys := r.PreplayCache.Keys()
 	// for _, key := range keys {
@@ -458,22 +466,17 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 	// 	if !ok {
 	// 		continue
 	// 	}
-
 	// 	tx, ok := iTx.(*TxPreplay)
 	// 	if !ok {
 	// 		continue
 	// 	}
-
 	// 	if tx.FlagStatus != true {
-
 	// 		if _, ok := cacheTxs[tx.From]; !ok {
 	// 			cacheTxs[tx.From] = types.Transactions{}
 	// 		}
-
 	// 		cacheTxs[tx.From] = append(cacheTxs[tx.From], tx.Tx)
 	// 	}
 	// }
-
 	// return cacheTxs
 	return nil
 }
@@ -486,18 +489,16 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 		log.Debug("[PreplayCache] Nil Error", "txHash", txHash)
 		return false
 	}
-
-	//txPreplay := r.GetTxPreplay(txHash)
-	//if txPreplay == nil {
-	//	log.Debug("[PreplayCache] SetMainResult Error", "txHash", txHash)
-	//	return false
-	//}
-
-	// TODO: this lock might be optimized
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
+	//
+	//txPreplay.Mu.Lock()
+	//defer txPreplay.Mu.Unlock()
 
 	round, _ := txPreplay.CreateOrGetRound(roundID)
+
+	// mark the round for every rwRecord, even this rwRecord would not be stored into LRU cache, but it would be used in Trie cache
+	rwRecord.Round = round
+	round.RWrecord = rwRecord
+	round.Receipt = receipt
 
 	nowTime := time.Now()
 	round.WObjects = wobjects
@@ -533,13 +534,8 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 		}
 	}
 	if round.Filled == -1 {
-		round.RWrecord = rwRecord
-		round.Receipt = receipt
-		rwRecord.Round = round
 		txPreplay.PreplayResults.RWrecords.Add(roundID, rwRecord)
 	}
-
-	//r.SetReadDep(roundID, txHash, txPreplay, rwRecord, statedb, preBlockHash)
 
 	return true
 }
@@ -580,8 +576,8 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 	if rwRecord == nil {
 		return false
 	}
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
+	//txPreplay.Mu.Lock()
+	//defer txPreplay.Mu.Unlock()
 
 	if isNoDep {
 		//readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(preBlockHash)
@@ -591,33 +587,6 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 			RoundID:        roundID, // TODO might be the first round which has the same rw record
 		}
 		txPreplay.PreplayResults.ReadDeps.Add(preBlockHash, readDep)
-		//
-		//if !ok {
-		//	readDep = &ReadDep{
-		//		BasedBlockHash: preBlockHash,
-		//		IsNoDep:        isNoDep,
-		//		RoundID:        roundID,
-		//	}
-		//	txPreplay.PreplayResults.ReadDeps.Add(preBlockHash, readDep)
-		//} else {
-		//	// debug code: readDep is supposed to be the same the current TODO: this is wrong . RChain
-		//	//preReadDep := readDep.(*ReadDep)
-		//	//preRes, ok := txPreplay.PreplayResults.Rounds.Peek(preReadDep.RoundID)
-		//	//curRes, ok2 := txPreplay.PreplayResults.Rounds.Peek(roundID)
-		//	//if ok && ok2 {
-		//	//	preFilled := preRes.(*PreplayResult).Filled
-		//	//	curFilled := curRes.(*PreplayResult).Filled
-		//	//	if preFilled == -1{
-		//	//		if !(curFilled == int64(preReadDep.RoundID)){
-		//	//			panic("the preplay res should be the same")
-		//	//		}
-		//	//	}else {
-		//	//		if !(curFilled == preFilled){
-		//	//			panic("the preplay res should be the same")
-		//	//		}
-		//	//	}
-		//	//}
-		//}
 	} else {
 		// TODO: handle tx with depended txs ; key might be blockhash + txhash
 		// key := preBlockHash + preTxHashes
@@ -643,7 +612,6 @@ func (r *GlobalCache) CommitTxRreplay(txPreplay *TxPreplay) {
 	if txPreplay == nil {
 		return
 	}
-
 	r.PreplayCache.Add(txPreplay.TxHash, txPreplay)
 }
 

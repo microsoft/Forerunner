@@ -153,7 +153,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 
 		EnableFeeToCoinbase: true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
-		ProcessedTxs:        &[]common.Hash{},
+		//ProcessedTxs:        &[]common.Hash{},
 	}, nil
 }
 
@@ -1025,7 +1025,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 		s.pair.bhash = bhash
 		s.pair.txIndex = ti
 	}
-	*s.ProcessedTxs = append(*s.ProcessedTxs, thash)
+	//*s.ProcessedTxs = append(*s.ProcessedTxs, thash)
 }
 
 func (s *StateDB) clearJournalAndRefund() {
