@@ -3,7 +3,6 @@ package cache
 import (
 	"bytes"
 	"encoding/gob"
-
 	"math/big"
 	"sort"
 	"sync"
@@ -52,6 +51,9 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults.ReadDeps, _ = lru.New(3)
 
 	preplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+	preplayResults.ReadDepTree = cmptypes.NewPreplayResTrie()
+	preplayResults.MixTree = cmptypes.NewPreplayResTrie()
+
 	return &TxPreplay{
 		PreplayResults: preplayResults,
 		TxHash:         tx.Hash(),
@@ -103,6 +105,8 @@ type PreplayResults struct {
 	RWrecords    *lru.Cache `json:"-"`
 	ReadDeps     *lru.Cache `json:"-"`
 	RWRecordTrie *cmptypes.PreplayResTrie
+	ReadDepTree  *cmptypes.PreplayResTrie
+	MixTree      *cmptypes.PreplayResTrie
 }
 
 // PreplayResult record one round result
@@ -119,9 +123,10 @@ type PreplayResult struct {
 	Timestamp     uint64          `json:"timestamp"` // Generation Time
 	TimestampNano uint64          `json:"timestampNano"`
 
+	BasedBlockHash common.Hash              `json:"basedBlock"`
+	ReadDeps       []*cmptypes.AddrLocValue `json:"deps"`
 	// fastCheck info
-	BasedBlockHash common.Hash   `json:"basedBlock"`
-	FormerTxs      []common.Hash `json:"formerTxs"`
+	FormerTxs []common.Hash `json:"formerTxs"`
 
 	// Extra Result
 	CurrentState *CurrentState `json:"-"`
@@ -151,19 +156,12 @@ type RWRecord struct {
 	Round *PreplayResult `json:"-"`
 }
 
-// id of each round result of each tx, TODO: encode this id into a simple type instead of a struct
-type TxExecutionID struct {
-	TxHash  common.Hash
-	RoundID uint64
-}
-
+// Deprecated
 // record the read state in address level
 type ReadDep struct {
 	BasedBlockHash common.Hash
 	IsNoDep        bool
 	RoundID        uint64
-	// Deprecated: useless currently;
-	RAddress map[common.Address][]TxExecutionID
 	// Deprecated: useless currently; can be got by roundID
 	RWRecord *RWRecord
 }
@@ -231,6 +229,112 @@ func (rw *RWRecord) GetHash() string {
 	var res [][]byte
 
 	if rw.RChain.Blockhash != nil {
+		var blocknumbers []uint64
+		for key, _ := range rw.RChain.Blockhash {
+			blocknumbers = append(blocknumbers, key)
+		}
+		sort.Slice(blocknumbers, func(i, j int) bool {
+			return blocknumbers[i] < blocknumbers[j]
+		})
+		for _, bn := range blocknumbers {
+			res = append(res, rw.RChain.Blockhash[bn].Bytes())
+		}
+		//for _, blkHash := range rw.RChain.Blockhash {
+		//	res = append(res, blkHash.Bytes())
+		//}
+	}
+	if rw.RChain.Coinbase != nil {
+		res = append(res, rw.RChain.Coinbase.Bytes())
+	}
+	if rw.RChain.Timestamp != nil {
+		res = append(res, rw.RChain.Timestamp.Bytes())
+	}
+	if rw.RChain.Number != nil {
+		res = append(res, rw.RChain.Number.Bytes())
+	}
+	if rw.RChain.Difficulty != nil {
+		res = append(res, rw.RChain.Difficulty.Bytes())
+	}
+	if rw.RChain.GasLimit != nil {
+		res = append(res, GetBytes(*rw.RChain.GasLimit))
+	}
+
+	var addrByOrder []common.Address
+	for addr := range rw.RState {
+		addrByOrder = append(addrByOrder, addr)
+	}
+	sort.Slice(addrByOrder, func(i, j int) bool {
+		return bytes.Compare(addrByOrder[i].Bytes(), addrByOrder[j].Bytes()) < 0
+	})
+
+	for _, addr := range addrByOrder {
+		res = append(res, addr.Bytes())
+		rstate := rw.RState[addr]
+		if rstate.Balance != nil {
+			res = append(res, rstate.Balance.Bytes())
+		}
+		if rstate.Nonce != nil {
+			res = append(res, GetBytes(*rstate.Nonce))
+		}
+		if rstate.CodeHash != nil {
+			res = append(res, rstate.CodeHash.Bytes())
+		}
+		if rstate.Exist != nil {
+			res = append(res, GetBytes(*rstate.Exist))
+		}
+		if rstate.Empty != nil {
+			res = append(res, GetBytes(*rstate.Empty))
+		}
+		if rstate.Storage != nil {
+			var hashByOrder []common.Hash
+			for key, _ := range rstate.Storage {
+				hashByOrder = append(hashByOrder, key)
+			}
+			sort.Slice(hashByOrder, func(i, j int) bool {
+				return bytes.Compare(hashByOrder[i].Bytes(), hashByOrder[j].Bytes()) < 0
+			})
+			for _, hashkey := range hashByOrder {
+				res = append(res, hashkey.Bytes())
+				res = append(res, rstate.Storage[hashkey].Bytes())
+			}
+			//for _, v := range rstate.Storage {
+			//	res = append(res, v.Bytes())
+			//}
+		}
+		if rstate.CommittedStorage != nil {
+			var hashByOrder []common.Hash
+			for key, _ := range rstate.CommittedStorage {
+				hashByOrder = append(hashByOrder, key)
+			}
+			sort.Slice(hashByOrder, func(i, j int) bool {
+				return bytes.Compare(hashByOrder[i].Bytes(), hashByOrder[j].Bytes()) < 0
+			})
+			for _, hashkey := range hashByOrder {
+				res = append(res, hashkey.Bytes())
+				res = append(res, rstate.CommittedStorage[hashkey].Bytes())
+			}
+			//for _, v := range rstate.CommittedStorage {
+			//	res = append(res, v.Bytes())
+			//}
+		}
+	}
+
+	//sort.Slice(res, func(i, j int) bool {
+	//	return bytes.Compare(res[i], res[j]) == -1
+	//})
+
+	rw.RWHash = crypto.Keccak256Hash(res...).String()
+	rw.Hashed = true
+
+	return rw.RWHash
+}
+
+// Deprecated
+func (rw *RWRecord) GetRChainHash() string {
+	rw.IterMu.Lock()
+	defer rw.IterMu.Unlock()
+	var res [][]byte
+	if rw.RChain.Blockhash != nil {
 		for _, blkHash := range rw.RChain.Blockhash {
 			res = append(res, blkHash.Bytes())
 		}
@@ -250,43 +354,11 @@ func (rw *RWRecord) GetHash() string {
 	if rw.RChain.GasLimit != nil {
 		res = append(res, GetBytes(*rw.RChain.GasLimit))
 	}
-
-	for _, rstate := range rw.RState {
-		if rstate.Balance != nil {
-			res = append(res, rstate.Balance.Bytes())
-		}
-		if rstate.Nonce != nil {
-			res = append(res, GetBytes(*rstate.Nonce))
-		}
-		if rstate.CodeHash != nil {
-			res = append(res, rstate.CodeHash.Bytes())
-		}
-		if rstate.Exist != nil {
-			res = append(res, GetBytes(*rstate.Exist))
-		}
-		if rstate.Empty != nil {
-			res = append(res, GetBytes(*rstate.Empty))
-		}
-		if rstate.Storage != nil {
-			for _, v := range rstate.Storage {
-				res = append(res, v.Bytes())
-			}
-		}
-		if rstate.CommittedStorage != nil {
-			for _, v := range rstate.CommittedStorage {
-				res = append(res, v.Bytes())
-			}
-		}
-	}
-
 	sort.Slice(res, func(i, j int) bool {
 		return bytes.Compare(res[i], res[j]) == -1
 	})
-	// rw.HashOrder = res
-	rw.RWHash = crypto.Keccak256Hash(res...).String()
-	rw.Hashed = true
 
-	return rw.RWHash
+	return crypto.Keccak256Hash(res...).String()
 }
 
 // Dump create tmpMap for log print
@@ -483,11 +555,11 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 
 // SetMainResult set the result for a tx
 func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt *types.Receipt, rwRecord *RWRecord,
-	wobjects state.ObjectMap, preBlockHash common.Hash, txPreplay *TxPreplay) bool {
+	wobjects state.ObjectMap, readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
 
 	if receipt == nil || rwRecord == nil {
 		log.Debug("[PreplayCache] Nil Error", "txHash", txHash)
-		return false
+		return nil, false
 	}
 	//
 	//txPreplay.Mu.Lock()
@@ -495,10 +567,9 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 
 	round, _ := txPreplay.CreateOrGetRound(roundID)
 
-	// mark the round for every rwRecord, even this rwRecord would not be stored into LRU cache, but it would be used in Trie cache
-	rwRecord.Round = round
 	round.RWrecord = rwRecord
 	round.Receipt = receipt
+	round.ReadDeps = readDeps
 
 	nowTime := time.Now()
 	round.WObjects = wobjects
@@ -509,35 +580,17 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 	//formerTx := *(statedb.ProcessedTxs)
 	//round.FormerTxs = formerTx[0 : len(formerTx)-1] // the last one is the current tx
 
-	round.Filled = -1
-	roundKeys := txPreplay.PreplayResults.Rounds.Keys()
-
-	// iterate roundKeys reversely
-	for i := len(roundKeys) - 1; i >= 0; i-- {
-		rawKey := roundKeys[i].(uint64)
-		if rawKey == roundID {
-			continue
-		}
-		// do not need update the priority in LRU
-		rawRoundB, _ := txPreplay.PreplayResults.Rounds.Peek(rawKey)
-		roundB := rawRoundB.(*PreplayResult)
-		if rwRecord.Equal(roundB.RWrecord) {
-			// TODO : this round could be skipped
-			if roundB.Filled == -1 {
-				round.Filled = int64(roundB.RoundID)
-			} else {
-				round.Filled = roundB.Filled
-			}
-			round.RWrecord = roundB.RWrecord
-			round.Receipt = roundB.Receipt
-			break
-		}
-	}
-	if round.Filled == -1 {
+	if rwRecord.Round == nil {
+		// this is a new RWRecord (reuseStatus is noHit)
+		round.Filled = -1
+		rwRecord.Round = round
 		txPreplay.PreplayResults.RWrecords.Add(roundID, rwRecord)
+	} else {
+		// this is a rwRecord got by trie/iter hit
+		round.Filled = int64(rwRecord.Round.RoundID)
 	}
 
-	return true
+	return round, true
 }
 
 // SetExtraResult set the result for extra part of preplay
@@ -567,6 +620,7 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 	return true
 }
 
+// Deprecated
 // SetReadDep set the read dep info for a tx in a given round
 func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *TxPreplay, rwRecord *RWRecord, preBlockHash common.Hash, isNoDep bool) bool {
 	if txPreplay == nil {

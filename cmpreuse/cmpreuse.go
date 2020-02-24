@@ -153,6 +153,16 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
 
 		t1 := time.Now()
+
+		var roundId uint64
+
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.DepHit && msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
+			roundId = round.RoundID
+		} else {
+			roundId = 0 // roundId = 0 means this res count not be matched
+		}
+		reuseDB.UpdateAccountChangedWithMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
+
 		reuseDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))
 
@@ -170,6 +180,9 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
 		t1 := time.Now()
+		// XXX
+		reuseDB.UpdateAccountChanged(append(applyDB.DirtyAddress(), header.Coinbase), tx.Hash(), 0)
+
 		applyDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))
 

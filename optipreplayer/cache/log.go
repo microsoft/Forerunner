@@ -30,8 +30,8 @@ type LogBlockInfo struct {
 	Miss          int           `json:"M"`
 	Unknown       int           `json:"U"`
 	IteraHit      int           `json:"IH"`
-	FastHit       int           `json:"FH"`
 	TrieHit       int           `json:"TH"`
+	DepHit        int           `json:"DH"`
 	Reuse         int           `json:"reuseCount"`
 	ReuseGas      int           `json:"reuseGas"`
 	ProcTime      int64         `json:"procTime"`
@@ -48,7 +48,6 @@ type LogBlockCache struct {
 	NoPreplay     []*LogBlockCacheItem `json:"N"`
 	Miss          []*LogBlockCacheItem `json:"M"`
 	Unknown       []*LogBlockCacheItem `json:"U"`
-	FastHit       []*LogBlockCacheItem `json:"F"`
 	Timestamp     uint64               `json:"processTime"` // Generation Time
 	TimestampNano uint64               `json:"processTimeNano"`
 }
@@ -226,10 +225,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 				switch ReuseResult[index].HitType {
 				case cmptypes.IteraHit:
 					infoResult.IteraHit++
-				case cmptypes.FastHit:
-					infoResult.FastHit++
 				case cmptypes.TrieHit:
 					infoResult.TrieHit++
+				case cmptypes.DepHit:
+					infoResult.DepHit++
 				}
 			case cmptypes.NoCache:
 				infoResult.NoPreplay++
@@ -254,7 +253,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		infoResult.RunMode = "reuse"
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		preplayCnt := infoResult.Hit + infoResult.Miss + infoResult.Unknown
-		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, iteraHitRate, fastHitRate, trieHitRate, reuseGasRate float64
+		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, iteraHitRate, trieHitRate, depHitRate, reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -263,8 +262,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			noInResultRate = float64(noInResultCnt) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
 			iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
-			fastHitRate = float64(infoResult.FastHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
+			depHitRate = float64(infoResult.DepHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -276,8 +275,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 				noInResultCnt, noInResultRate),
 			"Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
 			"IteraHit", fmt.Sprintf("%03d(%.2f)", infoResult.IteraHit, iteraHitRate),
-			"FastHit", fmt.Sprintf("%03d(%.2f)", infoResult.FastHit, fastHitRate),
 			"TrieHit", fmt.Sprintf("%03d(%.2f)", infoResult.TrieHit, trieHitRate),
+			"DepHit", fmt.Sprintf("%03d(%.2f)", infoResult.DepHit, depHitRate),
 			"ReuseGas", fmt.Sprintf("%03d(%.2f)", infoResult.ReuseGas, reuseGasRate),
 		}
 		log.Info("BlockReuse", context...)
@@ -320,7 +319,6 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 		NoPreplay: []*LogBlockCacheItem{},
 		Miss:      []*LogBlockCacheItem{},
 		Unknown:   []*LogBlockCacheItem{},
-		FastHit:   []*LogBlockCacheItem{},
 	}
 
 	listenTxCnt := uint64(0)

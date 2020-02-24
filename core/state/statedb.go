@@ -20,6 +20,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
 	"sort"
 	"time"
@@ -128,7 +129,9 @@ type StateDB struct {
 	pair    *StateDB
 	delta   *deltaDB
 
-	ProcessedTxs *[]common.Hash // txs which have been processed after the base block
+	// Deprecated
+	ProcessedTxs     []common.Hash // txs which have been processed after the base block
+	AccountChangedBy cmptypes.ChangedMap
 }
 
 func (self *StateDB) IsEnableFeeToCoinbase() bool {
@@ -153,7 +156,8 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 
 		EnableFeeToCoinbase: true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
-		//ProcessedTxs:        &[]common.Hash{},
+		ProcessedTxs:        []common.Hash{},
+		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
 	}, nil
 }
 
@@ -165,7 +169,7 @@ func NewRWStateDB(state *StateDB) *StateDB {
 
 func (self *StateDB) SetRWMode(enabled bool) {
 	if enabled {
-		self.rwRecorder = newRWHook()
+		self.rwRecorder = newRWHook(self)
 	} else {
 		self.rwRecorder = emptyRWRecorder{}
 	}
@@ -416,6 +420,7 @@ func (s *StateDB) IsInPending(addr common.Address) bool {
 	return ok
 }
 
+// Deprecated
 func (s *StateDB) PendingAddress() []common.Address {
 	var res []common.Address
 	for addr := range s.stateObjectsPending {
@@ -424,10 +429,61 @@ func (s *StateDB) PendingAddress() []common.Address {
 	return res
 }
 
-func (s *StateDB) StateObjectAddress() []common.Address {
+func (s *StateDB) DirtyAddress() []common.Address {
 	var res []common.Address
-	for addr := range s.stateObjects {
+	for addr := range s.journal.dirties {
 		res = append(res, addr)
+	}
+	return res
+}
+
+func (s *StateDB) UpdateAccountByJournal(txHash common.Hash, roundId uint64) {
+	txRes := cmptypes.NewTxResID(txHash, roundId)
+	for addr := range s.journal.dirties {
+		s.updateAccountChanged(addr, txRes)
+	}
+}
+
+func (s *StateDB) UpdateAccountChanged(dirties common.Addresses, txHash common.Hash, roundId uint64) {
+	txRes := cmptypes.NewTxResID(txHash, roundId)
+	for _, addr := range dirties {
+		s.updateAccountChanged(addr, txRes)
+	}
+}
+
+func (s *StateDB) UpdateAccountChangedWithMap(dirties ObjectMap, txHash common.Hash, roundId uint64, coinbase *common.Address) {
+	txRes := cmptypes.NewTxResID(txHash, roundId)
+	for addr := range dirties {
+		s.updateAccountChanged(addr, txRes)
+	}
+	if coinbase != nil {
+		s.updateAccountChanged(*coinbase, txRes)
+	}
+}
+
+func (s *StateDB) updateAccountChanged(addr common.Address, txRes *cmptypes.TxResID) {
+	if changedBy, ok := s.AccountChangedBy[addr]; ok {
+		changedBy.AppendTx(txRes)
+	} else {
+		changedBy = cmptypes.NewChangedBy()
+		changedBy.AppendTx(txRes)
+		s.AccountChangedBy[addr] = changedBy
+	}
+}
+
+func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy {
+	if changed, ok := s.AccountChangedBy[address]; ok {
+		// TODO: might just return Hash
+		return changed.Copy()
+	} else {
+		return cmptypes.NewChangedBy()
+	}
+}
+
+func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
+	res := make(map[common.Address]*cmptypes.ChangedBy)
+	for _, addr := range addresses {
+		res[*addr] = s.GetTxDepByAccount(*addr)
 	}
 	return res
 }
@@ -724,7 +780,8 @@ func (s *StateDB) Copy() *StateDB {
 		logSize:             s.logSize,
 		preimages:           make(map[common.Hash][]byte, len(s.preimages)),
 		journal:             newJournal(),
-		ProcessedTxs:        &[]common.Hash{},
+		ProcessedTxs:        make([]common.Hash, len(s.ProcessedTxs)),
+		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		rwRecorder:          emptyRWRecorder{},
@@ -774,6 +831,15 @@ func (s *StateDB) Copy() *StateDB {
 	for hash, preimage := range s.preimages {
 		state.preimages[hash] = preimage
 	}
+
+	for index, txhash := range s.ProcessedTxs {
+		state.ProcessedTxs[index] = txhash
+	}
+
+	for address, changedBy := range s.AccountChangedBy {
+		state.AccountChangedBy[address] = changedBy.Copy()
+	}
+
 	return state
 }
 
@@ -1025,7 +1091,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 		s.pair.bhash = bhash
 		s.pair.txIndex = ti
 	}
-	//*s.ProcessedTxs = append(*s.ProcessedTxs, thash)
+	s.ProcessedTxs = append(s.ProcessedTxs, thash)
 }
 
 func (s *StateDB) clearJournalAndRefund() {

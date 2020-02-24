@@ -200,7 +200,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	var cmpr *cmpreuse.Cmpreuse
 	var msracache *cache.GlobalCache
 
-	msracache = cache.NewGlobalCache(60*6, 60*3000, 20000, config.MSRAVMSettings.LogRoot)
+	msracache = cache.NewGlobalCache(60*6, 60*3000, 2000, config.MSRAVMSettings.LogRoot)
 	if vmConfig.MSRAVMSettings.CmpReuse || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
 		cmpr.MSRACache = msracache

@@ -79,7 +79,7 @@ func (p *RWRecordBlockProcessor) ApplyTransaction(tx *types.Transaction) (receip
 
 func (p *RWRecordBlockProcessor) getRWRecord() *cache.RWRecord {
 	rstate, rchain, wstate, rdetail := p.statedb.RWRecorder().RWDump()
-	rw := cache.NewRWRecord(rstate, rchain, wstate, rdetail, false)
+	rw := cache.NewRWRecord(rstate, rchain, wstate, rdetail,false)
 	return rw
 }
 

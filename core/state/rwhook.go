@@ -48,8 +48,6 @@ type RWRecorder interface {
 	_GetCommittedState(addr common.Address, hash common.Hash, so *stateObject, ret common.Hash)
 	_AddBalance(addr common.Address, so *stateObject)
 	_SubBalance(addr common.Address, so *stateObject)
-	UpdateSuicide(addr common.Address)
-	UpdateDirtyStateObject(so *stateObject)
 	RWClear()
 	//RWDump() (map[common.Address]*ReadState, ReadChain, map[common.Address]*WriteState, *cmptypes.ReadDetail, map[common.Address]*stateObject)
 	RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes.ReadDetail)
@@ -59,8 +57,9 @@ type RWRecorder interface {
 	UpdateRBlockhash(num uint64, val common.Hash)
 	UpdateRAccount(addr common.Address, field cmptypes.Field, val interface{})
 	UpdateRStorage(addr common.Address, field cmptypes.Field, input common.Hash, val common.Hash)
-	UpdateWField(addr common.Address, field cmptypes.Field, val interface{})
-	UpdateWStorage(addr common.Address, input common.Hash, val common.Hash)
+
+	UpdateSuicide(addr common.Address)
+	UpdateDirtyStateObject(so *stateObject)
 	UpdateWObject(addr common.Address, object *stateObject)
 }
 
@@ -77,12 +76,6 @@ func (h emptyRWRecorder) UpdateRAccount(addr common.Address, field cmptypes.Fiel
 }
 
 func (h emptyRWRecorder) UpdateRStorage(addr common.Address, field cmptypes.Field, input common.Hash, val common.Hash) {
-}
-
-func (h emptyRWRecorder) UpdateWField(addr common.Address, field cmptypes.Field, val interface{}) {
-}
-
-func (h emptyRWRecorder) UpdateWStorage(addr common.Address, input common.Hash, val common.Hash) {
 }
 
 func (h emptyRWRecorder) RWClear() {
@@ -139,6 +132,7 @@ func (h emptyRWRecorder) UpdateWObject(addr common.Address, object *stateObject)
 }
 
 type rwRecorderImpl struct {
+	statedb    *StateDB
 	RState     ReadStates
 	RChain     ReadChain
 	WState     WriteStates
@@ -207,38 +201,39 @@ func (h *rwRecorderImpl) _SubBalance(addr common.Address, so *stateObject) {
 }
 
 func (h *rwRecorderImpl) UpdateSuicide(addr common.Address) {
-	h.UpdateWField(addr, cmptypes.Suicided, true)
+	h.updateWField(addr, cmptypes.Suicided, true)
 }
 
 func (h *rwRecorderImpl) UpdateDirtyStateObject(so *stateObject) {
 	addr := so.address
 	if so.dirtyNonceCount > 0 {
 		so.dirtyNonceCount = 0
-		h.UpdateWField(addr, cmptypes.Nonce, so.data.Nonce)
+		h.updateWField(addr, cmptypes.Nonce, so.data.Nonce)
 	}
 	if so.dirtyBalanceCount > 0 {
 		so.dirtyBalanceCount = 0
-		h.UpdateWField(addr, cmptypes.Balance, new(big.Int).Set(so.data.Balance))
+		h.updateWField(addr, cmptypes.Balance, new(big.Int).Set(so.data.Balance))
 	}
 	if so.dirtyCodeCount > 0 {
 		so.dirtyCodeCount = 0
-		h.UpdateWField(addr, cmptypes.Code, so.code)
+		h.updateWField(addr, cmptypes.Code, so.code)
 	}
 	for k, v := range so.dirtyStorage {
 		if so.dirtyStorageCount[k] > 0 {
-			h.UpdateWStorage(addr, k, v)
+			h.updateWStorage(addr, k, v)
 		}
 		delete(so.dirtyStorageCount, k)
 	}
 }
 
-func newRWHook() *rwRecorderImpl {
+func newRWHook(db *StateDB) *rwRecorderImpl {
 	return &rwRecorderImpl{
-		RState:          make(ReadStates),
-		RChain:          ReadChain{},
-		WState:          make(WriteStates),
+		statedb:    db,
+		RState:     make(ReadStates),
+		RChain:     ReadChain{},
+		WState:     make(WriteStates),
 		ReadDetail: cmptypes.NewReadDetail(),
-		WObject:         make(map[common.Address]*stateObject),
+		WObject:    make(map[common.Address]*stateObject),
 	}
 }
 
@@ -285,7 +280,7 @@ func (h *rwRecorderImpl) UpdateRHeader(field cmptypes.Field, val interface{}) {
 	case cmptypes.Number:
 		if h.RChain.Number == nil {
 			h.RChain.Number = val.(*big.Int)
-			value = common.BigToHash(val.(*big.Int)) // Number in `Header` in block.go is *big.Int
+			value = val.(*big.Int).Uint64() // Number in `Header` in block.go is uint64
 		}
 	case cmptypes.Difficulty:
 		if h.RChain.Difficulty == nil {
@@ -301,10 +296,13 @@ func (h *rwRecorderImpl) UpdateRHeader(field cmptypes.Field, val interface{}) {
 	}
 
 	if value != nil {
-		addLoc := cmptypes.AddrLocation{IsChain: true, Field: field}
+		if h.ReadDetail.IsBlockSensitive == false {
+			h.ReadDetail.IsBlockSensitive = true
+		}
+		addLoc := cmptypes.AddrLocation{Field: field}
 		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: value}
 		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
-		h.ReadDetail.IsBlockSensitive = true
+		h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, newAlv)
 	}
 
 }
@@ -316,17 +314,22 @@ func (h *rwRecorderImpl) UpdateRBlockhash(num uint64, val common.Hash) {
 	if _, ok := h.RChain.Blockhash[num]; !ok {
 		h.RChain.Blockhash[num] = val
 
-		addLoc := cmptypes.AddrLocation{IsChain: true, Field: cmptypes.Blockhash, Loc: num}
+		//if h.ReadDetail.IsBlockSensitive == false{
+		//	h.ReadDetail.IsBlockSensitive = true
+		//}
+		addLoc := cmptypes.AddrLocation{Field: cmptypes.Blockhash, Loc: num}
 		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: val}
 		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
-		h.ReadDetail.IsBlockSensitive = true
 	}
 }
 
 func (h *rwRecorderImpl) UpdateRAccount(addr common.Address, field cmptypes.Field, val interface{}) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = new(ReadState)
-		h.ReadDetail.ReadAddress = append(h.ReadDetail.ReadAddress, addr)
+
+		readDep := cmptypes.AddrLocation{Address: addr, Field: cmptypes.Dependence}
+		readDepValue := &cmptypes.AddrLocValue{AddLoc: &readDep, Value: h.statedb.GetTxDepByAccount(addr)}
+		h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, readDepValue)
 	}
 	var value interface{}
 
@@ -396,7 +399,10 @@ func (h *rwRecorderImpl) UpdateRCodeXXX(so *stateObject, addr common.Address) {
 func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Field, key common.Hash, val common.Hash) {
 	if _, ok := h.RState[addr]; !ok {
 		h.RState[addr] = new(ReadState)
-		h.ReadDetail.ReadAddress = append(h.ReadDetail.ReadAddress, addr)
+
+		readDep := cmptypes.AddrLocation{Address: addr, Field: cmptypes.Dependence}
+		readDepValue := &cmptypes.AddrLocValue{AddLoc: &readDep, Value: h.statedb.GetTxDepByAccount(addr)}
+		h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, readDepValue)
 	}
 	state := h.RState[addr]
 	if field == cmptypes.Storage {
@@ -426,7 +432,7 @@ func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Fiel
 	}
 }
 
-func (h *rwRecorderImpl) UpdateWField(addr common.Address, field cmptypes.Field, val interface{}) {
+func (h *rwRecorderImpl) updateWField(addr common.Address, field cmptypes.Field, val interface{}) {
 	if _, ok := h.WState[addr]; !ok {
 		h.WState[addr] = new(WriteState)
 	}
@@ -446,7 +452,7 @@ func (h *rwRecorderImpl) UpdateWField(addr common.Address, field cmptypes.Field,
 	}
 }
 
-func (h *rwRecorderImpl) UpdateWStorage(addr common.Address, key common.Hash, val common.Hash) {
+func (h *rwRecorderImpl) updateWStorage(addr common.Address, key common.Hash, val common.Hash) {
 	if _, ok := h.WState[addr]; !ok {
 		h.WState[addr] = new(WriteState)
 	}
