@@ -147,7 +147,7 @@ func (r *GlobalCache) GetFeatureList(gasPrice uint64, timestamp uint64) *Feature
 	blockKeys := r.BlockCache.Keys()
 	bIndex := len(blockKeys) - 1
 
-	txKeys := r.TxCache.Keys()
+	txKeys := r.TxListenCache.Keys()
 	tIndex := len(txKeys) - 1
 
 	for i := 1; (uint64)(i) <= featureSize; i++ {

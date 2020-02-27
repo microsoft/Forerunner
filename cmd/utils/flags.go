@@ -848,6 +848,16 @@ var (
 		Name:  "reuseverify",
 		Usage: "Enable the Reuse Verify service",
 	}
+
+	HasherParallelismFlag = cli.IntFlag{
+		Name:  "parallelhasher",
+		Usage: "The number of goroutines for parallelized hash and commit (default = 0, no parallelism)",
+	}
+
+	ParallelBloomFlag = cli.BoolFlag{
+		Name:  "parallelbloom",
+		Usage: "Enable pipelined bloom creation",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1701,6 +1711,8 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		GroundRecord:        ctx.GlobalBool(GroundRecordEnabledFlag.Name),
 		PreplayRecord:       ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
 		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
+		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
+		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
 	}
 	if ctx.GlobalIsSet(CmpResueLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpResueLogDirFlag.Name)

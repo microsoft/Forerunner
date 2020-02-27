@@ -155,7 +155,9 @@ type TxListens []*TxListen
 // GetTxListen Get Tx Listen
 func (r *GlobalCache) GetTxListen(hash common.Hash) *TxListen {
 
-	result, ok := r.TxCache.Peek(hash)
+	r.TxMu.RLock()
+	result, ok := r.TxListenCache.Peek(hash)
+	r.TxMu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -167,6 +169,14 @@ func (r *GlobalCache) GetTxListen(hash common.Hash) *TxListen {
 	}
 
 	return exTx
+}
+
+func (r *GlobalCache) GetTxPackage(hash common.Hash) uint64 {
+	if result, ok := r.TxPackageCache.Peek(hash); ok {
+		return result.(uint64)
+	} else {
+		return 0
+	}
 }
 
 // CommitTxListen commit tx
@@ -188,8 +198,18 @@ func (r *GlobalCache) CommitTxListen(tx *TxListen) {
 	// 	return
 	// }
 
-	r.TxCache.Add(tx.Tx.Hash(), tx)
+	_, ok := r.TxListenCache.Peek(tx.Tx.Hash())
+	if !ok {
+		r.TxListenCache.Add(tx.Tx.Hash(), tx)
+	}
 	// return
+}
+
+func (r *GlobalCache) CommitTxPackage(tx common.Hash, txListen uint64) {
+	_, ok := r.TxPackageCache.Peek(tx)
+	if !ok {
+		r.TxPackageCache.Add(tx, txListen)
+	}
 }
 
 // func (r *GlobalCache) GetListenTxCnt(block *types.Block) uint64 {

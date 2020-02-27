@@ -99,11 +99,16 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		misc.ApplyDAOHardFork(statedb)
 	}
 
+	if cfg.MSRAVMSettings.HasherParallelism > 0 {
+		statedb.IsParallelHasher = true
+	}
+
 	// Record ground truth
 	var groundStatedb *state.StateDB
 	if cfg.MSRAVMSettings.GroundRecord {
 		groundStatedb = state.NewRWStateDB(statedb.Copy())
 	}
+
 	// Add Block
 	blockPre := cache.NewBlockPre(block)
 	if p.bc.MSRACache != nil {
@@ -114,6 +119,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.ShareCopy()
 	}
+	statedb.FromProcess = true
+	statedb.MissObject = make(map[common.Address]struct{})
+	statedb.MissKey = make(map[common.Address]map[common.Hash]struct{})
+	statedb.RecordProcessed()
 	controller := NewController()
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
@@ -137,7 +146,22 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			var reuseStatus *cmptypes.ReuseStatus
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, blockPre, p.bc.MSRACache.RoutinePool, controller)
 			reuseResult = append(reuseResult, reuseStatus)
-
+			if statedb.WarmupMiss {
+				for address := range statedb.MissObject {
+					ok := p.bc.Warmuper.IsObjectWarm(address)
+					log.Info("Warmup object miss", "tx", tx.Hash().Hex(), "reuseStatus", reuseStatus, "addr", address, "isWarm", ok)
+				}
+				for address, keyMap := range statedb.MissKey {
+					for key := range keyMap {
+						ok := p.bc.Warmuper.IsKeyWarm(address, key)
+						log.Info("Warmup key miss", "tx", tx.Hash().Hex(), "reuseStatus", reuseStatus,
+							"addr", address, "key", key, "isWarm", ok)
+					}
+				}
+				statedb.WarmupMiss = false
+				statedb.MissObject = make(map[common.Address]struct{})
+				statedb.MissKey = make(map[common.Address]map[common.Hash]struct{})
+			}
 		} else {
 			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
 		}
@@ -146,17 +170,20 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		//log.Debug("[TransactionProcessTime]", "txHash", tx.Hash(), "processTime", t1.Sub(t0).Nanoseconds())
 
 		if err != nil {
-			log.Info("GroundTruth Error", "err", err.Error())
+			log.Info("GroundTruth Error", "err", err.Error(), "tx", tx.Hash())
 			return nil, nil, 0, err
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+		if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Second*30 {
+			log.Info("Long execution", "tx", tx.Hash(), "index", i, "status", reuseResult[len(reuseResult)-1])
+		}
 		//if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Millisecond {
 		//	context := []interface{}{
 		//		"transactionIndex", i,
 		//		"reuseStatus", reuseResult[len(reuseResult)-1],
 		//	}
-		//	if reuseResult[i] == 1 {
+		//	if reuseResult[i].BaseStatus == cmptypes.Hit {
 		//		lastIndex := len(cache.WaitReuse) - 1
 		//		context = append(context, "waitReuse", common.PrettyDuration(cache.WaitReuse[lastIndex]),
 		//			"getRW(cnt)", fmt.Sprintf("%s(%d)",
@@ -231,7 +258,12 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	}
 	// Set the receipt logs and create a bloom for filtering
 	receipt.Logs = statedb.GetLogs(tx.Hash())
-	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	if statedb.BloomProcessor != nil {
+		statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	} else {
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	}
+
 	receipt.BlockHash = statedb.BlockHash()
 	receipt.BlockNumber = header.Number
 	receipt.TransactionIndex = uint(statedb.TxIndex())

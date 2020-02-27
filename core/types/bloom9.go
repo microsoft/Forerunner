@@ -19,6 +19,7 @@ package types
 import (
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -89,6 +90,56 @@ func (b Bloom) MarshalText() ([]byte, error) {
 // UnmarshalText b as a hex string with 0x prefix.
 func (b *Bloom) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("Bloom", input, b[:])
+}
+
+// Pipelined bloom creation assuming that only a single process will call it
+//var bloomPool = grpool.NewPool(1, 1000)
+//var bloomMutex sync.Mutex
+
+type ParallelBloomProcessor struct {
+	bloomWg       sync.WaitGroup
+	blockBloomBin *big.Int
+	receiptChan   chan *Receipt
+}
+
+func NewParallelBloomProcessor() *ParallelBloomProcessor {
+	bp := &ParallelBloomProcessor{
+		blockBloomBin: new(big.Int),
+		receiptChan: make(chan *Receipt, 1000),
+	}
+	go bp.bloomWorker()
+	return bp
+}
+
+func (bp *ParallelBloomProcessor) bloomWorker()  {
+	for {
+		select {
+		case receipt := <- bp.receiptChan:
+			{
+				bin := LogsBloom(receipt.Logs)
+				receipt.Bloom = BytesToBloom(bin.Bytes())
+				bp.blockBloomBin.Or(bp.blockBloomBin, bin)
+				bp.bloomWg.Done()
+			}
+		}
+	}
+}
+
+func (bp *ParallelBloomProcessor) CreateBloomForTransaction(receipt *Receipt)  {
+	if len(receipt.Logs) == 0 {
+		receipt.Bloom = CreateBloom(Receipts{receipt})
+		return
+	}
+
+	bp.bloomWg.Add(1)
+	bp.receiptChan <- receipt
+	return
+}
+
+func (bp *ParallelBloomProcessor) GetBloomForCurrentBlock() Bloom {
+	bp.bloomWg.Wait()
+	blockBloom := BytesToBloom(bp.blockBloomBin.Bytes())
+	return blockBloom
 }
 
 func CreateBloom(receipts Receipts) Bloom {

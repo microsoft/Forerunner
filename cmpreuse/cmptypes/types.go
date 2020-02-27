@@ -44,16 +44,45 @@ const (
 type ReuseStatus struct {
 	BaseStatus ReuseBaseStatus
 	HitType    HitType
+	MissType   MissType
+}
+
+func (s ReuseStatus) String() string {
+	var statusStr string
+	switch s.BaseStatus {
+	case Fail:
+		statusStr = "Fail"
+	case Hit:
+		statusStr = "Hit : "
+		switch s.HitType {
+		case IteraHit:
+			statusStr += "IteraHit"
+		case TrieHit:
+			statusStr += "TrieHit"
+		case DepHit:
+			statusStr += "DepHit"
+		}
+	case Miss:
+		statusStr = "Miss : "
+		switch s.MissType {
+		case NoInMiss:
+			statusStr += "NoInMiss"
+		case NoMatchMiss:
+			statusStr += "NoMatchMiss"
+		}
+	case Unknown:
+		statusStr = "Unknown"
+	}
+	return statusStr
 }
 
 type ReuseBaseStatus int
 
 const (
 	Fail ReuseBaseStatus = iota
+	NoPreplay
 	Hit
-	NoCache
-	CacheNoIn
-	CacheNoMatch
+	Miss
 	Unknown
 )
 
@@ -66,9 +95,16 @@ const (
 	DepHit
 )
 
+type MissType int
+
+const (
+	NoInMiss MissType = iota
+	NoMatchMiss
+)
+
 type RecordHolder interface {
 	Equal(rwb RecordHolder) bool
-	GetHash() string
+	GetHash() common.Hash
 	Dump() map[string]interface{}
 	GetPreplayRes() interface{}
 }
@@ -177,7 +213,7 @@ type Location struct {
 type AddrLocation struct {
 	Address common.Address `json:"address"`
 	Field   Field          `json:"field"`
-	Loc     interface{} `json:"loc"` // hash / number
+	Loc     interface{}    `json:"loc"` // hash / number
 }
 
 func (a AddrLocation) Copy() AddrLocation {
@@ -192,7 +228,7 @@ type AddrLocValue struct {
 type ReadDetail struct {
 	ReadDetailSeq          []*AddrLocValue // make sure all kinds of Value are simple types
 	ReadAddressAndBlockSeq []*AddrLocValue // only block-related info seq
-	IsBlockSensitive bool // whether block-related info (except for blockhash) in ReadDetailSeq
+	IsBlockSensitive       bool            // whether block-related info (except for blockhash) in ReadDetailSeq
 }
 
 func NewReadDetail() *ReadDetail {

@@ -5,10 +5,18 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"math/big"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Listener struct {
+	// Flag new transaction arrive
+	newTx      int32
+	minPrice   *big.Int
+	minPriceMu sync.RWMutex
+
 	// NewTxs Subscription
 	newTxsCh  chan core.NewTxsEvent
 	newTxsSub event.Subscription
@@ -19,6 +27,7 @@ type Listener struct {
 
 func NewListener(eth Backend) *Listener {
 	listener := &Listener{
+		minPrice: new(big.Int),
 		newTxsCh: make(chan core.NewTxsEvent, chanSize),
 	}
 	listener.newTxsSub = eth.TxPool().SubscribeNewTxsEvent(listener.newTxsCh)
@@ -34,7 +43,24 @@ func (l *Listener) txLoop() {
 	for {
 		select {
 		case req := <-l.newTxsCh:
+			l.reportNewTx(req.Txs)
 			l.commitNewTxs(req.Txs)
+		}
+	}
+}
+
+func (l *Listener) reportNewTx(txs types.Transactions) {
+	if len(txs) == 0 {
+		return
+	}
+
+	l.minPriceMu.RLock()
+	defer l.minPriceMu.RUnlock()
+
+	for _, tx := range txs {
+		if tx.GasPrice().Cmp(l.minPrice) >= 0 {
+			atomic.StoreInt32(&l.newTx, 1)
+			return
 		}
 	}
 }
@@ -55,6 +81,24 @@ func (l *Listener) commitNewTxs(txs types.Transactions) bool {
 		})
 	}
 	return true
+}
+
+func (l *Listener) setMinPrice(price *big.Int) {
+	if price == nil {
+		return
+	}
+
+	l.minPriceMu.Lock()
+	defer l.minPriceMu.Unlock()
+
+	l.minPrice = price
+}
+
+func (l *Listener) waitForNewTx() {
+	for atomic.LoadInt32(&l.newTx) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	atomic.StoreInt32(&l.newTx, 0)
 }
 
 func (l *Listener) setGlobalCache(globalCache *cache.GlobalCache) {

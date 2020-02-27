@@ -42,12 +42,10 @@ type Executor struct {
 	chainDb ethdb.Database
 	chain   *core.BlockChain
 
-	gasFloor uint64
-	gasCeil  uint64
-
 	trigger *Trigger
 	current *environment // An environment for current running cycle.
 
+	txnOrder   map[common.Hash]int
 	rawPending map[common.Address]types.Transactions
 
 	executionOrder []*types.Transaction
@@ -61,7 +59,7 @@ type Executor struct {
 	enableAgg bool
 }
 
-func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, gasFloor, gasCeil uint64,
+func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
 	rawPending map[common.Address]types.Transactions, pendingList types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult, enableAgg bool) *Executor {
 	executor := &Executor{
 		id:             id,
@@ -69,9 +67,8 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		engine:         engine,
 		chain:          chain,
 		chainDb:        chainDb,
-		gasFloor:       gasFloor,
-		gasCeil:        gasCeil,
 		trigger:        trigger,
+		txnOrder:       txnOrder,
 		rawPending:     rawPending,
 		executionOrder: []*types.Transaction{},
 		pendingTxsMap:  make(map[common.Hash]*types.Transaction),
@@ -456,7 +453,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 	resTxs := e.prepreplay(rawTxs, coinbase)
 	log.Debug("End preplay prepreplay", "currentState", e.trigger.Name)
 
-	txs := types.NewTransactionsByPriceAndNonce(e.current.signer, resTxs)
+	txs := types.NewTransactionsByPriceAndNonce(e.current.signer, resTxs, e.txnOrder, false)
 	txsCnt := uint64(0)
 	for _, txs := range resTxs {
 		txsCnt += uint64(len(txs))
@@ -798,6 +795,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 
 	return true
 }
+
 func (e *Executor) checkDrive(txsCnt uint64, preplayedTxsCnt uint64) bool {
 	if e.trigger.IsTxsNumDrive || e.trigger.IsTxsRatioDrive {
 
@@ -810,27 +808,9 @@ func (e *Executor) checkDrive(txsCnt uint64, preplayedTxsCnt uint64) bool {
 	}
 	return false
 }
-func (e *Executor) sumbitResult(p *Preplayer, rawTxs map[common.Address]types.Transactions) {
-
-	// Lock
-	p.resultMu.Lock()
-
-	p.txResult = make(map[common.Hash]*cache.ExtraResult)
-	for _, txs := range rawTxs {
-		for _, tx := range txs {
-			txHash := tx.Hash()
-
-			if txResult, ok := e.resultMap[txHash]; ok {
-				p.txResult[txHash] = txResult
-			}
-		}
-	}
-
-	p.resultMu.Unlock()
-}
 
 // commit generates several new sealing tasks based on the parent block.
-func (e *Executor) commit(timestamp int64, coinbase common.Address, extra []byte, parent *types.Block, header *types.Header, rawTxs map[common.Address]types.Transactions) {
+func (e *Executor) commit(coinbase common.Address, parent *types.Block, header *types.Header, rawTxs map[common.Address]types.Transactions) {
 	if err := e.engine.Prepare(e.chain, header); err != nil {
 		log.Error("Failed to prepare header for preplay", "err", err)
 		return

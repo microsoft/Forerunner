@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/reuseverify"
+	"github.com/ethereum/go-ethereum/trie"
 	"math/big"
 	"runtime"
 	"sync"
@@ -200,7 +201,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	var cmpr *cmpreuse.Cmpreuse
 	var msracache *cache.GlobalCache
 
-	msracache = cache.NewGlobalCache(60*6, 60*3000, 2000, config.MSRAVMSettings.LogRoot)
+	msracache = cache.NewGlobalCache(60*6, 60*3000, 1000, config.MSRAVMSettings.LogRoot)
 	if vmConfig.MSRAVMSettings.CmpReuse || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
 		cmpr.MSRACache = msracache
@@ -264,6 +265,10 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 		go func() {
 			eth.reuseVerifier.DoBlocksTest(8300000, 8400000)
 		}()
+	}
+
+	if config.MSRAVMSettings.HasherParallelism > 0 {
+		trie.InitParallelHasher(config.MSRAVMSettings.HasherParallelism)
 	}
 
 	return eth, nil

@@ -22,6 +22,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ivpusic/grpool"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -29,6 +30,7 @@ type hasher struct {
 	tmp    sliceBuffer
 	sha    keccakState
 	onleaf LeafCallback
+	isParallel bool
 }
 
 // keccakState wraps sha3.state. In addition to the usual hash methods, it also supports
@@ -60,9 +62,54 @@ var hasherPool = sync.Pool{
 	},
 }
 
+
+var hashMutex = sync.Mutex{}
+var hashParallelismLimit = 0
+var currentHashParallelism = 0
+var hashNodeWorkerPool *grpool.Pool
+var hashObjectWorkerPool *grpool.Pool
+
+func InitParallelHasher(parallelism int)  {
+	hashMutex.Lock()
+	defer hashMutex.Unlock()
+	hashParallelismLimit = parallelism
+	hashNodeWorkerPool = grpool.NewPool(hashParallelismLimit, hashParallelismLimit)
+	hashObjectWorkerPool = grpool.NewPool(hashParallelismLimit, 1000)
+}
+
+func ExecuteInParallelPool(job grpool.Job) {
+	hashObjectWorkerPool.JobQueue <- job
+}
+
+
+func tryGetParallelExecutionSlot() bool {
+	hashMutex.Lock()
+	defer hashMutex.Unlock()
+	if currentHashParallelism < hashParallelismLimit {
+		currentHashParallelism += 1
+		return true
+	}
+	return false
+}
+
+func executeInParallel(job grpool.Job, wg *sync.WaitGroup) {
+	hashMutex.Lock()
+	defer hashMutex.Unlock()
+	wg.Add(1)
+	doJob := func() {
+		job()
+		hashMutex.Lock()
+		currentHashParallelism -= 1
+		hashMutex.Unlock()
+		wg.Done()
+	}
+	hashNodeWorkerPool.JobQueue <- doJob
+}
+
 func newHasher(onleaf LeafCallback) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.onleaf = onleaf
+	h.isParallel = false
 	return h
 }
 
@@ -115,6 +162,59 @@ func (h *hasher) hash(n node, db *Database, force bool) (node, node, error) {
 	return hashed, cached, nil
 }
 
+func (h *hasher) parallelHashFullNode(n, collapsed, cached *fullNode, db *Database) {
+	var err error
+	var waitChildren *sync.WaitGroup
+
+	remainingShortOrFullNodeCount := 0
+	for i := 0; i < 16; i++ {
+		if n.Children[i] != nil {
+			switch n.Children[i].(type) {
+			case *shortNode, *fullNode:
+				remainingShortOrFullNodeCount++
+			}
+		}
+	}
+
+	for i := 0; i < 16; i++ {
+		if n.Children[i] != nil {
+			if remainingShortOrFullNodeCount > 1 {
+				shortOrFull := false
+				switch n.Children[i].(type) {
+				case *shortNode, *fullNode:
+					shortOrFull = true
+					remainingShortOrFullNodeCount--
+				}
+				if shortOrFull && tryGetParallelExecutionSlot() {
+					childIndex := i
+					processChild := func() {
+						childHasher := newHasher(h.onleaf)
+						childHasher.isParallel = true
+						defer returnHasherToPool(childHasher)
+						var err error
+						collapsed.Children[childIndex], cached.Children[childIndex], err = childHasher.hash(n.Children[childIndex], db, false)
+						if err != nil {
+							panic("Paralle hasing should never be wrong")
+						}
+					}
+					if waitChildren == nil {
+						waitChildren = new(sync.WaitGroup)
+					}
+					executeInParallel(processChild, waitChildren)
+					continue
+				}
+			}
+			collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, false)
+			if err != nil {
+				panic("Paralle hasing should never be wrong")
+			}
+		}
+	}
+	if waitChildren != nil {
+		waitChildren.Wait()
+	}
+}
+
 // hashChildren replaces the children of a node with their hashes if the encoded
 // size of the child is larger than a hash, returning the collapsed node as well
 // as a replacement for the original node with the child hashes cached in.
@@ -140,17 +240,20 @@ func (h *hasher) hashChildren(original node, db *Database) (node, node, error) {
 		// Hash the full node's children, caching the newly hashed subtrees
 		collapsed, cached := n.copy(), n.copy()
 
-		for i := 0; i < 16; i++ {
-			if n.Children[i] != nil {
-				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, false)
-				if err != nil {
-					return original, original, err
+		if h.isParallel {
+			h.parallelHashFullNode(n, collapsed, cached, db)
+		} else {
+			for i := 0; i < 16; i++ {
+				if n.Children[i] != nil {
+					collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, false)
+					if err != nil {
+						return original, original, err
+					}
 				}
 			}
 		}
 		cached.Children[16] = n.Children[16]
 		return collapsed, cached, nil
-
 	default:
 		// Value and hash nodes don't have children so they're left as were
 		return n, original, nil

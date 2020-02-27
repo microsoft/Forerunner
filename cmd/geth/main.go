@@ -213,6 +213,8 @@ var (
 		utils.PreplayFlag,
 		utils.FeatureFlag,
 		utils.ReuseVerifierFlag,
+		utils.HasherParallelismFlag,
+		utils.ParallelBloomFlag,
 		alliedNodeFileFlag,
 	}
 )

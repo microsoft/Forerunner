@@ -83,7 +83,11 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 	}
 	// Set the receipt logs and create a bloom for filtering
 	receipt.Logs = statedb.GetLogs(tx.Hash())
-	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	if statedb.BloomProcessor != nil {
+		statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	} else {
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	}
 	receipt.BlockHash = statedb.BlockHash()
 	receipt.BlockNumber = header.Number
 	receipt.TransactionIndex = uint(statedb.TxIndex())
@@ -105,11 +109,10 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 //			used to inter-process synchronization
 // For the last return uint64 value,
 // 		0: error;
-// 		1: cache hit;
-// 		2: no cache;
-// 		3: cache but not in;
-//		4: cache but result not match;
-//		5: abort before hit or miss;
+// 		1: no preplay;
+// 		2: cache hit;
+// 		3: cache miss(cache but not in or cache but result not match);
+//		4: abort before hit or miss;
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller) (*types.Receipt,

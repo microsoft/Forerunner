@@ -26,8 +26,8 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 	return true
 }
 
-func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord,
-	wobjects state.ObjectMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash) {
+func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
+	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash) {
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -49,6 +49,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
 	if reuseStatus.BaseStatus != cmptypes.Hit || reuseStatus.HitType != cmptypes.DepHit {
 		round, ok := reuse.MSRACache.SetMainResult(curRoundID, tx.Hash(), receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
+		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
 		if !ok {
 			return
 		}
@@ -102,7 +103,7 @@ func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
 	//	ConfirmBlockNum: 0,
 	//})
 	txPreplay := cache.NewTxPreplay(tx)
-	reuse.MSRACache.CommitTxRreplay(txPreplay)
+	reuse.MSRACache.CommitTxPreplay(txPreplay)
 	return txPreplay
 }
 
@@ -201,7 +202,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	}
 
 	if groundFlag == 0 {
-		reuse.setAllResult(reuseStatus, roundID, tx, receipt, rwrecord, wobjects, readDeps, header.ParentHash)
+		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash)
 
 		// update which accounts changed by this tx into statedb
 		statedb.UpdateAccountChangedWithMap(wobjects, tx.Hash(), txResRoundID, nil)

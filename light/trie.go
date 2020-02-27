@@ -133,6 +133,10 @@ func (t *odrTrie) Hash() common.Hash {
 	return t.trie.Hash()
 }
 
+func (t *odrTrie) UseParallelHasher(on bool)  {
+	// no-op
+}
+
 func (t *odrTrie) NodeIterator(startkey []byte) trie.NodeIterator {
 	return newNodeIterator(t, startkey)
 }

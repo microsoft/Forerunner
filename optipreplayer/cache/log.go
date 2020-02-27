@@ -25,14 +25,16 @@ type LogBlockInfo struct {
 	SetDB         int64         `json:"setDB"`
 	RunTx         int64         `json:"runTx"`
 	NoListen      int           `json:"L"`
+	NoPackage     int           `json:"Pa"`
+	NoPreplay     int           `json:"Pr"`
 	Hit           int           `json:"H"`
-	NoPreplay     int           `json:"N"`
 	Miss          int           `json:"M"`
 	Unknown       int           `json:"U"`
 	IteraHit      int           `json:"IH"`
 	TrieHit       int           `json:"TH"`
 	DepHit        int           `json:"DH"`
-	Reuse         int           `json:"reuseCount"`
+	NoInMiss      int           `json:"NIM"`
+	NoMatchMiss   int           `json:"NMM"`
 	ReuseGas      int           `json:"reuseGas"`
 	ProcTime      int64         `json:"procTime"`
 	RunMode       string        `json:"runMode"`
@@ -43,9 +45,10 @@ type LogBlockInfo struct {
 // LogBlockCache define blockCache log format
 type LogBlockCache struct {
 	NoListen      []*types.Transaction `json:"L"`
+	NoPackage     []*types.Transaction `json:"P"`
 	Error         []*LogBlockCacheItem `json:"E"`
-	Hit           []*LogBlockCacheItem `json:"H"`
 	NoPreplay     []*LogBlockCacheItem `json:"N"`
+	Hit           []*LogBlockCacheItem `json:"H"`
 	Miss          []*LogBlockCacheItem `json:"M"`
 	Unknown       []*LogBlockCacheItem `json:"U"`
 	Timestamp     uint64               `json:"processTime"` // Generation Time
@@ -105,8 +108,8 @@ var (
 	Finalize      time.Duration
 	WaitReuse     []time.Duration
 	WaitRealApply []time.Duration
-	Update        []time.Duration
 	TxFinalize    []time.Duration
+	Update        []time.Duration
 	GetRW         []time.Duration
 	FastGetRW     []time.Duration
 	SetDB         []time.Duration
@@ -131,20 +134,20 @@ func SumCount(counts []int64) (sum int64) {
 	return
 }
 
-func ResetLogVar() {
-	Apply = make([]time.Duration, 50)
+func ResetLogVar(size int) {
+	Apply = make([]time.Duration, 0, size)
 	Finalize = 0
-	WaitReuse = make([]time.Duration, 50)
-	WaitRealApply = make([]time.Duration, 50)
-	Update = make([]time.Duration, 50)
-	TxFinalize = make([]time.Duration, 50)
-	GetRW = make([]time.Duration, 50)
-	FastGetRW = make([]time.Duration, 50)
-	SetDB = make([]time.Duration, 50)
-	RunTx = make([]time.Duration, 50)
+	WaitReuse = make([]time.Duration, 0, size)
+	WaitRealApply = make([]time.Duration, 0, size)
+	TxFinalize = make([]time.Duration, 0, size)
+	Update = make([]time.Duration, 0, size)
+	GetRW = make([]time.Duration, 0, size)
+	FastGetRW = make([]time.Duration, 0, size)
+	SetDB = make([]time.Duration, 0, size)
+	RunTx = make([]time.Duration, 0, size)
 
 	ReuseGasCount = 0
-	RWCmpCnt = make([]int64, 50)
+	RWCmpCnt = make([]int64, 0, 50)
 }
 
 // LogPrint print v to filePath file
@@ -177,6 +180,15 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 		return
 	}
 }
+
+var isLog = false
+var blkCount uint64
+var txnCount uint64
+var listen uint64
+var Package uint64
+var preplay uint64
+var hit uint64
+var unknown uint64
 
 // InfoPrint block info to block folder
 func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg vm.Config) {
@@ -212,14 +224,19 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 	}
 
 	processTimeNano := r.PeekBlockPre(block.Hash()).ListenTimeNano
-	noInResultCnt := 0
 	if len(ReuseResult) != 0 {
 		for index, tx := range block.Transactions() {
 			txListen := r.GetTxListen(tx.Hash())
 			if txListen == nil || txListen.ListenTimeNano > processTimeNano {
 				infoResult.NoListen++
 			}
+			txPackage := r.GetTxPackage(tx.Hash())
+			if txPackage == 0 || txPackage > processTimeNano {
+				infoResult.NoPackage++
+			}
 			switch ReuseResult[index].BaseStatus {
+			case cmptypes.NoPreplay:
+				infoResult.NoPreplay++
 			case cmptypes.Hit:
 				infoResult.Hit++
 				switch ReuseResult[index].HitType {
@@ -230,13 +247,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 				case cmptypes.DepHit:
 					infoResult.DepHit++
 				}
-			case cmptypes.NoCache:
-				infoResult.NoPreplay++
-			case cmptypes.CacheNoIn:
+			case cmptypes.Miss:
 				infoResult.Miss++
-				noInResultCnt++
-			case cmptypes.CacheNoMatch:
-				infoResult.Miss++
+				switch ReuseResult[index].MissType {
+				case cmptypes.NoInMiss:
+					infoResult.NoInMiss++
+				case cmptypes.NoMatchMiss:
+					infoResult.NoMatchMiss++
+				}
 			case cmptypes.Unknown:
 				infoResult.Unknown++
 			}
@@ -252,14 +270,16 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 	default:
 		infoResult.RunMode = "reuse"
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
-		preplayCnt := infoResult.Hit + infoResult.Miss + infoResult.Unknown
-		var listenRate, preplayRate, hitRate, MissRate, noInResultRate, unknownRate, iteraHitRate, trieHitRate, depHitRate, reuseGasRate float64
+		packageCnt := infoResult.TxnCount - infoResult.NoPackage
+		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
+		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, iteraHitRate, trieHitRate, depHitRate float64
+		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
+			packageRate = float64(packageCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
 			hitRate = float64(infoResult.Hit) / float64(infoResult.TxnCount)
-			MissRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
-			noInResultRate = float64(noInResultCnt) / float64(infoResult.TxnCount)
+			missRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
 			iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
@@ -269,16 +289,40 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		context := []interface{}{
 			"Total", fmt.Sprintf("%03d", infoResult.TxnCount),
 			"Listen", fmt.Sprintf("%03d(%.2f)", listenCnt, listenRate),
+			"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
 			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-			"Miss", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)", infoResult.Miss, MissRate,
-				noInResultCnt, noInResultRate),
-			"Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
-			"IteraHit", fmt.Sprintf("%03d(%.2f)", infoResult.IteraHit, iteraHitRate),
-			"TrieHit", fmt.Sprintf("%03d(%.2f)", infoResult.TrieHit, trieHitRate),
-			"DepHit", fmt.Sprintf("%03d(%.2f)", infoResult.DepHit, depHitRate),
-			"ReuseGas", fmt.Sprintf("%03d(%.2f)", infoResult.ReuseGas, reuseGasRate),
+			"IH-TH-DH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				infoResult.IteraHit, iteraHitRate, infoResult.TrieHit, trieHitRate, infoResult.DepHit, depHitRate),
 		}
+		if infoResult.Miss > 0 {
+			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))
+		}
+		if infoResult.Unknown > 0 {
+			context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate))
+		}
+		context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
+
+		if listenCnt == infoResult.TxnCount && infoResult.TxnCount != 0 {
+			isLog = true
+		}
+		if isLog {
+			blkCount++
+			txnCount += uint64(infoResult.TxnCount)
+			listen += uint64(listenCnt)
+			Package += uint64(packageCnt)
+			preplay += uint64(preplayCnt)
+			hit += uint64(infoResult.Hit)
+			unknown += uint64(infoResult.Unknown)
+			log.Info("Cumulative log", "block", blkCount, "txn", txnCount,
+				"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
+				"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
+				"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
+				"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
+				"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
+			)
+		}
+
 		log.Info("BlockReuse", context...)
 
 		context = []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
@@ -314,14 +358,13 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 
 	cacheResult := &LogBlockCache{
 		NoListen:  []*types.Transaction{},
+		NoPackage: []*types.Transaction{},
 		Error:     []*LogBlockCacheItem{},
-		Hit:       []*LogBlockCacheItem{},
 		NoPreplay: []*LogBlockCacheItem{},
+		Hit:       []*LogBlockCacheItem{},
 		Miss:      []*LogBlockCacheItem{},
 		Unknown:   []*LogBlockCacheItem{},
 	}
-
-	listenTxCnt := uint64(0)
 
 	blockPre := r.PeekBlockPre(block.Hash())
 	if blockPre == nil {
@@ -337,15 +380,14 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 	processTimeNano := blockPre.ListenTimeNano
 
 	if len(reuseResult) != 0 {
-		reuseCnt := [7]uint64{}
 		for index, tx := range block.Transactions() {
-			reuseCnt[reuseResult[index].BaseStatus]++
-
 			txListen := r.GetTxListen(tx.Hash())
 			if txListen == nil || txListen.ListenTimeNano > processTimeNano {
 				cacheResult.NoListen = append(cacheResult.NoListen, tx)
-			} else {
-				listenTxCnt++
+			}
+			txPackage := r.GetTxPackage(tx.Hash())
+			if txPackage == 0 || txPackage > processTimeNano {
+				cacheResult.NoPackage = append(cacheResult.NoPackage, tx)
 			}
 
 			txCache := &LogBlockCacheItem{}
@@ -387,19 +429,19 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 			}
 
 			switch reuseResult[index].BaseStatus {
-			case 0:
+			case cmptypes.Fail:
 				cacheResult.Error = append(cacheResult.Error, txCache)
 
-			case 1:
-				cacheResult.Hit = append(cacheResult.Hit, txCache)
-
-			case 2:
+			case cmptypes.NoPreplay:
 				cacheResult.NoPreplay = append(cacheResult.NoPreplay, txCache)
 
-			case 3, 4:
+			case cmptypes.Hit:
+				cacheResult.Hit = append(cacheResult.Hit, txCache)
+
+			case cmptypes.Miss:
 				cacheResult.Miss = append(cacheResult.Miss, txCache)
 
-			case 5:
+			case cmptypes.Unknown:
 				cacheResult.Unknown = append(cacheResult.Unknown, txCache)
 
 			default:

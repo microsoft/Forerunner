@@ -381,7 +381,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 	tx *types.Transaction, round *cache.PreplayResult, status *cmptypes.ReuseStatus, abort func() bool) {
 
 	//if status.BaseStatus == cmptypes.Hit && (status.HitType == cmptypes.FastHit) && !statedb.IsRWMode() {
-	if status.BaseStatus == cmptypes.Hit && status.HitType == cmptypes.DepHit && !statedb.IsRWMode() {
+	if false && status.BaseStatus == cmptypes.Hit && status.HitType == cmptypes.DepHit && !statedb.IsRWMode() {
 		ApplyWObjects(statedb, round.RWrecord, round.WObjects, abort)
 	} else {
 		ApplyWStates(statedb, round.RWrecord, abort)
@@ -428,7 +428,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	t0 := time.Now()
 	txPreplay := reuse.MSRACache.GetTxPreplay(tx.Hash())
 	if txPreplay == nil || txPreplay.PreplayResults.RWrecords.Len() == 0 {
-		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoCache} // no cache, quit compete
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
 		return
 	}
 	txPreplay.Mu.Lock()
@@ -472,9 +472,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				case abort:
 					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
 				case leastOne:
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.CacheNoMatch} // cache but result not match, quit compete
+					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss} // cache but result not match, quit compete
 				default:
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.CacheNoIn} // cache but not in, quit compete
+					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoInMiss} // cache but not in, quit compete
 				}
 				txPreplay.Mu.Unlock()
 

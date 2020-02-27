@@ -183,8 +183,10 @@ type BlockChain struct {
 	terminateInsert func(common.Hash, uint64) bool // Testing hook used to terminate ancient receipt chain insertion.
 
 	// MSRA
-	Cmpreuse  TransactionApplier
-	MSRACache *cache.GlobalCache
+	Cmpreuse     TransactionApplier
+	MSRACache    *cache.GlobalCache
+	Warmuper     *Warmuper
+	execTimeList ExecTimeList
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -223,11 +225,15 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		engine:         engine,
 		vmConfig:       vmConfig,
 		badBlocks:      badBlocks,
+		//MSRA
 		//Cmpreuse:       &DefaultTransactionApplier{},
+		execTimeList: NewExecTimeList(),
 	}
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc, engine)
 	bc.processor = NewStateProcessor(chainConfig, bc, engine)
+	//MSRA
+	bc.Warmuper = NewWarmuper(bc, bc.vmConfig)
 
 	var err error
 	bc.hc, err = NewHeaderChain(db, chainConfig, engine, bc.getProcInterrupt)
@@ -1695,7 +1701,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if parent == nil {
 			parent = bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
 		}
-		statedb, err := state.New(parent.Root, bc.stateCache)
+		statedb := bc.Warmuper.GetStateDB(parent.Root)
+		if statedb == nil {
+			statedb, err = state.New(parent.Root, bc.stateCache)
+		} else {
+			log.Info("Get warmup statedb", "size", statedb.Size(), "remain", len(bc.Warmuper.coldQueue))
+		}
 		if err != nil {
 			return it.index, err
 		}
@@ -1717,16 +1728,18 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			}
 		}
 		// Process block using the parent state as reference point
+		cache.ResetLogVar(len(block.Transactions()))
 		bc.MSRACache.Pause()
-		runtime.GC()
 		substart := time.Now()
+		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
+			statedb.SetBloomProcessor(types.NewParallelBloomProcessor())
+		}
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
 		execTime := time.Since(substart)
 		bc.MSRACache.Continue()
 		if !bc.vmConfig.MSRAVMSettings.Silent {
 			bc.MSRACache.InfoPrint(block, execTime, bc.vmConfig)
 		}
-		cache.ResetLogVar()
 
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -1804,10 +1817,24 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		stats.processed++
 		stats.usedGas += usedGas
-		stats.execTime += execTime
 
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)
+
+		bc.execTimeList.addExecTime(execTime)
+		bc.execTimeList.print(block.NumberU64())
+		if block.NumberU64()%5 == 0 {
+			m := new(runtime.MemStats)
+			runtime.ReadMemStats(m)
+			log.Info("Read memory statistics",
+				"HeapAlloc", common.StorageSize(m.HeapAlloc),
+				"HeapSys", common.StorageSize(m.HeapSys),
+				"HeadIdle", common.StorageSize(m.HeapIdle),
+				"HeapInuse", common.StorageSize(m.HeapInuse),
+				"NextGC", common.StorageSize(m.NextGC),
+				"NnmGC", m.NumGC,
+				"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100))
+		}
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && err == consensus.ErrFutureBlock {

@@ -55,6 +55,8 @@ type MSRAVMConfig struct {
 	GroundRecord        bool
 	PreplayRecord       bool
 	EnableReuseVerifier bool
+	HasherParallelism   int
+	PipelinedBloom      bool
 }
 
 // Interpreter is used to run Ethereum based contracts and will utilise the

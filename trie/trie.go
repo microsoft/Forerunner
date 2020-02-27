@@ -47,6 +47,7 @@ type LeafCallback func(leaf []byte, parent common.Hash) error
 type Trie struct {
 	db   *Database
 	root node
+	parallelHasherEnabled bool
 }
 
 // newFlag returns the cache flag value for a newly created node.
@@ -428,6 +429,7 @@ func (t *Trie) hashRoot(db *Database, onleaf LeafCallback) (node, node, error) {
 		return hashNode(emptyRoot.Bytes()), nil, nil
 	}
 	h := newHasher(onleaf)
+	h.isParallel = t.parallelHasherEnabled
 	defer returnHasherToPool(h)
 	return h.hash(t.root, db, true)
 }

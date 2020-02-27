@@ -44,8 +44,9 @@ type GlobalCache struct {
 	BlockMu    sync.RWMutex
 	BlockCache *lru.Cache
 
-	TxMu    sync.RWMutex
-	TxCache *lru.Cache
+	TxMu           sync.RWMutex
+	TxListenCache  *lru.Cache
+	TxPackageCache *lru.Cache
 
 	// Preplay result
 	PreplayMu        sync.RWMutex
@@ -53,7 +54,14 @@ type GlobalCache struct {
 	PreplayCache     *lru.Cache // Result Cache
 	PreplayRoundID   uint64
 	PreplayTimestamp int64 // Last time stamp
-	TimestampField   int64
+
+	// Gas used cache
+	PrimaryGasUsedCache   *lru.Cache
+	SecondaryGasUsedCache *lru.Cache
+	TertiaryGasUsedCache  *lru.Cache
+
+	TimestampMu    sync.RWMutex
+	TimestampField int64
 
 	// Real result
 	GroundMu    sync.RWMutex
@@ -63,7 +71,7 @@ type GlobalCache struct {
 	// FoundMu    sync.RWMutex
 	// FoundCache *lru.Cache
 
-	// Enable Falg
+	// Enable Flag
 	PreplayFlag bool
 	FeatureFlag bool
 
@@ -86,12 +94,17 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.BlockPreCache, _ = lru.New(bSize)
 	g.BlockCache, _ = lru.New(bSize)
 
-	g.TxCache, _ = lru.New(tSize)
+	g.TxListenCache, _ = lru.New(tSize)
+	g.TxPackageCache, _ = lru.New(tSize)
 
 	g.PreplayCache, _ = lru.New(pSize)
-	g.PreplayRoundID = 0
+	g.PreplayRoundID = 1
 	g.PreplayTimestamp = time.Now().Unix()
 	g.TimestampField = -2
+
+	g.PrimaryGasUsedCache, _ = lru.New(pSize)
+	g.SecondaryGasUsedCache, _ = lru.New(pSize)
+	g.TertiaryGasUsedCache, _ = lru.New(pSize)
 
 	g.GroundCache, _ = lru.New(pSize)
 	// g.FoundCache, _ = lru.New(pSize)
@@ -129,12 +142,17 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	}
 
 	if tSize != 0 {
-		r.TxCache, _ = lru.New(tSize)
+		r.TxListenCache, _ = lru.New(tSize)
+		r.TxPackageCache, _ = lru.New(tSize)
 	}
 
 	if pSize != 0 {
 		r.PreplayCache, _ = lru.New(pSize)
-		r.PreplayRoundID = 0
+		r.PreplayRoundID = 1
+
+		r.PrimaryGasUsedCache, _ = lru.New(pSize)
+		r.SecondaryGasUsedCache, _ = lru.New(pSize)
+		r.TertiaryGasUsedCache, _ = lru.New(pSize)
 
 		r.GroundCache, _ = lru.New(pSize)
 		// r.FoundCache, _ = lru.New(pSize)
@@ -160,7 +178,7 @@ func (r *GlobalCache) BucketPrint(timestamp uint64) {
 	}()
 
 	blockKeys := r.BlockCache.Keys()
-	txKeys := r.TxCache.Keys()
+	txKeys := r.TxListenCache.Keys()
 
 	txCnt := 0
 	blockCnt := 0

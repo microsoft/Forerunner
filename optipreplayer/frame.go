@@ -68,7 +68,7 @@ type Frame struct {
 
 // NewFrame create a new frame
 func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64) *Frame {
-
+	listener := NewListener(eth)
 	frame := &Frame{
 		eth:         eth,
 		preplayFlag: false,
@@ -76,9 +76,9 @@ func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engin
 		mux:         mux,
 		engine:      engine,
 		exitCh:      make(chan struct{}),
-		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil),
+		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil, listener),
 		collector:   NewCollector(eth, config),
-		listener:    NewListener(eth),
+		listener:    listener,
 		canStart:    1,
 	}
 	// frame.SetGlobalCache(cache.NewGlobalCache(defaultBlockCacheSize, defaultTxCacheSize, defaultPreplayCacheSize))
@@ -175,7 +175,6 @@ func (f *Frame) SetExtra(extra []byte) error {
 
 func (f *Frame) SetEtherbase(addr common.Address) {
 	f.coinbase = addr
-	f.preplayers.setEtherbase(addr)
 }
 
 func (f *Frame) SetNodeID(nodeID string) {
@@ -202,7 +201,7 @@ func (f *Frame) GetGlobalCache() *cache.GlobalCache {
 func (f *Frame) SetPreplayFlag(preplayFlag bool) {
 	f.preplayFlag = preplayFlag
 	f.GlobalCache.PreplayFlag = preplayFlag
-	if f.preplayFlag == false {
+	if !f.preplayFlag {
 		f.preplayers.close()
 	}
 
@@ -217,7 +216,7 @@ func (f *Frame) SetPreplayFlag(preplayFlag bool) {
 func (f *Frame) SetFeatureFlag(featureFlag bool) {
 	f.featureFlag = featureFlag
 	f.GlobalCache.FeatureFlag = featureFlag
-	if f.featureFlag == false {
+	if !f.featureFlag {
 		f.collector.close()
 	}
 

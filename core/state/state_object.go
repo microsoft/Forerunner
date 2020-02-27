@@ -19,6 +19,7 @@ package state
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"io"
 	"math/big"
 	"time"
@@ -250,12 +251,29 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 		}
 		value.SetBytes(content)
 	}
+	if s.db.FromProcess {
+		log.Info("Get state from trie", "addr", s.address, "key", key, "index", s.db.txIndex,
+			"primary", s.db.IsPrimary(), "isProcess", s.db.IsKeyProcessed(s.address, key))
+		s.db.WarmupMiss = true
+		if _, ok := s.db.MissObject[s.address]; !ok {
+			if _, ok2 := s.db.MissKey[s.address]; !ok2 {
+				s.db.MissKey[s.address] = make(map[common.Hash]struct{})
+			}
+			s.db.MissKey[s.address][key] = struct{}{}
+		}
+	}
 	if s.isShared() {
 		s.delta.originStorage[key] = value
 	} else {
 		s.originStorage[key] = value
 	}
 	return value
+}
+
+// GetOriginStorage retrieves the whole origin storage map
+// The return storage is read-only!!
+func (s *stateObject) GetOriginStorage() Storage {
+	return s.originStorage
 }
 
 // SetState updates a value in account storage.
@@ -365,6 +383,12 @@ func (s *stateObject) updateRoot(db Database) {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.db.StorageHashes += time.Since(start) }(time.Now())
 	}
+
+	//if s.db.IsParallelHasher {
+	//	s.trie.UseParallelHasher(true)
+	//	defer s.trie.UseParallelHasher(false)
+	//}
+
 	s.data.Root = s.trie.Hash()
 }
 
@@ -379,6 +403,11 @@ func (s *stateObject) CommitTrie(db Database) error {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.db.StorageCommits += time.Since(start) }(time.Now())
 	}
+
+	//if s.db.IsParallelHasher {
+	//	s.trie.UseParallelHasher(true)
+	//	defer s.trie.UseParallelHasher(false)
+	//}
 	root, err := s.trie.Commit(nil)
 	if err == nil {
 		s.data.Root = root
@@ -527,6 +556,10 @@ func (s *stateObject) updateOriginStorage(storage Storage) {
 	for addr, value := range storage {
 		s.originStorage[addr] = value
 	}
+}
+
+func (s *stateObject) GetPair() *stateObject {
+	return s.pair
 }
 
 //

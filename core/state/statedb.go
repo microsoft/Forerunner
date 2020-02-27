@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -132,10 +133,53 @@ type StateDB struct {
 	// Deprecated
 	ProcessedTxs     []common.Hash // txs which have been processed after the base block
 	AccountChangedBy cmptypes.ChangedMap
+	IsParallelHasher bool
+	BloomProcessor   *types.ParallelBloomProcessor
+
+	FromProcess bool
+	WarmupMiss  bool
+	MissObject  map[common.Address]struct{}
+	MissKey     map[common.Address]map[common.Hash]struct{}
+	Processed   map[common.Address]map[common.Hash]struct{}
+}
+
+func (self *StateDB) Size() int {
+	return len(self.delta.stateObjects)
+}
+
+func (self *StateDB) RecordProcessed() {
+	self.Processed = make(map[common.Address]map[common.Hash]struct{})
+	for address, object := range self.delta.stateObjects {
+		self.Processed[address] = make(map[common.Hash]struct{})
+		for hash := range object.originStorage {
+			self.Processed[address][hash] = struct{}{}
+		}
+	}
+}
+
+func (self *StateDB) IsObjectProcessed(addr common.Address) bool {
+	_, ok := self.Processed[addr]
+	return ok
+}
+
+func (self *StateDB) IsKeyProcessed(addr common.Address, key common.Hash) bool {
+	exist := self.IsObjectProcessed(addr)
+	if !exist {
+		return false
+	}
+	_, ok := self.Processed[addr][key]
+	return ok
 }
 
 func (self *StateDB) IsEnableFeeToCoinbase() bool {
 	return self.EnableFeeToCoinbase
+}
+
+func (self *StateDB) SetBloomProcessor(bp *types.ParallelBloomProcessor) {
+	self.BloomProcessor = bp
+	if self.IsShared() {
+		self.GetPair().BloomProcessor = bp
+	}
 }
 
 // Create a new state from a given trie.
@@ -664,6 +708,12 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		log.Error("Failed to decode state object", "addr", addr, "err", err)
 		return nil
 	}
+	if s.FromProcess {
+		log.Info("Get object from trie", "addr", addr, "index", s.txIndex,
+			"primary", s.IsPrimary(), "isProcess", s.IsObjectProcessed(addr))
+		s.WarmupMiss = true
+		s.MissObject[addr] = struct{}{}
+	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
 	if s.IsShared() {
@@ -785,6 +835,7 @@ func (s *StateDB) Copy() *StateDB {
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		rwRecorder:          emptyRWRecorder{},
+		IsParallelHasher:    s.IsParallelHasher,
 	}
 	if s.IsRWMode() {
 		state.SetRWMode(true) // Copied RWStateDB resets record
@@ -861,6 +912,8 @@ func (s *StateDB) ShareCopy() {
 		rwRecorder:          emptyRWRecorder{},
 		primary:             false,
 		delta:               newDeltaDB(),
+		IsParallelHasher:    s.IsParallelHasher,
+		BloomProcessor:      s.BloomProcessor,
 	}
 	if s.IsRWMode() {
 		statedb.SetRWMode(true) // Copied RWStateDB resets record
@@ -919,10 +972,11 @@ func (s *StateDB) updateObject(db *StateDB) {
 			continue
 		}
 		if object2, ok := db.delta.stateObjects[addr]; ok {
-			if object1.pair == nil || object1.pair == object2 {
+			if object1.pair == nil {
 				s.linkObject(object1, object2)
-				object1.updatePair()
-			} else {
+			}
+			object1.updatePair()
+			if object1.pair != object2 {
 				db.setDeltaStateObject(object1.pair)
 			}
 		} else {
@@ -1061,13 +1115,54 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
-	for addr := range s.stateObjectsPending {
-		obj := s.stateObjects[addr]
-		if obj.deleted {
-			s.deleteStateObject(obj)
-		} else {
-			obj.updateRoot(s.db)
+	if s.IsParallelHasher {
+		toDelete := make([]*stateObject, 0, len(s.stateObjectsPending))
+		toUpdateRoot := make([]*stateObject, 0, len(s.stateObjectsPending))
+		for addr := range s.stateObjectsPending {
+			obj := s.stateObjects[addr]
+			if obj.deleted {
+				toDelete = append(toDelete, obj)
+			} else {
+				toUpdateRoot = append(toUpdateRoot, obj)
+			}
+		}
+		var allJobs sync.WaitGroup
+		// use a separate goroutine to execute all deletes serially
+		if len(toDelete) > 0 {
+			allJobs.Add(1)
+			go func() {
+				for _, obj := range toDelete {
+					s.deleteStateObject(obj)
+				}
+				allJobs.Done()
+			}()
+		}
+		// execute the updateRoots in parallel
+		if len(toUpdateRoot) > 0 {
+			for _, obj := range toUpdateRoot {
+				allJobs.Add(1)
+				theObject := obj // avoid capturing the loop variable
+				job := func() {
+					theObject.updateRoot(s.db)
+					allJobs.Done()
+				}
+				trie.ExecuteInParallelPool(job)
+			}
+		}
+		allJobs.Wait()
+		// this has to be done in serial
+		for _, obj := range toUpdateRoot {
 			s.updateStateObject(obj)
+		}
+	} else {
+		for addr := range s.stateObjectsPending {
+			obj := s.stateObjects[addr]
+			if obj.deleted {
+				s.deleteStateObject(obj)
+			} else {
+				obj.updateRoot(s.db)
+				s.updateStateObject(obj)
+			}
 		}
 	}
 	if len(s.stateObjectsPending) > 0 {
@@ -1077,6 +1172,12 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
 	}
+
+	if s.IsParallelHasher {
+		s.trie.UseParallelHasher(true)
+		defer s.trie.UseParallelHasher(false)
+	}
+
 	return s.trie.Hash()
 }
 
@@ -1108,16 +1209,52 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	s.IntermediateRoot(deleteEmptyObjects)
 
 	// Commit objects to the trie, measuring the elapsed time
-	for addr := range s.stateObjectsDirty {
-		if obj := s.stateObjects[addr]; !obj.deleted {
-			// Write any contract code associated with the state object
-			if obj.code != nil && obj.dirtyCode {
-				s.db.TrieDB().InsertBlob(common.BytesToHash(obj.CodeHash()), obj.code)
-				obj.dirtyCode = false
+	if s.IsParallelHasher {
+		var allJobs sync.WaitGroup
+
+		allJobs.Add(1)
+		// execute insert code in a separate thread
+		go func() {
+			for addr := range s.stateObjectsDirty {
+				if obj := s.stateObjects[addr]; !obj.deleted {
+					// Write any contract code associated with the state object
+					if obj.code != nil && obj.dirtyCode {
+						s.db.TrieDB().InsertBlob(common.BytesToHash(obj.CodeHash()), obj.code)
+						obj.dirtyCode = false
+					}
+				}
 			}
-			// Write any storage changes in the state object to its storage trie
-			if err := obj.CommitTrie(s.db); err != nil {
-				return common.Hash{}, err
+			allJobs.Done()
+		}()
+
+		// execute commitTrie in parallel
+		for addr := range s.stateObjectsDirty {
+			if obj := s.stateObjects[addr]; !obj.deleted {
+				allJobs.Add(1)
+				job := func() {
+					// Write any storage changes in the state object to its storage trie
+					if err := obj.CommitTrie(s.db); err != nil {
+						panic("Should never have CommitTrie error!")
+					}
+					allJobs.Done()
+				}
+				trie.ExecuteInParallelPool(job)
+			}
+		}
+		allJobs.Wait()
+
+	} else {
+		for addr := range s.stateObjectsDirty {
+			if obj := s.stateObjects[addr]; !obj.deleted {
+				// Write any contract code associated with the state object
+				if obj.code != nil && obj.dirtyCode {
+					s.db.TrieDB().InsertBlob(common.BytesToHash(obj.CodeHash()), obj.code)
+					obj.dirtyCode = false
+				}
+				// Write any storage changes in the state object to its storage trie
+				if err := obj.CommitTrie(s.db); err != nil {
+					return common.Hash{}, err
+				}
 			}
 		}
 	}
@@ -1128,6 +1265,12 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountCommits += time.Since(start) }(time.Now())
 	}
+
+	if s.IsParallelHasher {
+		s.trie.UseParallelHasher(true)
+		defer s.trie.UseParallelHasher(false)
+	}
+
 	return s.trie.Commit(func(leaf []byte, parent common.Hash) error {
 		var account Account
 		if err := rlp.DecodeBytes(leaf, &account); err != nil {
@@ -1148,6 +1291,12 @@ func (s *StateDB) ApplyStateObject(object *stateObject) {
 	object.db = s
 	object.pair.db = s.pair
 	s.journal.dirties[object.address]++
+	if oldObj, ok := s.delta.stateObjects[object.address]; ok {
+		if len(object.delta.originStorage)+len(object.originStorage) < len(oldObj.originStorage) {
+			log.Info("Defective state object set", object.address.Hex(),
+				fmt.Sprintf("%d->%d", len(object.delta.originStorage)+len(object.originStorage), len(oldObj.originStorage)))
+		}
+	}
 	if s.IsShared() {
 		s.setDeltaStateObject(object)
 	} else {

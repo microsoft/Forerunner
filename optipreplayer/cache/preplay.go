@@ -3,6 +3,8 @@ package cache
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
+	"github.com/ethereum/go-ethereum/params"
 	"math/big"
 	"sort"
 	"sync"
@@ -141,7 +143,7 @@ type PreplayResult struct {
 
 // RWRecord for record
 type RWRecord struct {
-	RWHash string
+	RWHash common.Hash
 	IterMu sync.Mutex
 	// HashOrder [][]byte
 
@@ -219,7 +221,7 @@ func GetBytes(v interface{}) []byte {
 }
 
 // GetHash get hash function
-func (rw *RWRecord) GetHash() string {
+func (rw *RWRecord) GetHash() common.Hash {
 	if rw.Hashed {
 		return rw.RWHash
 	}
@@ -322,8 +324,7 @@ func (rw *RWRecord) GetHash() string {
 	//sort.Slice(res, func(i, j int) bool {
 	//	return bytes.Compare(res[i], res[j]) == -1
 	//})
-
-	rw.RWHash = crypto.Keccak256Hash(res...).String()
+	rw.RWHash = crypto.Keccak256Hash(res...)
 	rw.Hashed = true
 
 	return rw.RWHash
@@ -382,7 +383,7 @@ type CurrentState struct {
 	Hash              string             `json:"hash"`
 	RawHash           common.Hash        `json:"-"`
 	Txs               types.Transactions `json:"-"`
-	TotalDifficuly    string             `json:"totalDifficulty"`
+	TotalDifficulty   string             `json:"totalDifficulty"`
 	SnapshotTimestamp int64              `json:"snapshotTimestamp"`
 	StartTimeString   string             `json:"startTimestamp"`
 	EndTimeString     string             `json:"endTimestamp"`
@@ -525,6 +526,63 @@ func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 	return nil
 }
 
+// GetGasUsedResult return the cache of gas
+func (r *GlobalCache) GetGasUsedCache(sender common.Address, txn *types.Transaction) uint64 {
+	gasLimit := txn.Gas()
+
+	if rawGasUsed, ok := r.PrimaryGasUsedCache.Get(txn.Hash()); ok {
+		gasUsed := rawGasUsed.(uint64)
+		if gasUsed <= gasLimit {
+			return gasUsed
+		} else {
+			log.Error(fmt.Sprintf("Get a too large gas used of transaction %s", txn.Hash().Hex()))
+		}
+	}
+
+	if txn.To() != nil {
+		secondaryKey := getSecondaryKeyFromTxn(sender, txn)
+		if rawGasUsed, ok := r.SecondaryGasUsedCache.Get(secondaryKey); ok {
+			gasUsed := rawGasUsed.(uint64)
+			if gasUsed <= gasLimit {
+				return gasUsed
+			}
+		}
+
+		tertiaryKey := getTertiaryKeyFromTxn(txn)
+		if rawGasUsed, ok := r.TertiaryGasUsedCache.Get(tertiaryKey); ok {
+			gasUsed := rawGasUsed.(uint64)
+			if gasUsed <= gasLimit {
+				return gasUsed
+			}
+		}
+	}
+	if gasLimit == params.TxGas {
+		return gasLimit
+	}
+	return gasLimit/2 + 1
+}
+
+type SecondaryKey [2*common.AddressLength + 4]byte
+type TertiaryKey [common.AddressLength + 4]byte
+
+// only for transaction txn.To() != nil
+func getSecondaryKeyFromTxn(sender common.Address, txn *types.Transaction) (key SecondaryKey) {
+	copy(key[:], append(sender[:], (*txn.To())[:]...))
+	if len(txn.Data()) >= 4 {
+		copy(key[2*common.AddressLength:], txn.Data()[:4])
+	}
+	return
+}
+
+// only for transaction txn.To() != nil
+func getTertiaryKeyFromTxn(txn *types.Transaction) (key TertiaryKey) {
+	copy(key[:], (*txn.To())[:])
+	if len(txn.Data()) >= 4 {
+		copy(key[common.AddressLength:], txn.Data()[:4])
+	}
+	return
+}
+
 // Deprecated:
 // GetPreplayCacheTxs return all the tx that in cache
 func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions {
@@ -591,6 +649,22 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 	}
 
 	return round, true
+}
+
+// SetGasUsedResult set the gas used cache for a tx
+func (r *GlobalCache) SetGasUsedCache(txn *types.Transaction, receipt *types.Receipt, sender common.Address) {
+	gasUsed := receipt.GasUsed
+
+	primaryKey := txn.Hash()
+	r.PrimaryGasUsedCache.Add(primaryKey, gasUsed)
+
+	if txn.To() != nil {
+		secondaryKey := getSecondaryKeyFromTxn(sender, txn)
+		r.SecondaryGasUsedCache.Add(secondaryKey, gasUsed)
+
+		tertiaryKey := getTertiaryKeyFromTxn(txn)
+		r.TertiaryGasUsedCache.Add(tertiaryKey, gasUsed)
+	}
 }
 
 // SetExtraResult set the result for extra part of preplay
@@ -661,8 +735,8 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 	return true
 }
 
-// CommitTxRreplay update after preplay
-func (r *GlobalCache) CommitTxRreplay(txPreplay *TxPreplay) {
+// CommitTxPreplay update after preplay
+func (r *GlobalCache) CommitTxPreplay(txPreplay *TxPreplay) {
 	if txPreplay == nil {
 		return
 	}
@@ -670,16 +744,27 @@ func (r *GlobalCache) CommitTxRreplay(txPreplay *TxPreplay) {
 }
 
 // CommitTxResult update after preplay
-func (r *GlobalCache) CommitTxResult(roundID uint64, currentState *CurrentState, txResult map[common.Hash]*ExtraResult) {
+func (r *GlobalCache) CommitTxResult(roundID uint64, currentState *CurrentState, rawTxs map[common.Address]types.Transactions,
+	rawTxResult map[common.Hash]*ExtraResult) {
 
 	log.Debug(
 		"Preplay update",
 		"preplay", currentState.PreplayName,
-		"len", len(txResult),
-		"tot", len(r.PreplayCache.Keys()))
+		"len", len(rawTxResult),
+		"tot", r.PreplayCache.Len())
 
-	if len(txResult) == 0 {
+	if len(rawTxResult) == 0 {
 		return
+	}
+
+	txResult := make(map[common.Hash]*ExtraResult)
+	for _, txs := range rawTxs {
+		for _, tx := range txs {
+			txHash := tx.Hash()
+			if result, ok := rawTxResult[txHash]; ok {
+				txResult[txHash] = result
+			}
+		}
 	}
 
 	for txHash, res := range txResult {
@@ -695,8 +780,17 @@ func (r *GlobalCache) NewRoundID() uint64 {
 	return r.PreplayRoundID
 }
 
+// GetTimeStamp return Timestamp for calculate dependency directly
+func (r *GlobalCache) GetTimeStamp() int64 {
+	r.TimestampMu.RLock()
+	defer r.TimestampMu.RUnlock()
+	return r.PreplayTimestamp
+}
+
 // NewTimeStamp return New timestamp for preplay
 func (r *GlobalCache) NewTimeStamp() int64 {
+	r.TimestampMu.Lock()
+	defer r.TimestampMu.Unlock()
 	r.TimestampField++
 	if r.TimestampField > 2 {
 		r.TimestampField = -2

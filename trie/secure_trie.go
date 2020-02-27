@@ -154,6 +154,10 @@ func (t *SecureTrie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	return t.trie.Commit(onleaf)
 }
 
+func (t *SecureTrie) UseParallelHasher(on bool)  {
+	t.trie.parallelHasherEnabled = on
+}
+
 // Hash returns the root hash of SecureTrie. It does not write to the
 // database and can be used even if the trie doesn't have one.
 func (t *SecureTrie) Hash() common.Hash {

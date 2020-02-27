@@ -1,70 +1,19 @@
-// Copyright 2015 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package optipreplayer
 
 import (
-	"fmt"
-	"math/big"
-	"os"
-	"strconv"
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/ethereum/go-ethereum/optipreplayer/writer"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ivpusic/grpool"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
 )
-
-const (
-	// chainHeadChanSize is the size of channel listening to ChainHeadEvent.
-	chainHeadChanSize = 10
-
-	// miningLogAtDepth is the number of confirmations before logging successful mining.
-	miningLogAtDepth = 7
-
-	// minRecommitInterval is the minimal time interval to recreate the mining block with
-	// any newly arrived transactions.
-	minRecommitInterval = 1 * time.Second
-
-	// staleThreshold is the maximum depth of the acceptable stale block.
-	staleThreshold = 7
-)
-
-// task contains all information for consensus engine sealing and result submitting.
-// type task struct {
-// 	receipts  []*types.Receipt
-// 	state     *state.StateDB
-// 	block     *types.Block
-// 	createdAt time.Time
-// }
-
-// newWorkReq represents a request for new sealing work submitting with relative interrupt notifier.
-type newWorkReq struct {
-	interrupt *int32
-	timestamp int64
-}
 
 type Trigger struct {
 	Name        string
@@ -87,8 +36,6 @@ type Trigger struct {
 	PreplayedPriceRankLimit uint64
 }
 
-// Preplayer is the main object which takes care of submitting new work to consensus engine
-// and gathering the sealing result.
 type Preplayer struct {
 	nodeID string
 	config *params.ChainConfig
@@ -96,76 +43,85 @@ type Preplayer struct {
 	eth    Backend
 	chain  *core.BlockChain
 
-	gasFloor uint64
-	gasCeil  uint64
+	exitCh chan struct{}
 
-	// Subscriptions
-	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
+	mu    sync.RWMutex // The lock used to protect the coinbase and extra fields
+	extra []byte
 
-	// Channels
-	newWorkCh chan *newWorkReq
-	startCh   chan struct{}
-	exitCh    chan struct{}
-
-	mu       sync.RWMutex // The lock used to protect the coinbase and extra fields
-	coinbase common.Address
-	extra    []byte
-
-	running  int32 // The indicator whether the consensus engine is running or not.
-	filePath string
-	// aggregator *Aggregator
+	running int32 // The indicator whether the consensus engine is running or not.
 	trigger *Trigger
-
-	// Result
-	resultMu sync.RWMutex
-	txResult map[common.Hash]*cache.ExtraResult
 
 	// Cache
 	globalCache *cache.GlobalCache
+
+	taskBuilder *TaskBuilder
+	routinePool *grpool.Pool
 }
 
-func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, trigger *Trigger) *Preplayer {
+func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *Preplayer {
+	taskBuilder := NewTaskBuilder(config, engine, eth, gasFloor, gasCeil, listener)
+	trigger := &Trigger{
+		Name:                      "TxsBlock1P1",
+		ExecutorNum:               10,
+		IsBlockCntDrive:           true,
+		PreplayedBlockNumberLimit: 1,
+	}
 	preplayer := &Preplayer{
 		config:      config,
 		engine:      engine,
 		eth:         eth,
 		chain:       eth.BlockChain(),
-		gasFloor:    gasFloor,
-		gasCeil:     gasCeil,
-		chainHeadCh: make(chan core.ChainHeadEvent, chainHeadChanSize),
-		newWorkCh:   make(chan *newWorkReq),
-		startCh:     make(chan struct{}, 2),
 		exitCh:      make(chan struct{}),
 		trigger:     trigger,
+		taskBuilder: taskBuilder,
+		routinePool: grpool.NewPool(trigger.ExecutorNum, trigger.ExecutorNum),
 	}
 
-	preplayer.filePath = fmt.Sprintf("/datadrive/preplayers")
-	os.MkdirAll(preplayer.filePath, os.ModePerm)
-	if preplayer.trigger.IsTxsInDetector {
-		preplayer.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(preplayer.chainHeadCh)
-	}
-	go preplayer.mainLoop()
-	go preplayer.newWorkLoop()
+	go taskBuilder.mainLoop()
+	taskBuilder.startCh <- struct{}{}
 
-	// Submit preplaying work to initialize pending state.
-	preplayer.startCh <- struct{}{}
+	for i := 0; i < trigger.ExecutorNum; i++ {
+		preplayer.routinePool.JobQueue <- func() {
+			preplayer.mainLoop()
+		}
+	}
 
 	return preplayer
 }
 
+func (p *Preplayer) mainLoop() {
+	taskQueue := p.taskBuilder.taskQueue
+	for {
+		if task := taskQueue.popTask(); task == nil {
+			p.wait()
+		} else {
+			if task.isValid() {
+				if txnOrder, ok := <-task.nextOrder; ok {
+					p.commitNewWork(task, txnOrder)
+					p.taskBuilder.preplayLog.reportGroupPreplay(task)
+					task.preplayCount++
+					task.priority = task.preplayCount * task.txnCount
+					if task.preplayCount < 1 {
+						//if task.txnCount > 1 || task.isDep() {
+						taskQueue.pushTask(task)
+					} else {
+						task.setInvalid()
+						<-task.nextOrder
+					}
+				}
+			} else {
+				<-task.nextOrder
+			}
+		}
+	}
+}
+
 // setExtra sets the content used to initialize the block extra field.
 func (p *Preplayer) setExtra(extra []byte) {
+	p.taskBuilder.setExtra(extra)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.extra = extra
-}
-
-// setEtherbase sets the etherbase used to initialize the block coinbase field.
-func (p *Preplayer) setEtherbase(addr common.Address) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.coinbase = addr
 }
 
 func (p *Preplayer) setNodeID(nodeID string) {
@@ -175,26 +131,15 @@ func (p *Preplayer) setNodeID(nodeID string) {
 }
 
 func (p *Preplayer) setGlobalCache(globalCache *cache.GlobalCache) {
+	p.taskBuilder.setGlobalCache(globalCache)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.globalCache = globalCache
 }
 
-func (p *Preplayer) GetResult(txHash common.Hash) *cache.ExtraResult {
-	p.resultMu.RLock()
-	defer p.resultMu.RUnlock()
-
-	if _, ok := p.txResult[txHash]; ok {
-		return p.txResult[txHash]
-	}
-
-	return nil
-}
-
 // start sets the running Status as 1 and triggers new work submitting.
 func (p *Preplayer) start() {
 	atomic.StoreInt32(&p.running, 1)
-	p.startCh <- struct{}{}
 }
 
 // stop sets the running Status as 0.
@@ -210,278 +155,150 @@ func (p *Preplayer) isRunning() bool {
 // close terminates all background threads maintained by the preplayers.
 // Note the preplayers does not support being closed multiple times.
 func (p *Preplayer) close() {
+	p.taskBuilder.close()
+	p.routinePool.Release()
 	close(p.exitCh)
 }
 
-// newWorkLoop is a standalone goroutine to submit new mining work upon received events.
-func (p *Preplayer) newWorkLoop() {
-	var (
-		// interrupt *int32
-		timestamp int64 // timestamp for each executorNum of mining.
-	)
-
-	execute := func() {
-		timestamp = time.Now().Unix()
-		p.newWorkCh <- &newWorkReq{timestamp: timestamp}
-
-	}
-
-	for {
-		select {
-		// Didn't catch things out
-		case <-p.startCh:
-			execute()
-			if !p.trigger.IsChainHeadDrive {
-				p.startCh <- struct{}{}
-			}
-
-		case <-p.chainHeadCh:
-			// log.Info("new Block", fmt.Sprintf("%s-%s", ev.Block.Number(), ev.Block.Header().Time),
-			// 	len([]int{}))
-			if p.trigger.IsChainHeadDrive {
-				log.Debug("TxsInDetector hear!")
-				execute()
-				log.Debug("TxsInDetector inserted!")
-			}
-
-		case <-p.exitCh:
-			// atomic.StoreInt32(interrupt, commitInterruptExit)
-			return
-		}
-	}
-
-	// For test only
-	//execute()
+func (p *Preplayer) wait() {
+	time.Sleep(200 * time.Millisecond)
 }
 
-// mainLoop is a standalone goroutine to regenerate the sealing task based on the received event.
-func (p *Preplayer) mainLoop() {
-	if p.trigger.IsTxsInDetector {
-		defer p.chainHeadSub.Unsubscribe()
-	}
-	for {
-		select {
-		case req := <-p.newWorkCh:
-			p.commitNewWork(req.timestamp)
-		case <-p.exitCh: //0xa76b13c02b47aebef5ca26fd5e4f33bf1c1ce19d1ab0b7186afb48ccf4599161
-			return
-		}
-	}
-}
-
-// commit generates several new sealing tasks based on the parent block.
-func (p *Preplayer) commitNewWork(timestamp int64) {
-
-	//defer func() {
-	//	if p.trigger.IsTxsInDetector {
-	//		log.Debug("Preplay gc")
-	//		runtime.GC()
-	//	}
-	//}()
-
-	// time.Sleep(100 * time.Millisecond)
-	// log.Info("preplay enter",
-	// 	"currentState", fmt.Sprintf("%s", p.trigger.Name))
-
-	var (
-		coinbase common.Address
-		extra    []byte
-	)
-
+func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
 	if p.nodeID == "" || p.globalCache == nil {
 		return
 	}
 
-	// stop ?
-	// if !p.isRunning() {
-	// 	return
-	// }
-
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if p.isRunning() {
-		if p.coinbase == (common.Address{}) {
-			log.Info("Preplay coinbase null")
-			return
-		}
-		coinbase = p.coinbase
-	}
-	extra = p.extra
-
-	// log.Info("preplay enter get block",
-	// 	"currentState", fmt.Sprintf("%s", p.trigger.Name))
 	parent := p.chain.CurrentBlock()
+	parentHash := parent.Hash()
+	parentNumber := parent.Number()
 
-	// log.Info("preplay enter get td",
-	// 	"currentState", fmt.Sprintf("%s", p.trigger.Name))
-	totalDifficulty := p.chain.GetTd(parent.Hash(), parent.Number().Uint64())
-	if totalDifficulty == nil {
-		totalDifficulty = &big.Int{}
+	// Pre setting
+	pendingList := types.Transactions{}
+	for _, txns := range task.txns {
+		pendingList = append(pendingList, txns...)
+		for _, txn := range txns {
+			if p.globalCache.GetTxPreplay(txn.Hash()) == nil {
+				p.globalCache.CommitTxPreplay(cache.NewTxPreplay(txn))
+			}
+		}
 	}
 
-	// Fill the block with all available local transactions.
-	// We use local for testing only. Txs commit can be others later
+	orderMap := make(map[common.Hash]int)
+	for index, txn := range txnOrder {
+		orderMap[txn] = index
+	}
 
+	totalDifficulty := p.chain.GetTd(parentHash, parent.NumberU64())
+	if totalDifficulty == nil {
+		totalDifficulty = new(big.Int)
+	}
 	currentState := &cache.CurrentState{
 		PreplayID:         p.nodeID,
 		PreplayName:       p.trigger.Name,
-		Number:            parent.Number().Uint64(),
-		Hash:              parent.Hash().String(),
-		RawHash:           parent.Hash(),
+		Number:            parent.NumberU64(),
+		Hash:              parentHash.Hex(),
+		RawHash:           parentHash,
 		Txs:               parent.Transactions(),
-		TotalDifficuly:    totalDifficulty.String(),
+		TotalDifficulty:   totalDifficulty.String(),
 		SnapshotTimestamp: time.Now().UnixNano() / 1000000,
 	}
 
-	var (
-		rawPending map[common.Address]types.Transactions
-		// rawLocal   map[common.Address]types.Transactions
-		err error
-	)
-
-	// log.Info("preplay in (get pool)",
-	// 	"currentState", fmt.Sprintf("%s-%s-%d-%d", p.trigger.Name, currentState.PreplayID, currentState.Number, currentState.SnapshotTimestamp),
-	// 	"txs num", len(rawPending), " ", len(rawLocal))
-
-	// log.Info("preplay enter get pending",
-	// 	"currentState", fmt.Sprintf("%s", p.trigger.Name))
-	if !p.trigger.IsTxsInDetector {
-		// rawPending, rawLocal, err = p.eth.TxPool().Pending()
-		// if err != nil {
-		// 	return
-		// }
-
-		rawPending, err = p.eth.TxPool().Pending()
-		if err != nil {
-			return
-		}
-
-	} else {
-		// in detector
-		return
-	}
-
-	// When to return.. need discuss
-	if len(rawPending) == 0 {
-		return
-	}
-
-	p.globalCache.PauseForProcess()
-
-	pendingList := types.Transactions{}
-	for _, trx := range rawPending {
-		for _, tx := range trx {
-			pendingList = append(pendingList, tx)
-		}
-	}
-
-	// localList := types.Transactions{}
-	// for _, trx := range rawLocal {
-	// 	for _, tx := range trx {
-	// 		localList = append(localList, tx)
-	// 	}
-	// }
-
-	// if parent.Time().Cmp(new(big.Int).SetInt64(timestamp)) >= 0 {
-	// 	timestamp = parent.Time().Int64() + 1
-	// }
-	// // this will ensure we're not going off too far in the future
-	// if now := time.Now().Unix(); timestamp > now+1 {
-	// 	wait := time.Duration(timestamp-now) * time.Second
-	// 	log.Info("Mining too far in the future", "wait", common.PrettyDuration(wait))
-	// 	time.Sleep(wait)
-	// }
-
-	timestamp = p.globalCache.NewTimeStamp()
-	// log.Info("preplay enter ready to start",
-	// "currentState", fmt.Sprintf("%s", p.trigger.Name))
-	num := parent.Number()
 	header := &types.Header{
-		ParentHash: parent.Hash(),
-		Number:     num.Add(num, common.Big1),
-		GasLimit:   core.CalcGasLimit(parent, p.gasFloor, p.gasCeil),
-		Coinbase:   coinbase,
-		Extra:      extra,
-		Time:       uint64(timestamp),
+		ParentHash: parentHash,
+		Number:     parentNumber.Add(parentNumber, common.Big1),
+		GasLimit:   task.header.gasLimit,
+		Coinbase:   task.header.coinbase,
+		Extra:      p.extra,
+		Time:       task.header.time,
 	}
 
-	//funny := 1
-	log.Debug("Preplay start",
-		"currentState", fmt.Sprintf("%s-%s-%d-%d", p.trigger.Name, currentState.PreplayID, currentState.Number, currentState.SnapshotTimestamp),
-		"pending", fmt.Sprintf("%d(%d)", len(rawPending), len(pendingList)))
+	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), orderMap,
+		task.txns, pendingList, currentState, p.trigger, nil, false)
 
-	// p.aggregator = NewAggregator(p.trigger.Name, p.trigger.ExecutorNum, pendingList, currentState, p.filePath)
+	executor.RoundID = p.globalCache.NewRoundID()
 
-	chain := &core.BlockChain{}
-	Copy(chain, p.chain)
+	currentState.StartTimeString = time.Now().Format("2006-01-02 15:04:05")
 
-	for i := 0; i < p.trigger.ExecutorNum; i++ {
-		// go func(i int) {
-		exeHeader := &types.Header{}
-		exeParent := &types.Block{}
-		exeChain := &core.BlockChain{}
-		Copy(exeHeader, header)
-		Copy(exeParent, parent)
-		Copy(exeChain, chain)
+	// Execute, use pending for preplay
+	executor.commit(task.header.coinbase, parent, header, task.txns)
 
-		// log.Info("preplay new executor",
-		// 	"currentState", fmt.Sprintf("%s", p.trigger.Name))
+	// Update Cache, need initialize
+	p.globalCache.CommitTxResult(executor.RoundID, currentState, task.txns, executor.resultMap)
 
-		executor := NewExecutor(strconv.Itoa(i), p.config, p.engine, p.chain, p.eth.ChainDb(),
-			p.gasFloor, p.gasCeil, rawPending, pendingList, currentState, p.trigger, nil, false)
+	currentState.EndTimeString = time.Now().Format("2006-01-02 15:04:05")
 
-		txCommit := rawPending
-		executor.RoundID = p.globalCache.NewRoundID()
+	settings := p.chain.GetVMConfig().MSRAVMSettings
+	if settings.PreplayRecord && !settings.Silent {
+		p.globalCache.PreplayPrint(executor.RoundID, executor.executionOrder, currentState)
+	}
 
-		// Pre setting
-		for acc := range txCommit {
-			for _, tx := range txCommit[acc] {
-				txPreplay := p.globalCache.GetTxPreplay(tx.Hash())
-				if txPreplay == nil {
-					p.globalCache.CommitTxRreplay(cache.NewTxPreplay(tx))
+	if task.preplayCount < 5 {
+		p.warmupStateDB(executor.RoundID, executor.executionOrder)
+		p.warmupWObject(executor.RoundID, executor.executionOrder, executor.current.state)
+	}
+}
+
+func (p *Preplayer) warmupStateDB(RoundID uint64, executionOrder []*types.Transaction) {
+	if !p.chain.Warmuper.IsRunning() {
+		return
+	}
+	addrMap := make(map[common.Address]map[common.Hash]struct{})
+	for _, tx := range executionOrder {
+		txPreplay := p.globalCache.GetTxPreplay(tx.Hash())
+		round, _ := txPreplay.PeekRound(RoundID)
+		if round == nil || round.RWrecord == nil {
+			continue
+		}
+		for addr, readStates := range round.RWrecord.RState {
+			if _, ok := addrMap[addr]; !ok {
+				addrMap[addr] = make(map[common.Hash]struct{})
+			}
+			for key := range readStates.Storage {
+				addrMap[addr][key] = struct{}{}
+			}
+			for key := range readStates.CommittedStorage {
+				addrMap[addr][key] = struct{}{}
+			}
+		}
+	}
+	p.chain.Warmuper.AddWarmupTask(addrMap)
+}
+
+func (p *Preplayer) warmupWObject(RoundID uint64, executionOrder []*types.Transaction, statedb *state.StateDB) {
+	for _, tx := range executionOrder {
+		txPreplay := p.globalCache.GetTxPreplay(tx.Hash())
+		round, _ := txPreplay.PeekRound(RoundID)
+		if round == nil || round.WObjects == nil {
+			continue
+		}
+		for address, object := range round.WObjects {
+			objectInDb := statedb.GetOrNewStateObject(address)
+			if objectInDb == nil {
+				continue
+			}
+			originStorageInDb := objectInDb.GetOriginStorage()
+			for key := range originStorageInDb {
+				object.GetCommittedState(statedb.Database(), key)
+			}
+			if pairObj := object.GetPair(); pairObj != nil {
+				for key := range originStorageInDb {
+					pairObj.GetCommittedState(statedb.Database(), key)
 				}
 			}
 		}
-
-		currentState.StartTimeString = time.Now().Format("2006-01-02 15:04:05")
-
-		// Execute, use pending for preplay
-		executor.commit(timestamp, coinbase, extra, exeParent, exeHeader, txCommit)
-
-		executor.sumbitResult(p, txCommit)
-
-		// Update Cache, need initialize
-		p.globalCache.CommitTxResult(executor.RoundID, currentState, p.txResult)
-
-		currentState.EndTimeString = time.Now().Format("2006-01-02 15:04:05")
-
-		settings := p.chain.GetVMConfig().MSRAVMSettings
-		if settings.PreplayRecord && !settings.Silent {
-			p.globalCache.PreplayPrint(executor.RoundID, executor.executionOrder, currentState)
-		}
-		// p.aggregator.setResultChFinish(i)
-		// }(i)
 	}
-
-	// p.aggregator.mergeLoop()
-
-	log.Debug("Preplay end",
-		"currentState", fmt.Sprintf("%s-%s-%d-%d", p.trigger.Name, currentState.PreplayID, currentState.Number, currentState.SnapshotTimestamp),
-		"pending", fmt.Sprintf("%d(%d)", len(rawPending), len(pendingList)))
-
 }
 
 type Preplayers []*Preplayer
 
-func NewPreplayers(eth Backend, config *params.ChainConfig, engine consensus.Engine, gasFloor, gasCeil uint64) Preplayers {
-	var triggers []*Trigger
-	filePath := writer.GetParentDirectory(writer.CurrentFile())
-	writer.Load(filePath+"/config/config.json", &triggers)
-	log.Info("Resolve preplayers", "filepath", filePath+"/config/config.json")
+func NewPreplayers(eth Backend, config *params.ChainConfig, engine consensus.Engine, gasFloor, gasCeil uint64, listener *Listener) Preplayers {
 	preplayers := Preplayers{}
-	for _, trigger := range triggers {
-		preplayers = append(preplayers, NewPreplayer(config, engine, eth, gasFloor, gasCeil, trigger))
+	for i := 0; i < 1; i++ {
+		preplayers = append(preplayers, NewPreplayer(config, engine, eth, gasFloor, gasCeil, listener))
 	}
 	return preplayers
 }
@@ -490,13 +307,6 @@ func NewPreplayers(eth Backend, config *params.ChainConfig, engine consensus.Eng
 func (preplayers Preplayers) setExtra(extra []byte) {
 	for _, preplayer := range preplayers {
 		preplayer.setExtra(extra)
-	}
-}
-
-// setEtherbase sets the etherbase used to initialize the block coinbase field.
-func (preplayers Preplayers) setEtherbase(addr common.Address) {
-	for _, preplayer := range preplayers {
-		preplayer.setEtherbase(addr)
 	}
 }
 

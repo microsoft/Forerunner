@@ -15,18 +15,17 @@ import (
 // and uses the input parameters for its environment. It returns the receipt
 // for the transaction and an error if the transaction failed, indicating the
 // block was invalid.
-// Cmpreuse.ReuseTransaction used for only one scenario:
+// Cmpreuse.ApplyTransaction used for only one scenario:
 // 		process the block with reusing preplay results, execute transaction serially
 // external args (comparing with core.ApplyTransaction)
 //		`blockPre`:
 //			used to help `getValidRW` skip rounds which are later then `blockPre`
 // For the last return uint64 value,
 // 		0: error;
-// 		1: cache hit;
-// 		2: no cache;
-// 		3: cache but not in;
-//		4: cache but result not match;
-//		5: abort before hit or miss;
+// 		1: no preplay;
+// 		2: cache hit;
+// 		3: cache miss(cache but not in or cache but result not match);
+//		4: abort before hit or miss;
 func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, *cmptypes.ReuseStatus) {

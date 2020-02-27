@@ -311,21 +311,34 @@ func (s TxByNonce) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // TxByPrice implements both the sort and the heap interface, making it useful
 // for all at once sorting as well as individually adding and removing elements.
-type TxByPrice Transactions
+type TxByPrice struct {
+	txns     Transactions
+	txnOrder map[common.Hash]int
+}
 
-func (s TxByPrice) Len() int           { return len(s) }
-func (s TxByPrice) Less(i, j int) bool { return s[i].data.Price.Cmp(s[j].data.Price) > 0 }
-func (s TxByPrice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+func (s TxByPrice) Len() int { return len(s.txns) }
+func (s TxByPrice) Less(i, j int) bool {
+	cmp := s.txns[i].data.Price.Cmp(s.txns[j].data.Price)
+	if s.txnOrder != nil && cmp == 0 {
+		iOrder, iOk := s.txnOrder[s.txns[i].Hash()]
+		jOrder, jOk := s.txnOrder[s.txns[j].Hash()]
+		if iOk && jOk {
+			return iOrder < jOrder
+		}
+	}
+	return cmp > 0
+}
+func (s TxByPrice) Swap(i, j int) { s.txns[i], s.txns[j] = s.txns[j], s.txns[i] }
 
 func (s *TxByPrice) Push(x interface{}) {
-	*s = append(*s, x.(*Transaction))
+	s.txns = append(s.txns, x.(*Transaction))
 }
 
 func (s *TxByPrice) Pop() interface{} {
-	old := *s
+	old := s.txns
 	n := len(old)
 	x := old[n-1]
-	*s = old[0 : n-1]
+	s.txns = old[0 : n-1]
 	return x
 }
 
@@ -344,17 +357,24 @@ type TransactionsByPriceAndNonce struct {
 //
 // Note, the input map is reowned so the caller should not interact any more with
 // if after providing it to the constructor.
-func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transactions) *TransactionsByPriceAndNonce {
+func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transactions, txnOrder map[common.Hash]int, fast bool) *TransactionsByPriceAndNonce {
 	// Initialize a price based heap with the head transactions
 	// total := len(txs)
-	heads := make(TxByPrice, 0, len(txs))
+	heads := TxByPrice{
+		txns:     make(Transactions, 0, len(txs)),
+		txnOrder: txnOrder,
+	}
 	for from, accTxs := range txs {
-		heads = append(heads, accTxs[0])
-		// Ensure the sender address is from the signer
-		acc, _ := Sender(signer, accTxs[0])
-		txs[acc] = accTxs[1:]
-		if from != acc {
-			delete(txs, from)
+		heads.txns = append(heads.txns, accTxs[0])
+		if fast {
+			txs[from] = accTxs[1:]
+		} else {
+			// Ensure the sender address is from the signer
+			acc, _ := Sender(signer, accTxs[0])
+			txs[acc] = accTxs[1:]
+			if from != acc {
+				delete(txs, from)
+			}
 		}
 	}
 	heap.Init(&heads)
@@ -415,17 +435,17 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transa
 
 // Peek returns the next transaction by price.
 func (t *TransactionsByPriceAndNonce) Peek() *Transaction {
-	if len(t.heads) == 0 {
+	if len(t.heads.txns) == 0 {
 		return nil
 	}
-	return t.heads[0]
+	return t.heads.txns[0]
 }
 
 // Shift replaces the current best head with the next one from the same account.
 func (t *TransactionsByPriceAndNonce) Shift() {
-	acc, _ := Sender(t.signer, t.heads[0])
+	acc, _ := Sender(t.signer, t.heads.txns[0])
 	if txs, ok := t.txs[acc]; ok && len(txs) > 0 {
-		t.heads[0], t.txs[acc] = txs[0], txs[1:]
+		t.heads.txns[0], t.txs[acc] = txs[0], txs[1:]
 		heap.Fix(&t.heads, 0)
 	} else {
 		heap.Pop(&t.heads)

@@ -466,6 +466,7 @@ func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject)
 	cpy := object.deepCopy(object.db)
 	cpy.delta = newDeltaObject()
 	cpy.Code(cpy.db.db)
+	cpy.updateRoot(cpy.db.db)
 	cpy.shareCopy(cpy.db)
 	h.WObject[addr] = cpy
 }
