@@ -70,6 +70,11 @@ type Trie interface {
 	// database, a trie.MissingNodeError is returned.
 	TryUpdate(key, value []byte) error
 
+	// These two are for parallelization
+	TryUpdateWithHashedKey(key, hashedKey, value []byte) error
+	HashKey(key []byte) []byte
+    TryInsertInBatch(keyCopyList, hexKeyList, valueList [][]byte, hashedKeyStringList []string) error
+
 	// TryDelete removes any existing value for key from the trie. If a node was not
 	// found in the database, a trie.MissingNodeError is returned.
 	TryDelete(key []byte) error

@@ -148,7 +148,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		reuseRound   *cache.PreplayResult
 		readDeps     []*cmptypes.AddrLocValue
 	)
-	reuseStatus, reuseRound, _, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false)
+	reuseStatus, reuseRound, _, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false, &cfg)
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
@@ -180,7 +180,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		//}
 
 	} else {
-		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, core.NewController(), msg)
+		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, core.NewController(), msg)
 
 		defer statedb.RWRecorder().RWClear() // Write set got
 		if err == nil {

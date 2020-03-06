@@ -4,7 +4,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
@@ -172,7 +171,7 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	parent := p.chain.CurrentBlock()
+	parent := task.parent
 	parentHash := parent.Hash()
 	parentNumber := parent.Number()
 
@@ -236,61 +235,7 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
 		p.globalCache.PreplayPrint(executor.RoundID, executor.executionOrder, currentState)
 	}
 
-	if task.preplayCount < 5 {
-		p.warmupStateDB(executor.RoundID, executor.executionOrder)
-		p.warmupWObject(executor.RoundID, executor.executionOrder, executor.current.state)
-	}
-}
-
-func (p *Preplayer) warmupStateDB(RoundID uint64, executionOrder []*types.Transaction) {
-	if !p.chain.Warmuper.IsRunning() {
-		return
-	}
-	addrMap := make(map[common.Address]map[common.Hash]struct{})
-	for _, tx := range executionOrder {
-		txPreplay := p.globalCache.GetTxPreplay(tx.Hash())
-		round, _ := txPreplay.PeekRound(RoundID)
-		if round == nil || round.RWrecord == nil {
-			continue
-		}
-		for addr, readStates := range round.RWrecord.RState {
-			if _, ok := addrMap[addr]; !ok {
-				addrMap[addr] = make(map[common.Hash]struct{})
-			}
-			for key := range readStates.Storage {
-				addrMap[addr][key] = struct{}{}
-			}
-			for key := range readStates.CommittedStorage {
-				addrMap[addr][key] = struct{}{}
-			}
-		}
-	}
-	p.chain.Warmuper.AddWarmupTask(addrMap)
-}
-
-func (p *Preplayer) warmupWObject(RoundID uint64, executionOrder []*types.Transaction, statedb *state.StateDB) {
-	for _, tx := range executionOrder {
-		txPreplay := p.globalCache.GetTxPreplay(tx.Hash())
-		round, _ := txPreplay.PeekRound(RoundID)
-		if round == nil || round.WObjects == nil {
-			continue
-		}
-		for address, object := range round.WObjects {
-			objectInDb := statedb.GetOrNewStateObject(address)
-			if objectInDb == nil {
-				continue
-			}
-			originStorageInDb := objectInDb.GetOriginStorage()
-			for key := range originStorageInDb {
-				object.GetCommittedState(statedb.Database(), key)
-			}
-			if pairObj := object.GetPair(); pairObj != nil {
-				for key := range originStorageInDb {
-					pairObj.GetCommittedState(statedb.Database(), key)
-				}
-			}
-		}
-	}
+	p.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, parent.Root())
 }
 
 type Preplayers []*Preplayer

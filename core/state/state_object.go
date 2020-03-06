@@ -19,7 +19,6 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/ethereum/go-ethereum/log"
 	"io"
 	"math/big"
 	"time"
@@ -65,11 +64,13 @@ type deltaObject struct {
 func newDeltaObject() *deltaObject {
 	return &deltaObject{
 		originStorage:  make(Storage),
-		pendingStorage: make(Storage),
+		pendingStorage: make(Storage, 100),
 	}
 }
 
+type ObjectList []*stateObject
 type ObjectMap map[common.Address]*stateObject
+type ObjectListMap map[common.Address][]*stateObject
 
 // stateObject represents an Ethereum account which is being modified.
 //
@@ -113,6 +114,8 @@ type stateObject struct {
 
 	delta *deltaObject
 	pair  *stateObject
+
+	RoundId uint64
 }
 
 // empty returns whether the account is considered empty.
@@ -188,6 +191,13 @@ func (s *stateObject) touch() {
 	}
 }
 
+func (s *stateObject) GetDatabase() Database {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.db
+}
+
 func (s *stateObject) getTrie(db Database) Trie {
 	if s.trie == nil {
 		var err error
@@ -251,17 +261,6 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 		}
 		value.SetBytes(content)
 	}
-	if s.db.FromProcess {
-		log.Info("Get state from trie", "addr", s.address, "key", key, "index", s.db.txIndex,
-			"primary", s.db.IsPrimary(), "isProcess", s.db.IsKeyProcessed(s.address, key))
-		s.db.WarmupMiss = true
-		if _, ok := s.db.MissObject[s.address]; !ok {
-			if _, ok2 := s.db.MissKey[s.address]; !ok2 {
-				s.db.MissKey[s.address] = make(map[common.Hash]struct{})
-			}
-			s.db.MissKey[s.address][key] = struct{}{}
-		}
-	}
 	if s.isShared() {
 		s.delta.originStorage[key] = value
 	} else {
@@ -274,6 +273,10 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 // The return storage is read-only!!
 func (s *stateObject) GetOriginStorage() Storage {
 	return s.originStorage
+}
+
+func (s *stateObject) GetPendingStorage() Storage {
+	return s.pendingStorage
 }
 
 // SetState updates a value in account storage.
@@ -494,7 +497,7 @@ func (s *stateObject) shareCopy(db *StateDB) {
 		suicided:          s.suicided,
 		deleted:           s.deleted,
 		dirtyStorageCount: make(map[common.Hash]uint),
-		delta:             newDeltaObject(),
+		delta:             s.db.GetNewDeltaObject(),
 	}
 	if s.trie != nil {
 		obj.trie = db.db.CopyTrie(s.trie)
@@ -512,7 +515,7 @@ func (s *stateObject) isInPrimary() bool {
 
 func (s *stateObject) addDelta() {
 	if s.isShared() && s.delta == nil {
-		s.delta = newDeltaObject()
+		s.delta = s.db.GetNewDeltaObject() //newDeltaObject()
 	}
 }
 
@@ -520,39 +523,58 @@ func (s *stateObject) updatePair() {
 	obj := s.pair
 	obj.data.Nonce = s.data.Nonce
 	if obj.data.Balance.Cmp(s.data.Balance) != 0 {
-		obj.data.Balance = new(big.Int).Set(s.data.Balance)
+		//obj.data.Balance = new(big.Int).Set(s.data.Balance)
+		//obj.data.Balance.Set(s.data.Balance)
+		obj.data.Balance = s.db.GetNewBigInt().Set(s.data.Balance)
 	}
 	obj.data.CodeHash = s.data.CodeHash
 	obj.code = s.code
-	obj.delta.originStorage = make(Storage)
-	obj.delta.pendingStorage = make(Storage)
-	obj.dirtyStorage = make(Storage)
+	if len(obj.delta.originStorage) > 0 {
+		//obj.delta.originStorage = make(Storage)
+		obj.delta.originStorage = s.db.GetNewOriginStorage()
+	}
+	if len(obj.delta.pendingStorage) > 0 {
+		//obj.delta.pendingStorage = make(Storage, 100)
+		obj.delta.pendingStorage = s.db.GetNewPendingStorage()
+	}
+	if len(obj.dirtyStorage) > 0 {
+		//obj.dirtyStorage = make(Storage)
+		obj.dirtyStorage = s.db.GetNewOriginStorage()
+	}
 	obj.dirtyCode = s.dirtyCode
 	obj.suicided = s.suicided
 	obj.deleted = s.deleted
 	obj.dirtyNonceCount = 0
 	obj.dirtyBalanceCount = 0
 	obj.dirtyCodeCount = 0
-	obj.dirtyStorageCount = make(map[common.Hash]uint)
+	if len(obj.dirtyStorageCount) > 0 {
+		obj.dirtyStorageCount = make(map[common.Hash]uint)
+	}
 }
 
-func (s *stateObject) updateDelta() {
+func (s *stateObject) UpdateDelta() {
 	s.updateOriginStorage(s.delta.originStorage)
-	s.delta.originStorage = make(Storage)
-	for addr, value := range s.delta.pendingStorage {
-		s.pendingStorage[addr] = value
+	//s.delta.originStorage = make(Storage)
+	if len(s.delta.originStorage) > 0 {
+		s.delta.originStorage = s.db.GetNewOriginStorage()
 	}
-	s.delta.pendingStorage = make(Storage)
+	if len(s.delta.pendingStorage) > 0 {
+		for addr, value := range s.delta.pendingStorage {
+			s.pendingStorage[addr] = value
+		}
+		//s.delta.pendingStorage = make(Storage, 100)
+		s.delta.pendingStorage = s.db.GetNewPendingStorage()
+	}
 }
 
 func (s *stateObject) updateOriginStorage(storage Storage) {
 	if len(storage) == 0 {
 		return
 	}
-	if len(storage) > len(s.originStorage) {
-		s.originStorage, storage = storage, s.originStorage
-		s.pair.originStorage = s.originStorage
-	}
+	//if len(storage) > len(s.originStorage) {
+	//	s.originStorage, storage = storage, s.originStorage
+	//	s.pair.originStorage = s.originStorage
+	//}
 	for addr, value := range storage {
 		s.originStorage[addr] = value
 	}

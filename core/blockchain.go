@@ -1704,8 +1704,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		statedb := bc.Warmuper.GetStateDB(parent.Root)
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
-		} else {
-			log.Info("Get warmup statedb", "size", statedb.Size(), "remain", len(bc.Warmuper.coldQueue))
 		}
 		if err != nil {
 			return it.index, err

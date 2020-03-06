@@ -68,8 +68,8 @@ type deltaDB struct {
 
 func newDeltaDB() *deltaDB {
 	return &deltaDB{
-		stateObjects:      make(map[common.Address]*stateObject),
-		stateObjectsDirty: make(map[common.Address]struct{}),
+		stateObjects:      make(map[common.Address]*stateObject, 300),
+		stateObjectsDirty: make(map[common.Address]struct{}, 300),
 		logs:              make([]*types.Log, 0),
 		preimages:         make(map[common.Hash][]byte),
 	}
@@ -135,40 +135,92 @@ type StateDB struct {
 	AccountChangedBy cmptypes.ChangedMap
 	IsParallelHasher bool
 	BloomProcessor   *types.ParallelBloomProcessor
-
-	FromProcess bool
-	WarmupMiss  bool
-	MissObject  map[common.Address]struct{}
-	MissKey     map[common.Address]map[common.Hash]struct{}
-	Processed   map[common.Address]map[common.Hash]struct{}
+	ReceiptMutex     sync.Mutex
+	CurrentReceipt   *types.Receipt
+	// to pre-allocate frequently used objects
+	preAllocatedOriginStorages  []Storage
+	nextOriginStorageIndex      int
+	preAllocatedPendingStorages []Storage
+	nextPendingStorageIndex     int
+	preAllocatedDeltaObjects    []*deltaObject
+	nextDeltaObjectIndex        int
+	preAllocatedBigInt          []*big.Int
+	nextBigIntIndex             int
 }
 
-func (self *StateDB) Size() int {
+func (self *StateDB) GetStateObject() map[common.Address]*stateObject {
+	if self.IsShared() {
+		return self.delta.stateObjects
+	}
+	return self.stateObjects
+}
+
+var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
+
+func (self *StateDB) PreAllocateObjects() {
+	preOriginCount := 400
+	prePendingCount := 100
+	preDeltaCount := 100
+	preBigIntCount := 400
+	self.preAllocatedOriginStorages = make([]Storage, preOriginCount)
+	self.preAllocatedPendingStorages = make([]Storage, prePendingCount)
+	self.preAllocatedDeltaObjects = make([]*deltaObject, preDeltaCount)
+	self.preAllocatedBigInt = make([]*big.Int, preBigIntCount)
+	for i := range self.preAllocatedOriginStorages {
+		self.preAllocatedOriginStorages[i] = make(Storage)
+	}
+	for i := range self.preAllocatedPendingStorages {
+		self.preAllocatedPendingStorages[i] = make(Storage, 200)
+	}
+	for i := range self.preAllocatedDeltaObjects {
+		self.preAllocatedDeltaObjects[i] = newDeltaObject()
+	}
+
+	for i := range self.preAllocatedBigInt {
+		bi := big.NewInt(0)
+		bi.Set(aBigInt) // increase the capacity of the underlying buffer
+		self.preAllocatedBigInt[i] = bi
+	}
+}
+
+func (self *StateDB) GetNewOriginStorage() Storage {
+	if self.nextOriginStorageIndex >= len(self.preAllocatedOriginStorages) {
+		return make(Storage)
+	}
+	s := self.preAllocatedOriginStorages[self.nextOriginStorageIndex]
+	self.nextOriginStorageIndex++
+	return s
+}
+
+func (self *StateDB) GetNewPendingStorage() Storage {
+	if self.nextPendingStorageIndex >= len(self.preAllocatedPendingStorages) {
+		return make(Storage)
+	}
+	s := self.preAllocatedPendingStorages[self.nextPendingStorageIndex]
+	self.nextPendingStorageIndex++
+	return s
+}
+
+func (self *StateDB) GetNewDeltaObject() *deltaObject {
+	if self.nextDeltaObjectIndex >= len(self.preAllocatedDeltaObjects) {
+		return newDeltaObject()
+	}
+	d := self.preAllocatedDeltaObjects[self.nextDeltaObjectIndex]
+	self.nextDeltaObjectIndex++
+	return d
+}
+
+func (self *StateDB) GetNewBigInt() *big.Int {
+	if self.nextBigIntIndex >= len(self.preAllocatedBigInt) {
+		return new(big.Int)
+	}
+	b := self.preAllocatedBigInt[self.nextBigIntIndex]
+	self.nextBigIntIndex++
+	return b
+}
+
+func (self *StateDB) StateObjectCountInDelta() int {
 	return len(self.delta.stateObjects)
-}
-
-func (self *StateDB) RecordProcessed() {
-	self.Processed = make(map[common.Address]map[common.Hash]struct{})
-	for address, object := range self.delta.stateObjects {
-		self.Processed[address] = make(map[common.Hash]struct{})
-		for hash := range object.originStorage {
-			self.Processed[address][hash] = struct{}{}
-		}
-	}
-}
-
-func (self *StateDB) IsObjectProcessed(addr common.Address) bool {
-	_, ok := self.Processed[addr]
-	return ok
-}
-
-func (self *StateDB) IsKeyProcessed(addr common.Address, key common.Hash) bool {
-	exist := self.IsObjectProcessed(addr)
-	if !exist {
-		return false
-	}
-	_, ok := self.Processed[addr][key]
-	return ok
 }
 
 func (self *StateDB) IsEnableFeeToCoinbase() bool {
@@ -192,16 +244,16 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		db:                  db,
 		trie:                tr,
 		stateObjects:        make(map[common.Address]*stateObject),
-		stateObjectsPending: make(map[common.Address]struct{}),
+		stateObjectsPending: make(map[common.Address]struct{}, 300),
 		stateObjectsDirty:   make(map[common.Address]struct{}),
-		logs:                make(map[common.Hash][]*types.Log),
+		logs:                make(map[common.Hash][]*types.Log, 100),
 		preimages:           make(map[common.Hash][]byte),
 		journal:             newJournal(),
 
 		EnableFeeToCoinbase: true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
-		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
+		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, 300),
 	}, nil
 }
 
@@ -360,7 +412,7 @@ func (s *StateDB) Empty(addr common.Address) bool {
 // Retrieve the balance from the given address or 0 if object not found
 func (s *StateDB) GetBalance(addr common.Address) (ret *big.Int) {
 	stateObject := s.getStateObject(addr)
-	defer func() { s.rwRecorder._GetBalance(addr, stateObject, ret) }()
+	defer func() { s.rwRecorder._GetBalance(addr, stateObject, new(big.Int).Set(ret)) }()
 	if stateObject != nil {
 		return stateObject.Balance()
 	}
@@ -642,7 +694,7 @@ func (s *StateDB) Suicide(addr common.Address) bool {
 //
 
 // updateStateObject writes the given object to the trie.
-func (s *StateDB) updateStateObject(obj *stateObject) {
+func (s *StateDB) updateStateObjectWithHashedKeyAndEncodedData(obj *stateObject, objData []byte, objKey []byte) {
 	// Track the amount of time wasted on updating the account from the trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
@@ -650,11 +702,34 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 	// Encode the account and update the account trie
 	addr := obj.Address()
 
-	data, err := rlp.EncodeToBytes(obj)
-	if err != nil {
-		panic(fmt.Errorf("can't encode object at %x: %v", addr[:], err))
+	data := objData
+	if data == nil {
+		var err error
+		data, err = rlp.EncodeToBytes(obj)
+		if err != nil {
+			panic(fmt.Errorf("can't encode object at %x: %v", addr[:], err))
+		}
 	}
-	s.setError(s.trie.TryUpdate(addr[:], data))
+
+	if objKey == nil {
+		s.setError(s.trie.TryUpdate(addr[:], data))
+	} else {
+		s.setError(s.trie.TryUpdateWithHashedKey(addr[:], objKey[:], data))
+	}
+
+}
+
+func (s *StateDB) updateStateObject(obj *stateObject) {
+	s.updateStateObjectWithHashedKeyAndEncodedData(obj, nil, nil)
+}
+
+func (s *StateDB) updateStateObjectsInBatch(keyCopyList, hexKeyList, valueList [][]byte, hashedKeyStringList []string) {
+	// Track the amount of time wasted on updating the account from the trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
+	}
+
+	s.setError(s.trie.TryInsertInBatch(keyCopyList, hexKeyList, valueList, hashedKeyStringList))
 }
 
 // deleteStateObject removes the given object from the state trie.
@@ -707,12 +782,6 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if err := rlp.DecodeBytes(enc, &data); err != nil {
 		log.Error("Failed to decode state object", "addr", addr, "err", err)
 		return nil
-	}
-	if s.FromProcess {
-		log.Info("Get object from trie", "addr", addr, "index", s.txIndex,
-			"primary", s.IsPrimary(), "isProcess", s.IsObjectProcessed(addr))
-		s.WarmupMiss = true
-		s.MissObject[addr] = struct{}{}
 	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
@@ -987,7 +1056,7 @@ func (s *StateDB) updateObject(db *StateDB) {
 			}
 			db.setDeltaStateObject(object1.pair)
 		}
-		object1.updateDelta()
+		object1.UpdateDelta()
 		db.delta.stateObjectsDirty[addr] = struct{}{}
 	}
 }
@@ -1137,13 +1206,32 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 				allJobs.Done()
 			}()
 		}
+
+		encodedData := make([][]byte, len(toUpdateRoot))
+		//hashedKeys := make([][]byte, len(toUpdateRoot))
+		hexKeys := make([][]byte, len(toUpdateRoot))
+		hashedStrings := make([]string, len(toUpdateRoot))
+		keyCopies := make([][]byte, len(toUpdateRoot))
+
+
+
 		// execute the updateRoots in parallel
 		if len(toUpdateRoot) > 0 {
-			for _, obj := range toUpdateRoot {
+			for i, obj := range toUpdateRoot {
 				allJobs.Add(1)
 				theObject := obj // avoid capturing the loop variable
+				theIndex := i
 				job := func() {
 					theObject.updateRoot(s.db)
+					data, err := rlp.EncodeToBytes(theObject)
+					if err != nil {
+						panic("Encoding of theObject should never fail!")
+					}
+					encodedData[theIndex] = data
+					hashedKey := theObject.trie.HashKey(theObject.Address().Bytes())
+					hexKeys[theIndex] = trie.KeybytesToHex(hashedKey)
+					hashedStrings[theIndex] = string(hashedKey)
+					keyCopies[theIndex] = common.CopyBytes(theObject.Address().Bytes())
 					allJobs.Done()
 				}
 				trie.ExecuteInParallelPool(job)
@@ -1151,9 +1239,11 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		}
 		allJobs.Wait()
 		// this has to be done in serial
-		for _, obj := range toUpdateRoot {
-			s.updateStateObject(obj)
-		}
+		//for i, obj := range toUpdateRoot {
+		//	//s.updateStateObject(obj)
+		//	s.updateStateObjectWithHashedKeyAndEncodedData(obj, encodedData[i], hashedKeys[i])
+		//}
+		s.updateStateObjectsInBatch(keyCopies, hexKeys, encodedData, hashedStrings)
 	} else {
 		for addr := range s.stateObjectsPending {
 			obj := s.stateObjects[addr]
@@ -1291,12 +1381,6 @@ func (s *StateDB) ApplyStateObject(object *stateObject) {
 	object.db = s
 	object.pair.db = s.pair
 	s.journal.dirties[object.address]++
-	if oldObj, ok := s.delta.stateObjects[object.address]; ok {
-		if len(object.delta.originStorage)+len(object.originStorage) < len(oldObj.originStorage) {
-			log.Info("Defective state object set", object.address.Hex(),
-				fmt.Sprintf("%d->%d", len(object.delta.originStorage)+len(object.originStorage), len(oldObj.originStorage)))
-		}
-	}
 	if s.IsShared() {
 		s.setDeltaStateObject(object)
 	} else {

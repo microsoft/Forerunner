@@ -10,7 +10,7 @@ import (
 )
 
 func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
-	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg vm.Config, c *core.Controller, msg core.Message) (gas uint64,
+	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, c *core.Controller, msg core.Message) (gas uint64,
 	failed bool, err error) {
 
 	if c.IsFinish() {
@@ -27,7 +27,7 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 	if c.IsFinish() {
 		return
 	}
-	evm := vm.NewEVM(context, statedb, config, cfg)
+	evm := vm.NewEVM(context, statedb, config, *cfg)
 	c.SetEvm(evm)
 	if c.IsFinish() {
 		return

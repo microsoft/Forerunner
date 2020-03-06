@@ -62,9 +62,10 @@ type TaskBuilder struct {
 	txnDeadline uint64
 
 	// Transaction distributor
-	header     Header
+	nowHeader  Header
 	nowGroups  map[common.Hash]*TxnGroup
 	pastGroups map[common.Hash]*TxnGroup
+	parent     *types.Block
 	rwrecord   map[common.Hash]*RWRecord
 
 	// Task queue
@@ -237,7 +238,7 @@ func (b *TaskBuilder) commitNewWork() {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	parent := b.chain.CurrentBlock()
+	parent := b.parent
 	parentHash := parent.Hash()
 	parentNumber := parent.Number()
 
@@ -273,9 +274,9 @@ func (b *TaskBuilder) commitNewWork() {
 		ParentHash: parentHash,
 		Number:     parentNumber.Add(parentNumber, common.Big1),
 		GasLimit:   gasLimit,
-		Coinbase:   b.header.coinbase,
+		Coinbase:   b.nowHeader.coinbase,
 		Extra:      b.extra,
-		Time:       b.header.time,
+		Time:       b.nowHeader.time,
 	}
 
 	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), nil,
@@ -291,6 +292,8 @@ func (b *TaskBuilder) commitNewWork() {
 	} else {
 		b.updateDependency(executor.RoundID, b.addedTxn)
 	}
+
+	b.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, parent.Root())
 }
 
 func (b *TaskBuilder) updateTxnGroup() {
@@ -301,8 +304,6 @@ func (b *TaskBuilder) updateTxnGroup() {
 		b.groupTxns(b.addedTxn)
 	}
 
-	b.warmupStateDB()
-
 	for groupHash, group := range b.nowGroups {
 		if _, ok := b.pastGroups[groupHash]; ok {
 			continue
@@ -311,7 +312,8 @@ func (b *TaskBuilder) updateTxnGroup() {
 		b.preplayLog.reportNewGroup(group)
 		group.setValid()
 		group.txnCount = group.txns.size()
-		group.header = b.header
+		group.parent = b.parent
+		group.header = b.nowHeader
 		group.inOrder = make(map[common.Address]int)
 		group.nextOrder = make(chan TxnOrder)
 
@@ -322,7 +324,7 @@ func (b *TaskBuilder) updateTxnGroup() {
 
 		// start walk for new group
 		go func(group *TxnGroup) {
-			walkTxnsPool(b.header, group, []common.Hash{})
+			walkTxnsPool(b.nowHeader, group, []common.Hash{})
 			close(group.nextOrder)
 			b.preplayLog.reportGroupEnd(group)
 		}(group)
@@ -345,8 +347,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	for _, txn := range block.Transactions() {
 		delete(b.rwrecord, txn.Hash())
 	}
-	b.header = Header{
-		number:   block.NumberU64() + 1,
+	b.nowHeader = Header{
 		coinbase: b.minerList.getMostActive(),
 		time:     uint64(b.globalCache.GetTimeStamp()),
 		gasLimit: b.gasLimit,
@@ -356,6 +357,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 		group.setInvalid()
 	}
 	b.pastGroups = make(map[common.Hash]*TxnGroup)
+	b.parent = block
 }
 
 var timeShift = []int{0, -1, 1, -2, 2}
@@ -474,24 +476,6 @@ func (b *TaskBuilder) groupTxns(pool TransactionPool) {
 			RWRecord: rwrecord,
 		}
 	}
-}
-
-func (b *TaskBuilder) warmupStateDB() {
-	if !b.chain.Warmuper.IsRunning() {
-		return
-	}
-	addrMap := make(map[common.Address]map[common.Hash]struct{})
-	for _, group := range b.nowGroups {
-		for addr, readStates := range group.readStates {
-			if _, ok := addrMap[addr]; !ok {
-				addrMap[addr] = make(map[common.Hash]struct{})
-			}
-			for key := range readStates.storage {
-				addrMap[addr][key] = struct{}{}
-			}
-		}
-	}
-	b.chain.Warmuper.AddWarmupTask(addrMap)
 }
 
 func (b TaskBuilder) isSameGroup(sender common.Address, txn common.Hash, group *TxnGroup) bool {

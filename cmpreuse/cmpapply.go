@@ -36,11 +36,10 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
-		return nil, err, &cmptypes.ReuseStatus{BaseStatus:cmptypes.Fail}
+		return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
 	}
 
-	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false);
-		reuseStatus.BaseStatus == cmptypes.Hit  {
+	if reuseStatus, round, _, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false, &cfg); reuseStatus.BaseStatus == cmptypes.Hit {
 		receipt := reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		return receipt, nil, reuseStatus
 	} else {

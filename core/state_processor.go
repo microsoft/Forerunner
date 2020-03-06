@@ -17,6 +17,7 @@
 package core
 
 import (
+	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -29,7 +30,10 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ivpusic/grpool"
+	"math/big"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 type TransactionApplier interface {
@@ -39,7 +43,7 @@ type TransactionApplier interface {
 
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller) (*types.Receipt,
+		cfg *vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller, tmsg *types.Message, signer types.Signer) (*types.Receipt,
 		error, *cmptypes.ReuseStatus)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
@@ -76,6 +80,67 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 	}
 }
 
+func CmpStateDB(groundStatedb, statedb *state.StateDB, tx *types.Transaction, i int, reuseStatus *cmptypes.ReuseStatus) bool {
+	groundStateObjects := groundStatedb.GetStateObject()
+	stateObjects := statedb.GetStateObject()
+	var diff bool
+	for address, groundObject := range groundStateObjects {
+		if stateObject, ok := stateObjects[address]; ok {
+			if groundStatedb.Exist(address) != statedb.Exist(address) {
+				log.Info("Exist diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%v", reuseStatus),
+					"ground", groundStatedb.Exist(address), "our balance", statedb.Exist(address))
+				diff = true
+			}
+			if groundStatedb.Empty(address) != statedb.Empty(address) {
+				log.Info("Empty diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%v", reuseStatus),
+					"ground", groundStatedb.Empty(address), "our balance", statedb.Empty(address))
+				diff = true
+			}
+			if groundObject.Balance().Cmp(stateObject.Balance()) != 0 {
+				diffValue := new(big.Int).Sub(groundObject.Balance(), stateObject.Balance())
+				log.Info("Balance diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%v", reuseStatus), "diff", diffValue,
+					"ground", groundObject.Balance(), "our balance", stateObject.Balance())
+				diff = true
+			}
+			if groundObject.Nonce() != stateObject.Nonce() {
+				log.Info("Nonce diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%s", reuseStatus),
+					"ground", groundObject.Nonce(), "our nonce", stateObject.Nonce())
+				diff = true
+			}
+			groundStorage := groundObject.GetPendingStorage()
+			for key, groundValue := range groundStorage {
+				value := statedb.GetState(address, key)
+				if groundValue != value {
+					log.Info("Storage diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+						"status", fmt.Sprintf("%v", reuseStatus),
+						"key", key, "ground", groundValue, "our state", value)
+					diff = true
+				}
+			}
+			statedbStorage := stateObject.GetPendingStorage()
+			for key, value := range statedbStorage {
+				groundValue := groundStatedb.GetState(address, key)
+				if groundValue != value {
+					log.Info("Storage diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+						"status", fmt.Sprintf("%v", reuseStatus),
+						"key", key, "ground", groundValue, "our state", value)
+					diff = true
+				}
+			}
+		} else {
+			log.Info("Miss object in our state object", "addr", address, "index", i,
+				"status", fmt.Sprintf("%v", reuseStatus),
+				"ground db size", len(groundStateObjects), "our db size", len(stateObjects))
+			diff = true
+		}
+	}
+	return diff
+}
+
 // Process processes the state changes according to the Ethereum rules by running
 // the transaction messages using the statedb and applying any rewards to both
 // the processor (coinbase) and any included uncles.
@@ -108,6 +173,9 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if cfg.MSRAVMSettings.GroundRecord {
 		groundStatedb = state.NewRWStateDB(statedb.Copy())
 	}
+	if cfg.MSRAVMSettings.CmpReuseChecking {
+		groundStatedb = statedb.Copy()
+	}
 
 	// Add Block
 	blockPre := cache.NewBlockPre(block)
@@ -119,14 +187,32 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.ShareCopy()
 	}
-	statedb.FromProcess = true
-	statedb.MissObject = make(map[common.Address]struct{})
-	statedb.MissKey = make(map[common.Address]map[common.Hash]struct{})
-	statedb.RecordProcessed()
 	controller := NewController()
+
+	signer := types.MakeSigner(p.config, header.Number)
+
+	// here we avoid using channels to optimize out the wait
+	var txMsgs []unsafe.Pointer
+	pipelineHashingAndMsgCreation := cfg.MSRAVMSettings.PipelinedBloom && len(block.Transactions()) > 1
+	if pipelineHashingAndMsgCreation {
+		txMsgs = make([]unsafe.Pointer, len(block.Transactions()))
+		go func() {
+			for i, tx := range block.Transactions() {
+				tx.Hash() // it caches the result internally
+				tmsg, err := tx.AsMessage(signer)
+				if err != nil {
+					atomic.StorePointer(&txMsgs[i], unsafe.Pointer(&tmsg))
+				}
+			}
+		}()
+	}
+
+	blockHash := block.Hash()
+	printCmp := true
+
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
-		statedb.Prepare(tx.Hash(), block.Hash(), i)
+		statedb.Prepare(tx.Hash(), blockHash, i)
 
 		var err error
 		var receipt *types.Receipt
@@ -144,30 +230,28 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 
 		if cfg.MSRAVMSettings.CmpReuse {
 			var reuseStatus *cmptypes.ReuseStatus
-			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg, blockPre, p.bc.MSRACache.RoutinePool, controller)
+			var pMsg *types.Message
+			if pipelineHashingAndMsgCreation {
+				pMsg = (*types.Message)(atomic.LoadPointer(&txMsgs[i]))
+			}
+
+			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
+				tx, usedGas, &cfg, blockPre, p.bc.MSRACache.RoutinePool, controller, pMsg, signer)
 			reuseResult = append(reuseResult, reuseStatus)
-			if statedb.WarmupMiss {
-				for address := range statedb.MissObject {
-					ok := p.bc.Warmuper.IsObjectWarm(address)
-					log.Info("Warmup object miss", "tx", tx.Hash().Hex(), "reuseStatus", reuseStatus, "addr", address, "isWarm", ok)
+
+			if cfg.MSRAVMSettings.CmpReuseChecking {
+				ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg)
+				if printCmp {
+					diff := CmpStateDB(groundStatedb, statedb, tx, i, reuseStatus)
+					printCmp = !diff
 				}
-				for address, keyMap := range statedb.MissKey {
-					for key := range keyMap {
-						ok := p.bc.Warmuper.IsKeyWarm(address, key)
-						log.Info("Warmup key miss", "tx", tx.Hash().Hex(), "reuseStatus", reuseStatus,
-							"addr", address, "key", key, "isWarm", ok)
-					}
-				}
-				statedb.WarmupMiss = false
-				statedb.MissObject = make(map[common.Address]struct{})
-				statedb.MissKey = make(map[common.Address]map[common.Hash]struct{})
 			}
 		} else {
 			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
 		}
 		t1 := time.Now()
 		cache.Apply = append(cache.Apply, t1.Sub(t0))
-		//log.Debug("[TransactionProcessTime]", "txHash", tx.Hash(), "processTime", t1.Sub(t0).Nanoseconds())
+		//log.Debug("[TransactionProcessTime]", "pTxHash", tx.Hash(), "processTime", t1.Sub(t0).Nanoseconds())
 
 		if err != nil {
 			log.Info("GroundTruth Error", "err", err.Error(), "tx", tx.Hash())

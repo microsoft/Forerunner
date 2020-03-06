@@ -29,7 +29,7 @@ func NewCmpreuse() *Cmpreuse {
 }
 
 func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
-	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg vm.Config, c *core.Controller, msg core.Message) (uint64,
+	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, c *core.Controller, msg core.Message) (uint64,
 	bool, error) {
 
 	t := time.Now()
@@ -45,9 +45,9 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 }
 
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
+	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
-	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true)
+	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true, cfg)
 
 	if status.BaseStatus == cmptypes.Hit && c.TryFinish() {
 		c.StopEvm()
@@ -61,6 +61,11 @@ func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.
 	}
 }
 
+func (reuse *Cmpreuse) finaliseByRealapply(config *params.ChainConfig, statedb *state.StateDB, header *types.Header, tx *types.Transaction,
+	usedGas *uint64, gasUsed uint64, failed bool, msg core.Message) *types.Receipt {
+	return reuse.finalise(config, statedb, header, tx, usedGas, gasUsed, failed, msg)
+}
+
 func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.StateDB, header *types.Header, tx *types.Transaction,
 	usedGas *uint64, gasUsed uint64, failed bool, msg core.Message) *types.Receipt {
 	// Update the state with pending changes
@@ -72,11 +77,52 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 	}
 	*usedGas += gasUsed
 
-	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
-	// based on the eip phase, we're passing whether the root touch-delete accounts.
-	receipt := types.NewReceipt(root, failed, *usedGas)
-	receipt.TxHash = tx.Hash()
+	receipt := reuse.TryCreateReceipt(statedb, header, tx, msg)
+	// update the basic info
+	receipt.PostState = common.CopyBytes(root)
+	receipt.CumulativeGasUsed = *usedGas
 	receipt.GasUsed = gasUsed
+	if failed {
+		receipt.Status = types.ReceiptStatusFailed
+	} else {
+		receipt.Status = types.ReceiptStatusSuccessful
+	}
+
+	return receipt
+	//// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
+	//// based on the eip phase, we're passing whether the root touch-delete accounts.
+	////receipt := types.NewReceipt(root, failed, *usedGas)
+	////receipt.TxHash = tx.Hash()
+	//receipt.GasUsed = gasUsed
+	//// if the transaction created a contract, store the creation address in the receipt.
+	//if msg.To() == nil {
+	//	receipt.ContractAddress = crypto.CreateAddress(msg.From(), tx.Nonce())
+	//}
+	//// Set the receipt logs and create a bloom for filtering
+	//receipt.Logs = statedb.GetLogs(tx.Hash())
+	//if statedb.BloomProcessor != nil {
+	//	statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	//} else {
+	//	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	//}
+	//receipt.BlockHash = statedb.BlockHash()
+	//receipt.BlockNumber = header.Number
+	//receipt.TransactionIndex = uint(statedb.TxIndex())
+	//return receipt
+}
+
+func (reuse *Cmpreuse) TryCreateReceipt(statedb *state.StateDB, header *types.Header, tx *types.Transaction, msg core.Message) *types.Receipt {
+
+	statedb.ReceiptMutex.Lock()
+	defer statedb.ReceiptMutex.Unlock()
+
+	if statedb.CurrentReceipt != nil && statedb.CurrentReceipt.TxHash == tx.Hash() {
+		return statedb.CurrentReceipt
+	}
+
+	// set the initial values temporarily
+	receipt := types.NewReceipt(nil, false, 0)
+	receipt.TxHash = tx.Hash()
 	// if the transaction created a contract, store the creation address in the receipt.
 	if msg.To() == nil {
 		receipt.ContractAddress = crypto.CreateAddress(msg.From(), tx.Nonce())
@@ -91,6 +137,9 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 	receipt.BlockHash = statedb.BlockHash()
 	receipt.BlockNumber = header.Number
 	receipt.TransactionIndex = uint(statedb.TxIndex())
+
+	statedb.CurrentReceipt = receipt
+
 	return receipt
 }
 
@@ -115,16 +164,25 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 //		4: abort before hit or miss;
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller) (*types.Receipt,
+	cfg *vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller, pMsg *types.Message, signer types.Signer) (*types.Receipt,
 	error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
 		panic("ReuseTransaction can only be used for process and statedb must be shared and not be RW mode.")
 	}
 
-	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
-	if err != nil {
-		return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
+	var msg types.Message
+	if pMsg != nil {
+		msg = *pMsg
+	} else {
+		var err error
+		if signer == nil {
+			signer = types.MakeSigner(config, header.Number)
+		}
+		msg, err = tx.AsMessage(signer)
+		if err != nil {
+			return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
+		}
 	}
 
 	reuseGp, reuseDB := *gp, statedb
@@ -138,14 +196,31 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	var realApply sync.WaitGroup
 	realApply.Add(1)
 	realApplyStart := time.Now()
-	routinePool.JobQueue <- func() {
+	//routinePool.JobQueue <-
+	doRealApply := func() {
 		gasUsed, failed, realApplyErr = reuse.tryRealApplyTransaction(config, bc, author, &applyGp, applyDB, header, cfg, controller, msg)
+		if gasUsed == 0 { // tryReuseTransaction win
+			// try to help create receipt in parallel
+			reuse.TryCreateReceipt(reuseDB, header, tx, msg)
+		}
 		realApply.Done()
+	}
+	if routinePool != nil { // artificially use routine pool
+		go doRealApply()
 	}
 
 	reuseStart := time.Now()
-	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre); round != nil {
+	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre, cfg); round != nil {
 		waitReuse := time.Since(reuseStart)
+
+		var roundId uint64
+
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.DepHit && msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
+			roundId = round.RoundID
+		} else {
+			roundId = 0 // roundId = 0 means this res count not be matched
+		}
+		reuseDB.UpdateAccountChangedWithMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
 
 		t0 := time.Now()
 		receipt := reuse.finalise(config, reuseDB, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
@@ -156,15 +231,6 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
 
 		t1 := time.Now()
-
-		var roundId uint64
-
-		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.DepHit && msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
-			roundId = round.RoundID
-		} else {
-			roundId = 0 // roundId = 0 means this res count not be matched
-		}
-		reuseDB.UpdateAccountChangedWithMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
 
 		reuseDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))
@@ -178,7 +244,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		t0 := time.Now()
 		var receipt *types.Receipt
 		if realApplyErr == nil {
-			receipt = reuse.finalise(config, applyDB, header, tx, usedGas, gasUsed, failed, msg)
+			receipt = reuse.finaliseByRealapply(config, applyDB, header, tx, usedGas, gasUsed, failed, msg)
 		}
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 

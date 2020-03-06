@@ -76,6 +76,10 @@ func keybytesToHex(str []byte) []byte {
 	return nibbles
 }
 
+func KeybytesToHex(str []byte) []byte {
+	return keybytesToHex(str)
+}
+
 // hexToKeybytes turns hex nibbles into key bytes.
 // This can only be used for keys of even length.
 func hexToKeybytes(hex []byte) []byte {

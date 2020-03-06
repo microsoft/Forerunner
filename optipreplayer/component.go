@@ -324,7 +324,6 @@ func (r *RWRecord) isRWOverlap(w *RWRecord) bool {
 
 type Header struct {
 	coinbase common.Address
-	number   uint64
 	time     uint64
 	gasLimit uint64
 }
@@ -341,6 +340,7 @@ type TxnGroup struct {
 	preplayCount int
 	priority     int
 
+	parent *types.Block
 	header Header
 
 	inOrder   map[common.Address]int

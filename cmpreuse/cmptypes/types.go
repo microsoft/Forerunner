@@ -52,8 +52,10 @@ func (s ReuseStatus) String() string {
 	switch s.BaseStatus {
 	case Fail:
 		statusStr = "Fail"
+	case NoPreplay:
+		statusStr = "NoPreplay"
 	case Hit:
-		statusStr = "Hit : "
+		statusStr = "Hit:"
 		switch s.HitType {
 		case IteraHit:
 			statusStr += "IteraHit"
@@ -63,7 +65,7 @@ func (s ReuseStatus) String() string {
 			statusStr += "DepHit"
 		}
 	case Miss:
-		statusStr = "Miss : "
+		statusStr = "Miss:"
 		switch s.MissType {
 		case NoInMiss:
 			statusStr += "NoInMiss"

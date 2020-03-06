@@ -18,6 +18,7 @@ package trie
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -109,6 +110,37 @@ func (t *SecureTrie) TryUpdate(key, value []byte) error {
 	return nil
 }
 
+func (t *SecureTrie) TryUpdateWithHashedKey(key, hk, value []byte) error {
+	err := t.trie.TryUpdate(hk, value)
+	if err != nil {
+		return err
+	}
+	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
+	return nil
+}
+
+func (t *SecureTrie) TryInsertInBatch(keyCopyList, hexKeyList, valueList [][]byte, hashedKeyStringList []string) error {
+	err := t.trie.TryInsertInBatch(hexKeyList, valueList)
+	if err != nil {
+		panic("trie.TryInsertInBatch should never fail!")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for i := range hexKeyList {
+			t.getSecKeyCache()[hashedKeyStringList[i]] = keyCopyList[i]
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+	return nil
+}
+
+func (t *SecureTrie) HashKey(key []byte) []byte {
+	return t.hashKey(key)
+}
+
 // Delete removes any existing value for key from the trie.
 func (t *SecureTrie) Delete(key []byte) {
 	if err := t.TryDelete(key); err != nil {
@@ -154,7 +186,7 @@ func (t *SecureTrie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	return t.trie.Commit(onleaf)
 }
 
-func (t *SecureTrie) UseParallelHasher(on bool)  {
+func (t *SecureTrie) UseParallelHasher(on bool) {
 	t.trie.parallelHasherEnabled = on
 }
 

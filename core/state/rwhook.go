@@ -375,7 +375,7 @@ func (h *rwRecorderImpl) UpdateRAccount(addr common.Address, field cmptypes.Fiel
 func (h *rwRecorderImpl) UpdateRBalance(so *stateObject, addr common.Address) {
 	var ret *big.Int
 	if so != nil {
-		ret = so.Balance()
+		ret = new(big.Int).Set(so.Balance())
 	} else {
 		ret = common.Big0
 	}

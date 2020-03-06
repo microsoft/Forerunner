@@ -3,6 +3,7 @@ package core
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
 	lru "github.com/hashicorp/golang-lru"
@@ -10,49 +11,139 @@ import (
 )
 
 const (
-	coldQueueSize = 100
-	dbCacheSize   = 10
-	dbListSize    = 2
-	minerListSize = 100
+	dbListSize           = 2
+	objSubgroupSize byte = 4
+	coldQueueSize        = 5000
+	dbCacheSize          = 10
+	minerListSize        = 100
+	warmupQueueSize      = 1000
 )
 
-type statedbList [dbListSize]*state.StateDB
+type ColdTask struct {
+	root             common.Hash
+	contentForDb     map[common.Address]map[common.Hash]struct{}
+	contentForObject state.ObjectListMap
+}
+
+type ObjWarmupTask struct {
+	objects state.ObjectList
+	storage map[common.Hash]struct{}
+}
+
+type StatedbBox struct {
+	sync.Mutex
+	warmuper *Warmuper
+
+	usableDb       int
+	statedbList    [dbListSize]*state.StateDB
+	processedForDb map[common.Address]map[common.Hash]struct{}
+	dbWarmupCh     chan *ColdTask
+
+	wobjectMap      state.ObjectListMap
+	prepareForObj   map[common.Address]map[common.Hash]struct{}
+	processedForObj map[common.Address]map[common.Hash]struct{}
+	objWarmupChList [objSubgroupSize]chan *ObjWarmupTask
+
+	valid           bool
+	dbWarmupExitCh  chan struct{}
+	objWarmupExitCh chan struct{}
+	wg              sync.WaitGroup
+}
+
+func (b *StatedbBox) warmupDbLoop() {
+	for {
+		select {
+		case task := <-b.dbWarmupCh:
+			usableDbList := b.statedbList[b.usableDb:]
+			for _, statedb := range usableDbList {
+				for addr, keyMap := range task.contentForDb {
+					if exist := statedb.Exist(addr); exist {
+						statedb.GetCode(addr)
+						if _, ok := b.processedForDb[addr]; !ok {
+							b.processedForDb[addr] = make(map[common.Hash]struct{})
+						}
+						for key := range keyMap {
+							statedb.GetCommittedState(addr, key)
+							b.processedForDb[addr][key] = struct{}{}
+						}
+					}
+				}
+				if pairdb := statedb.GetPair(); pairdb != nil {
+					for addr, keyMap := range task.contentForDb {
+						if exist := pairdb.Exist(addr); exist {
+							pairdb.GetCode(addr)
+							for key := range keyMap {
+								pairdb.GetCommittedState(addr, key)
+							}
+						}
+					}
+				}
+			}
+		case <-b.dbWarmupExitCh:
+			b.wg.Done()
+			return
+		}
+	}
+}
+
+func (b *StatedbBox) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
+	for {
+		select {
+		case task := <-objWarmupCh:
+			for _, wobject := range task.objects {
+				db := wobject.GetDatabase()
+				for key := range task.storage {
+					wobject.GetCommittedState(db, key)
+				}
+			}
+		case <-b.objWarmupExitCh:
+			b.wg.Done()
+			return
+		}
+	}
+}
+
+func (b *StatedbBox) exit() {
+	if !b.valid {
+		return
+	}
+	b.valid = false
+
+	b.Lock()
+	b.dbWarmupExitCh <- struct{}{}
+	for i := byte(0); i < objSubgroupSize; i++ {
+		b.objWarmupExitCh <- struct{}{}
+	}
+	b.Unlock()
+}
 
 type Warmuper struct {
 	chain *BlockChain
 	cfg   vm.Config
 
-	coldQueue chan map[common.Address]map[common.Hash]struct{}
-	requestCh  chan common.Hash
-	responseCh chan *state.StateDB
+	coldQueue chan *ColdTask
 
 	// Subscriptions
 	chainHeadCh  chan ChainHeadEvent
 	chainHeadSub event.Subscription
 	exitCh       chan struct{}
 
-	valid        bool
-	root         common.Hash
-	statedbCache *lru.Cache
-	Processed    map[common.Address]map[common.Hash]struct{}
-	minerList    *lru.Cache
-
-	ProcessedMu sync.Mutex
+	valid           bool
+	statedbBoxCache *lru.Cache
+	minerList       *lru.Cache
 }
 
 func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
 	chainHeadCh := make(chan ChainHeadEvent, chainHeadChanSize)
 	warmuper := &Warmuper{
-		chain: chain,
-		cfg:   cfg,
-		coldQueue: make(chan map[common.Address]map[common.Hash]struct{}, coldQueueSize),
-		requestCh:    make(chan common.Hash),
-		responseCh:   make(chan *state.StateDB),
+		chain:        chain,
+		cfg:          cfg,
+		coldQueue:    make(chan *ColdTask, coldQueueSize),
 		chainHeadCh:  chainHeadCh,
 		chainHeadSub: chain.SubscribeChainHeadEvent(chainHeadCh),
 		exitCh:       make(chan struct{}),
 	}
-	warmuper.statedbCache, _ = lru.New(dbCacheSize)
+	warmuper.statedbBoxCache, _ = lru.New(dbCacheSize)
 	go warmuper.mainLoop()
 
 	return warmuper
@@ -61,42 +152,12 @@ func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
 func (w *Warmuper) mainLoop() {
 	for {
 		select {
-		case addrList := <-w.coldQueue:
-			w.chain.MSRACache.PauseForProcess()
-			w.commitNewWork(addrList)
-		case root := <-w.requestCh:
-			statedbs := w.getStatedbList(root)
-			if statedbs == nil {
-				w.responseCh <- nil
-				continue
-			}
-			switch {
-			case (*statedbs)[0] != nil:
-				w.responseCh <- (*statedbs)[0]
-				(*statedbs)[0] = nil
-			case (*statedbs)[1] != nil:
-				w.responseCh <- (*statedbs)[1]
-				(*statedbs)[1] = nil
-			default:
-				w.responseCh <- nil
-			}
+		case task := <-w.coldQueue:
+			w.commitNewWork(task)
 		case <-w.chainHeadCh:
 			currentBlock := w.chain.CurrentBlock()
 
 			w.valid = true
-			w.root = currentBlock.Root()
-			statedb, _ := w.chain.StateAt(w.root)
-			statedbs := statedbList{statedb, statedb.Copy()}
-			if w.cfg.MSRAVMSettings.CmpReuse {
-				for _, statedb := range statedbs {
-					statedb.ShareCopy()
-				}
-			}
-			w.commitStatedbList(w.root, &statedbs)
-			w.ProcessedMu.Lock()
-			w.Processed = make(map[common.Address]map[common.Hash]struct{})
-			w.ProcessedMu.Unlock()
-
 			if w.minerList == nil {
 				w.minerList, _ = lru.New(minerListSize)
 				nextBlk := w.chain.CurrentBlock().NumberU64() + 1
@@ -108,8 +169,9 @@ func (w *Warmuper) mainLoop() {
 			} else {
 				w.minerList.Add(currentBlock.Coinbase(), struct{}{})
 			}
-			w.warmupMiner()
+			w.warmupMiner(currentBlock.Root())
 		case <-w.exitCh:
+			w.valid = false
 			return
 		}
 	}
@@ -119,122 +181,219 @@ func (w *Warmuper) exit() {
 	w.exitCh <- struct{}{}
 }
 
-func (w *Warmuper) IsRunning() bool {
-	return w.root != common.Hash{}
-}
-
-func (w *Warmuper) AddWarmupTask(addrMap map[common.Address]map[common.Hash]struct{}) {
-	if !w.valid || w.statedbCache.Len() == 0 || len(addrMap) == 0 {
+func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transaction, root common.Hash) {
+	if !w.valid {
+		return
+	}
+	addrMap := make(map[common.Address]map[common.Hash]struct{})
+	objectListMap := make(state.ObjectListMap)
+	for _, tx := range executionOrder {
+		txPreplay := w.chain.MSRACache.GetTxPreplay(tx.Hash())
+		if txPreplay == nil {
+			continue
+		}
+		round, _ := txPreplay.PeekRound(RoundID)
+		if round == nil {
+			continue
+		}
+		if round.RWrecord != nil {
+			for addr, readStates := range round.RWrecord.RState {
+				if _, ok := addrMap[addr]; !ok {
+					addrMap[addr] = make(map[common.Hash]struct{})
+				}
+				for key := range readStates.Storage {
+					addrMap[addr][key] = struct{}{}
+				}
+				for key := range readStates.CommittedStorage {
+					addrMap[addr][key] = struct{}{}
+				}
+			}
+		}
+		for address, object := range round.WObjects {
+			if object == nil {
+				continue
+			}
+			object.RoundId = round.RoundID
+			objectListMap[address] = append(objectListMap[address], object)
+		}
+	}
+	if len(addrMap) == 0 && len(objectListMap) == 0 {
 		return
 	}
 	go func() {
-		w.coldQueue <- addrMap
+		task := &ColdTask{
+			root:             root,
+			contentForDb:     addrMap,
+			contentForObject: objectListMap,
+		}
+		w.coldQueue <- task
 	}()
 }
 
-func (w *Warmuper) GetStateDB(root common.Hash) *state.StateDB {
-	w.requestCh <- root
-	return <-w.responseCh
-}
+func (w *Warmuper) GetStateDB(root common.Hash) (retDb *state.StateDB) {
+	if box := w.getStatedbBox(root); box != nil && box.usableDb < dbListSize {
+		box.exit()
+		box.wg.Wait()
 
-func (w *Warmuper) IsObjectWarm(addr common.Address) bool {
-	w.ProcessedMu.Lock()
-	defer w.ProcessedMu.Unlock()
-
-	_, ok := w.Processed[addr]
-	return ok
-}
-
-func (w *Warmuper) IsKeyWarm(addr common.Address, key common.Hash) bool {
-	addrOk := w.IsObjectWarm(addr)
-	if !addrOk {
-		return addrOk
+		retDb = box.statedbList[box.usableDb]
+		box.usableDb++
 	}
-
-	w.ProcessedMu.Lock()
-	defer w.ProcessedMu.Unlock()
-
-	_, ok := w.Processed[addr][key]
-	return ok
+	return
 }
 
-func (w *Warmuper) warmupMiner() {
+func (w *Warmuper) warmupMiner(root common.Hash) {
 	addrMap := make(map[common.Address]map[common.Hash]struct{})
 	minerList := w.minerList.Keys()
 	for _, rawMiner := range minerList {
 		miner := rawMiner.(common.Address)
 		addrMap[miner] = make(map[common.Hash]struct{})
 	}
-	w.AddWarmupTask(addrMap)
+	task := &ColdTask{
+		root:         root,
+		contentForDb: addrMap,
+	}
+	w.coldQueue <- task
 }
 
-func (w *Warmuper) commitNewWork(addrMap map[common.Address]map[common.Hash]struct{}) {
-	statedbs := w.getStatedbList(w.root)
-	if statedbs == nil {
+func (w *Warmuper) commitNewWork(task *ColdTask) {
+	box := w.getOrNewStatedbBox(task.root)
+	if box == nil || !box.valid {
 		return
 	}
 
-	newAddrMap := make(map[common.Address]map[common.Hash]struct{})
-	w.ProcessedMu.Lock()
-	for addr, keyMap := range addrMap {
-		if _, ok := w.Processed[addr]; !ok {
-			newAddrMap[addr] = make(map[common.Hash]struct{})
-			w.Processed[addr] = make(map[common.Hash]struct{})
-		}
-		for key := range keyMap {
-			if _, ok := w.Processed[addr][key]; !ok {
-				if _, ok := newAddrMap[addr]; !ok {
-					newAddrMap[addr] = make(map[common.Hash]struct{})
-				}
-				newAddrMap[addr][key] = struct{}{}
-				w.Processed[addr][key] = struct{}{}
-			}
-		}
-	}
-	w.ProcessedMu.Unlock()
+	box.dbWarmupCh <- task
 
-	if len(newAddrMap) == 0 {
-		return
-	}
-
-	for _, statedb := range *statedbs {
-		if statedb == nil {
-			continue
-		}
-		for addr, keyMap := range addrMap {
-			statedb.GetBalance(addr)
-			statedb.GetCode(addr)
-			for key := range keyMap {
-				statedb.GetCommittedState(addr, key)
-			}
-		}
-		if pairdb := statedb.GetPair(); pairdb != nil {
-			for addr, keyMap := range addrMap {
-				pairdb.GetBalance(addr)
-				pairdb.GetCode(addr)
+	for address, keyMap := range task.contentForDb {
+		if _, ok := task.contentForObject[address]; !ok {
+			if baseStorage, ok2 := box.processedForObj[address]; ok2 {
+				deltaStorage := make(map[common.Hash]struct{})
 				for key := range keyMap {
-					pairdb.GetCommittedState(addr, key)
+					if _, ok := baseStorage[key]; !ok {
+						deltaStorage[key] = struct{}{}
+						baseStorage[key] = struct{}{}
+					}
+				}
+
+				groupId := address[0] % objSubgroupSize
+				box.Lock()
+				if box.valid {
+					box.objWarmupChList[groupId] <- &ObjWarmupTask{
+						objects: box.wobjectMap[address][:],
+						storage: deltaStorage,
+					}
+				}
+				box.Unlock()
+			} else {
+				if _, ok := box.prepareForObj[address]; !ok {
+					box.prepareForObj[address] = make(map[common.Hash]struct{})
+				}
+				for key := range keyMap {
+					box.prepareForObj[address][key] = struct{}{}
 				}
 			}
 		}
 	}
+	for address, objectList := range task.contentForObject {
+		if _, ok := box.processedForObj[address]; !ok {
+			if keyMap, ok := box.prepareForObj[address]; ok {
+				box.processedForObj[address] = keyMap
+			} else {
+				box.processedForObj[address] = make(map[common.Hash]struct{})
+			}
+		}
+		baseStorage := box.processedForObj[address]
+		deltaStorage := make(map[common.Hash]struct{})
+		if deltaKeyMap, ok := task.contentForDb[address]; ok {
+			for key := range deltaKeyMap {
+				if _, ok := baseStorage[key]; !ok {
+					deltaStorage[key] = struct{}{}
+					baseStorage[key] = struct{}{}
+				}
+			}
+		} else {
+			for _, wobject := range objectList {
+				for key := range wobject.GetOriginStorage() {
+					if _, ok := baseStorage[key]; !ok {
+						deltaStorage[key] = struct{}{}
+						baseStorage[key] = struct{}{}
+					}
+				}
+			}
+		}
+
+		groupId := address[0] % objSubgroupSize
+		baseStorageCpy := make(map[common.Hash]struct{}, len(baseStorage))
+		for key := range baseStorage {
+			baseStorageCpy[key] = struct{}{}
+		}
+
+		box.Lock()
+		if box.valid {
+			box.objWarmupChList[groupId] <- &ObjWarmupTask{
+				objects: box.wobjectMap[address][:],
+				storage: deltaStorage,
+			}
+			box.objWarmupChList[groupId] <- &ObjWarmupTask{
+				objects: objectList,
+				storage: baseStorageCpy,
+			}
+		}
+		box.Unlock()
+
+		box.wobjectMap[address] = append(box.wobjectMap[address], objectList...)
+	}
 }
 
-func (w *Warmuper) getStatedbList(root common.Hash) *statedbList {
-	rawdbs, ok := w.statedbCache.Get(root)
+func (w *Warmuper) getStatedbBox(root common.Hash) *StatedbBox {
+	rawdbs, ok := w.statedbBoxCache.Get(root)
 	if !ok {
 		return nil
 	}
-	statedbs, ok := rawdbs.(*statedbList)
+	box, ok := rawdbs.(*StatedbBox)
 	if !ok {
 		return nil
 	}
-	return statedbs
+	return box
 }
 
-func (w *Warmuper) commitStatedbList(root common.Hash, statedbs *statedbList) {
-	if statedbs == nil {
-		return
+func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
+	rawdbs, ok := w.statedbBoxCache.Get(root)
+	if !ok {
+		statedb, _ := w.chain.StateAt(root)
+		box := &StatedbBox{
+			warmuper:        w,
+			statedbList:     [dbListSize]*state.StateDB{statedb, statedb.Copy()},
+			processedForDb:  make(map[common.Address]map[common.Hash]struct{}),
+			dbWarmupCh:      make(chan *ColdTask, warmupQueueSize),
+			wobjectMap:      make(state.ObjectListMap),
+			prepareForObj:   make(map[common.Address]map[common.Hash]struct{}),
+			processedForObj: make(map[common.Address]map[common.Hash]struct{}),
+			objWarmupChList: [objSubgroupSize]chan *ObjWarmupTask{},
+			valid:           true,
+			dbWarmupExitCh:  make(chan struct{}, 1),
+			objWarmupExitCh: make(chan struct{}, objSubgroupSize),
+		}
+
+		go box.warmupDbLoop()
+		for index := range box.objWarmupChList {
+			box.objWarmupChList[index] = make(chan *ObjWarmupTask, warmupQueueSize)
+			go box.warmupObjLoop(box.objWarmupChList[index])
+		}
+		box.wg.Add(int(objSubgroupSize) + 1)
+
+		if w.cfg.MSRAVMSettings.CmpReuse {
+			for _, statedb := range box.statedbList {
+				statedb.ShareCopy()
+				statedb.PreAllocateObjects()
+				statedb.GetPair().PreAllocateObjects()
+			}
+		}
+		w.statedbBoxCache.Add(root, box)
+		return box
 	}
-	w.statedbCache.Add(root, statedbs)
+	box, ok := rawdbs.(*StatedbBox)
+	if !ok {
+		return nil
+	}
+	return box
 }
