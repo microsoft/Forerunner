@@ -20,11 +20,6 @@ package eth
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/cmpreuse"
-	"github.com/ethereum/go-ethereum/optipreplayer"
-	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/ethereum/go-ethereum/reuseverify"
-	"github.com/ethereum/go-ethereum/trie"
 	"math/big"
 	"runtime"
 	"sync"
@@ -32,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/cmpreuse"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -51,11 +47,15 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/optipreplayer"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/reuseverify"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 type LesServer interface {

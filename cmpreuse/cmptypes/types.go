@@ -17,22 +17,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit
+	GasLimit // 6
 
 	PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance
+	Balance //8
 	Nonce
 	CodeHash
 	Exist
 	Empty
 	Code
 	Storage
-	CommittedStorage
+	CommittedStorage //15
 
 	// Dep info
-	Dependence
+	Dependence //16
 
 	// Write State
 	DirtyStorage
@@ -41,10 +41,25 @@ const (
 	//
 )
 
+func IsChainField(field Field) bool {
+	return field < Balance
+}
+
+func IsStateField(field Field) bool {
+	return field > PreBlockHash && field < Dependence
+}
+
 type ReuseStatus struct {
 	BaseStatus ReuseBaseStatus
 	HitType    HitType
 	MissType   MissType
+	MixHitStatus *MixHitStatus
+}
+
+type MixHitStatus struct {
+	MixHitType         MixHitType
+	DepHitAddr         []common.Address
+	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
 }
 
 func (s ReuseStatus) String() string {
@@ -95,6 +110,15 @@ const (
 	FastHit
 	TrieHit
 	DepHit
+	MixHit
+)
+
+type MixHitType int
+
+const (
+	AllDepHit MixHitType = iota
+	AllDetailHit
+	PartialHit
 )
 
 type MissType int
@@ -173,10 +197,7 @@ func (c *ChangedBy) updateHash() {
 func (c *ChangedBy) Hash() common.Hash {
 	c.updateHash()
 
-	// TODO : might return origin
-	res := new(common.Hash)
-	res.SetBytes(c.hash.Bytes())
-	return *res
+	return *c.hash
 }
 
 func GetBytes(v interface{}) []byte {
@@ -229,21 +250,21 @@ type AddrLocValue struct {
 
 type ReadDetail struct {
 	ReadDetailSeq          []*AddrLocValue // make sure all kinds of Value are simple types
-	ReadAddressAndBlockSeq []*AddrLocValue // only block-related info seq
-	IsBlockSensitive       bool            // whether block-related info (except for blockhash) in ReadDetailSeq
+	ReadAddressAndBlockSeq []*AddrLocValue // blockinfo (except for blockhash and blocknumber) and read account dep info seq
+	IsBlockNumberSensitive bool            // whether block-related info (except for blockhash) in ReadDetailSeq
 }
 
 func NewReadDetail() *ReadDetail {
 	return &ReadDetail{
-		ReadDetailSeq:    []*AddrLocValue{},
-		IsBlockSensitive: false,
+		ReadDetailSeq:          []*AddrLocValue{},
+		IsBlockNumberSensitive: false,
 	}
 }
 
 type PreplayResTrieNode struct {
-	Children    map[interface{}]*PreplayResTrieNode // value => child node
-	NodeType    *AddrLocation
-	QuickChild  *PreplayResTrieNode
+	Children map[interface{}]*PreplayResTrieNode // value => child node
+	NodeType *AddrLocation
+	//QuickChild  *PreplayResTrieNode
 	DetailChild *PreplayResTrieNode
 	IsLeaf      bool
 	RWRecord    RecordHolder
@@ -256,11 +277,12 @@ type PreplayResTrieNode struct {
 //}
 
 type PreplayResTrie struct {
-	Root             *PreplayResTrieNode
-	IsBlockSensitive bool // whether blocknumber or blocktime in the trie
-	LatestBN         uint64
-	LeafCount        uint64
-	RoundIds         map[uint64]bool
+	Root     *PreplayResTrieNode
+	LatestBN uint64
+	// deprecated
+	LeafCount uint64 // rwset cound for detail trie. round count for dep tree and mix tree
+	RoundIds  map[uint64]bool
+	IsCleared bool
 }
 
 func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {
@@ -270,20 +292,39 @@ func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {
 }
 
 func NewPreplayResTrie() *PreplayResTrie {
-	rootNode := &PreplayResTrieNode{}
+	rootNode := &PreplayResTrieNode{Children: make(map[interface{}]*PreplayResTrieNode)}
 	return &PreplayResTrie{
-		Root:             rootNode,
-		IsBlockSensitive: false,
-		LatestBN:         0,
-		LeafCount:        0,
-		RoundIds:         make(map[uint64]bool),
+		Root:      rootNode,
+		LatestBN:  0,
+		LeafCount: 0,
+		RoundIds:  make(map[uint64]bool),
+		IsCleared: false,
 	}
 }
 
 func (t *PreplayResTrie) Clear() {
-	t.Root = &PreplayResTrieNode{}
-	t.IsBlockSensitive = false
+	t.Root = &PreplayResTrieNode{Children: make(map[interface{}]*PreplayResTrieNode)}
 	t.LatestBN = 0
 	t.LeafCount = 0
 	t.RoundIds = make(map[uint64]bool)
+	t.IsCleared = true
+}
+
+// used for dep tree and mix tree
+func (t *PreplayResTrie) ClearOld(gap uint64) {
+	if t.Root == nil || t.Root.NodeType == nil {
+		return
+	}
+	if t.Root.NodeType.Field != Number {
+		panic("wrong nodeType of root node")
+	}
+	if t.Root.Children == nil {
+		return
+	}
+	for bn := range t.Root.Children {
+		if bn.(uint64) < t.LatestBN-gap {
+			delete(t.Root.Children, bn)
+		}
+	}
+
 }

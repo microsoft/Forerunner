@@ -49,8 +49,7 @@ type TxPreplay struct {
 func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults := &PreplayResults{}
 	preplayResults.Rounds, _ = lru.New(roundLimit)
-	preplayResults.RWrecords, _ = lru.New(roundLimit)
-	preplayResults.ReadDeps, _ = lru.New(3)
+	//preplayResults.RWrecords, _ = lru.New(roundLimit)
 
 	preplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
 	preplayResults.ReadDepTree = cmptypes.NewPreplayResTrie()
@@ -104,7 +103,9 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 // PreplayResults record results of several rounds
 type PreplayResults struct {
 	Rounds       *lru.Cache `json:"-"`
+	// deprecated
 	RWrecords    *lru.Cache `json:"-"`
+	// deprecated
 	ReadDeps     *lru.Cache `json:"-"`
 	RWRecordTrie *cmptypes.PreplayResTrie
 	ReadDepTree  *cmptypes.PreplayResTrie
@@ -642,7 +643,7 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 		// this is a new RWRecord (reuseStatus is noHit)
 		round.Filled = -1
 		rwRecord.Round = round
-		txPreplay.PreplayResults.RWrecords.Add(roundID, rwRecord)
+		//txPreplay.PreplayResults.RWrecords.Add(roundID, rwRecord)
 	} else {
 		// this is a rwRecord got by trie/iter hit
 		round.Filled = int64(rwRecord.Round.RoundID)

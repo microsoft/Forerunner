@@ -220,7 +220,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		} else {
 			roundId = 0 // roundId = 0 means this res count not be matched
 		}
-		reuseDB.UpdateAccountChangedWithMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
+		reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
 
 		t0 := time.Now()
 		receipt := reuse.finalise(config, reuseDB, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
@@ -231,6 +231,33 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
 
 		t1 := time.Now()
+
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+			//use account level update instead of :
+			//reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), 0, &header.Coinbase)
+			hitAddrIndex := 0
+			curtxRes := cmptypes.NewTxResID(tx.Hash(), 0)
+			reusedTxRes := cmptypes.NewTxResID(tx.Hash(), round.RoundID)
+			for addr := range round.WObjects {
+				if hitAddrIndex<len(reuseStatus.MixHitStatus.DepHitAddr) &&addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
+					hitAddrIndex++
+					if addr == header.Coinbase {
+						reuseDB.UpdateAccountChanged(addr, curtxRes)
+					} else {
+						reuseDB.UpdateAccountChanged(addr, reusedTxRes)
+					}
+				} else {
+					reuseDB.UpdateAccountChanged(addr, curtxRes)
+				}
+			}
+		} else {
+			roundId := uint64(0)
+			if reuseStatus.BaseStatus == cmptypes.Hit && (reuseStatus.HitType == cmptypes.DepHit || (reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit)) &&
+				msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
+				roundId = round.RoundID
+			}
+			reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
+		}
 
 		reuseDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))
@@ -250,7 +277,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		t1 := time.Now()
 		// XXX
-		reuseDB.UpdateAccountChanged(append(applyDB.DirtyAddress(), header.Coinbase), tx.Hash(), 0)
+		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), tx.Hash(), 0)
 
 		applyDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))

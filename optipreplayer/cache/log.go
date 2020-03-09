@@ -15,31 +15,36 @@ import (
 
 // LogBlockInfo define blockInfo log format
 type LogBlockInfo struct {
-	TxnApply      int64         `json:"apply"`
-	BlockFinalize int64         `json:"finalize"`
-	WaitReuse     int64         `json:"reuse"`
-	WaitRealApply int64         `json:"realApply"`
-	TxnFinalize   int64         `json:"txFinalize"`
-	Update        int64         `json:"updatePair"`
-	GetRW         int64         `json:"getRW"`
-	SetDB         int64         `json:"setDB"`
-	RunTx         int64         `json:"runTx"`
-	NoListen      int           `json:"L"`
-	NoPackage     int           `json:"Pa"`
-	NoPreplay     int           `json:"Pr"`
-	Hit           int           `json:"H"`
-	Miss          int           `json:"M"`
-	Unknown       int           `json:"U"`
-	IteraHit      int           `json:"IH"`
-	TrieHit       int           `json:"TH"`
-	DepHit        int           `json:"DH"`
-	NoInMiss      int           `json:"NIM"`
-	NoMatchMiss   int           `json:"NMM"`
-	ReuseGas      int           `json:"reuseGas"`
-	ProcTime      int64         `json:"procTime"`
-	RunMode       string        `json:"runMode"`
-	TxnCount      int           `json:"txnCount"`
-	Header        *types.Header `json:"header"`
+	TxnApply        int64         `json:"apply"`
+	BlockFinalize   int64         `json:"finalize"`
+	WaitReuse       int64         `json:"reuse"`
+	WaitRealApply   int64         `json:"realApply"`
+	TxnFinalize     int64         `json:"txFinalize"`
+	Update          int64         `json:"updatePair"`
+	GetRW           int64         `json:"getRW"`
+	SetDB           int64         `json:"setDB"`
+	RunTx           int64         `json:"runTx"`
+	NoListen        int           `json:"L"`
+	NoPackage       int           `json:"Pa"`
+	NoPreplay       int           `json:"Pr"`
+	Hit             int           `json:"H"`
+	Miss            int           `json:"M"`
+	Unknown         int           `json:"U"`
+	IteraHit        int           `json:"IH"`
+	TrieHit         int           `json:"TH"`
+	DepHit          int           `json:"DH"`
+	MixHit          int           `json:"MH"`
+	AllDepMixHit    int           `json:"DMH"`
+	AllDetailMixHit int           `json:"TMH"`
+	PartialMixHit   int           `json:"PMH"`
+	UnhitHeadCount  [10]int       `json:"UHC"`
+	NoInMiss        int           `json:"NIM"`
+	NoMatchMiss     int           `json:"NMM"`
+	ReuseGas        int           `json:"reuseGas"`
+	ProcTime        int64         `json:"procTime"`
+	RunMode         string        `json:"runMode"`
+	TxnCount        int           `json:"txnCount"`
+	Header          *types.Header `json:"header"`
 }
 
 // LogBlockCache define blockCache log format
@@ -244,6 +249,22 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 					infoResult.IteraHit++
 				case cmptypes.TrieHit:
 					infoResult.TrieHit++
+				case cmptypes.MixHit:
+					infoResult.MixHit++
+					switch ReuseResult[index].MixHitStatus.MixHitType {
+					case cmptypes.AllDepHit:
+						infoResult.AllDepMixHit++
+					case cmptypes.AllDetailHit:
+						infoResult.AllDetailMixHit++
+					case cmptypes.PartialHit:
+						infoResult.PartialMixHit++
+						unHitHead := ReuseResult[index].MixHitStatus.DepUnmatchedInHead
+						if unHitHead < 9 {
+							infoResult.UnhitHeadCount[unHitHead]++
+						} else {
+							infoResult.UnhitHeadCount[9]++
+						}
+					}
 				case cmptypes.DepHit:
 					infoResult.DepHit++
 				}
@@ -258,7 +279,6 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			case cmptypes.Unknown:
 				infoResult.Unknown++
 			}
-
 		}
 	}
 
@@ -272,7 +292,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, iteraHitRate, trieHitRate, depHitRate float64
+		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, iteraHitRate, trieHitRate, depHitRate, mixHitRate float64
 		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
@@ -284,6 +304,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
 			depHitRate = float64(infoResult.DepHit) / float64(infoResult.TxnCount)
+			mixHitRate = float64(infoResult.MixHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -294,6 +315,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
 			"IH-TH-DH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
 				infoResult.IteraHit, iteraHitRate, infoResult.TrieHit, trieHitRate, infoResult.DepHit, depHitRate),
+			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d]", infoResult.MixHit, mixHitRate,
+				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit),
+			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
+
 		}
 		if infoResult.Miss > 0 {
 			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))

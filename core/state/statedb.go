@@ -533,31 +533,32 @@ func (s *StateDB) DirtyAddress() []common.Address {
 	return res
 }
 
+// deprecated
 func (s *StateDB) UpdateAccountByJournal(txHash common.Hash, roundId uint64) {
 	txRes := cmptypes.NewTxResID(txHash, roundId)
 	for addr := range s.journal.dirties {
-		s.updateAccountChanged(addr, txRes)
+		s.UpdateAccountChanged(addr, txRes)
 	}
 }
 
-func (s *StateDB) UpdateAccountChanged(dirties common.Addresses, txHash common.Hash, roundId uint64) {
+func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txHash common.Hash, roundId uint64) {
 	txRes := cmptypes.NewTxResID(txHash, roundId)
 	for _, addr := range dirties {
-		s.updateAccountChanged(addr, txRes)
+		s.UpdateAccountChanged(addr, txRes)
 	}
 }
 
-func (s *StateDB) UpdateAccountChangedWithMap(dirties ObjectMap, txHash common.Hash, roundId uint64, coinbase *common.Address) {
+func (s *StateDB) UpdateAccountChangedByMap(dirties ObjectMap, txHash common.Hash, roundId uint64, coinbase *common.Address) {
 	txRes := cmptypes.NewTxResID(txHash, roundId)
 	for addr := range dirties {
-		s.updateAccountChanged(addr, txRes)
+		s.UpdateAccountChanged(addr, txRes)
 	}
 	if coinbase != nil {
-		s.updateAccountChanged(*coinbase, txRes)
+		s.UpdateAccountChanged(*coinbase, txRes)
 	}
 }
 
-func (s *StateDB) updateAccountChanged(addr common.Address, txRes *cmptypes.TxResID) {
+func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxResID) {
 	if changedBy, ok := s.AccountChangedBy[addr]; ok {
 		changedBy.AppendTx(txRes)
 	} else {

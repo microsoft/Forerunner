@@ -1,12 +1,14 @@
 package cmpreuse
 
 import (
+	"encoding/json"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"time"
@@ -37,9 +39,6 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx)
 	}
-	curBlockNumber := receipt.BlockNumber.Uint64()
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
 
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
 	// To set results more effectively, we should
@@ -47,32 +46,50 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	// * Insert to readDep tree for scenario 1 and 3
 	// * Insert rwrecord tree for scenario 1
 	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
-	if reuseStatus.BaseStatus != cmptypes.Hit || reuseStatus.HitType != cmptypes.DepHit {
+	if reuseStatus.BaseStatus != cmptypes.Hit || !(reuseStatus.HitType == cmptypes.DepHit ||
+		(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit)) {
+		curBlockNumber := receipt.BlockNumber.Uint64()
+		txPreplay.Mu.Lock()
+		defer txPreplay.Mu.Unlock()
+		start := time.Now()
+
 		round, ok := reuse.MSRACache.SetMainResult(curRoundID, tx.Hash(), receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
 		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
 		if !ok {
 			return
 		}
-		reuse.setReadDepTree(curRoundID, txPreplay, round, curBlockNumber, &preBlockHash)
+		needInsert := reuse.setReadDepTree(txPreplay, round, curBlockNumber, &preBlockHash)
+		if needInsert {
+			reuse.setMixTree(txPreplay, round, curBlockNumber, &preBlockHash)
+		}else{
+			log.Warn("set readdep tree is unnecessary")
+		}
 		if reuseStatus.BaseStatus != cmptypes.Hit {
-			reuse.setRWRecordTrie(curRoundID, txPreplay, round, curBlockNumber)
+			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+		}
+
+		if time.Since(start) > 30*time.Second {
+			roundbs, _ := json.Marshal(round)
+			log.Warn("Slow setMainResult", "roundInfo", string(roundbs))
 		}
 	}
 
-	if reuseStatus.BaseStatus == cmptypes.Hit {
-		txPreplay.PreplayResults.RWRecordTrie.AddExistedRound(curBlockNumber)
-	}
+	//if reuseStatus.BaseStatus == cmptypes.Hit {
+	//	txPreplay.PreplayResults.RWRecordTrie.AddExistedRound(curBlockNumber)
+	//}
 }
 
-func (reuse *Cmpreuse) setRWRecordTrie(roundID uint64, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
+func (reuse *Cmpreuse) setRWRecordTrie(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
-	//txPreplay.Mu.Lock()
-	//defer txPreplay.Mu.Unlock()
 	InsertRecord(trie, round, curBlockNumber)
 }
 
-func (reuse *Cmpreuse) setReadDepTree(roundID uint64, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
-	InsertAccDep(txPreplay.PreplayResults.ReadDepTree, round, curBlockNumber, preBlockHash)
+func (reuse *Cmpreuse) setReadDepTree(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) bool {
+	return InsertAccDep(txPreplay.PreplayResults.ReadDepTree, round, curBlockNumber, preBlockHash)
+}
+
+func (reuse *Cmpreuse) setMixTree(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
+	InsertMixTree(txPreplay.PreplayResults.MixTree, round, curBlockNumber, preBlockHash)
 }
 
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
@@ -94,14 +111,6 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 }
 
 func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
-	//nowTime := time.Now()
-	//reuse.MSRACache.CommitTxListen(&cache.TxListen{
-	//	Tx:              tx,
-	//	ListenTime:      uint64(nowTime.Unix()),
-	//	ListenTimeNano:  uint64(nowTime.UnixNano()),
-	//	ConfirmTime:     0,
-	//	ConfirmBlockNum: 0,
-	//})
 	txPreplay := cache.NewTxPreplay(tx)
 	reuse.MSRACache.CommitTxPreplay(txPreplay)
 	return txPreplay
@@ -143,7 +152,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		wobjects     state.ObjectMap
 		gas          uint64
 		failed       bool
-		txResRoundID uint64
 		reuseStatus  *cmptypes.ReuseStatus
 		reuseRound   *cache.PreplayResult
 		readDeps     []*cmptypes.AddrLocValue
@@ -153,31 +161,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
 		rwrecord = reuseRound.RWrecord
-		wobjects = statedb.RWRecorder().WObjectDump()
-
-		if reuseStatus.HitType == cmptypes.DepHit {
-			txResRoundID = reuseRound.RoundID
-
-			readDeps = reuseRound.ReadDeps
-			// FIXME: check
-			//readDeps = reuseRound.ReadDeps.Copy()
-			//readDeps = updateNewReadDep(statedb, reuseRound.ReadDeps)
-		} else {
-			txResRoundID = roundID
-			readDeps = updateNewReadDep(statedb, reuseRound.ReadDeps)
-		}
-
-		//if len(rwrecord.ReadDetail.ReadAddress) > 2 {
-		//	preDeps, _ := json.Marshal(reuseRound.ReadDeps)
-		//	curDeps, _ := json.Marshal(readDeps)
-		//	log.Info("preplay hit", "hittype", reuseStatus.HitType, "txhash", tx.Hash().Hex(), "curRoundId", roundID, "preRoundId", reuseRound.RoundID, "matchedRoundDeps", string(preDeps), "curDeps", string(curDeps))
-
-		//for _, rd := range rwrecord.ReadDetail.ReadAddressAndBlockSeq {
-		//	if rd.AddLoc.Field == cmptypes.Dependence && rd.Value != nil {
-		//							break
-		//	}
-		//}
-		//}
 
 	} else {
 		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, core.NewController(), msg)
@@ -189,23 +172,46 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			rstate, rchain, wstate, readDetail := statedb.RWRecorder().RWDump()
 			readDeps = readDetail.ReadAddressAndBlockSeq
 			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, readDetail, failed)
-			wobjects = statedb.RWRecorder().WObjectDump()
-			txResRoundID = roundID
-
-			//curDeps, _ := json.Marshal(readDeps)
-			//log.Info("preplay unmatch ", "txhash", tx.Hash().Hex(), "curRoundId", roundID, "curDeps", string(curDeps))
 
 		} else {
-			//log.Info("preplay tx err", "txhash", tx.Hash().Hex(), "curRoundId", roundID)
 			return nil, err
 		}
 	}
 
 	if groundFlag == 0 {
+
+		wobjects = statedb.RWRecorder().WObjectDump()
+
+		if reuseStatus.BaseStatus == cmptypes.Hit {
+			if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+				readDeps = updateNewReadDep(statedb, reuseRound.ReadDeps)
+
+				// update which accounts changed by this tx into statedb
+				// instead of statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)
+				curtxRes := cmptypes.NewTxResID( tx.Hash(), roundID)
+				reusedTxRes := cmptypes.NewTxResID(tx.Hash(), reuseRound.RoundID)
+				hitAddrIndex := 0
+				for addr := range wobjects {
+					if hitAddrIndex<len(reuseStatus.MixHitStatus.DepHitAddr) && addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
+						statedb.UpdateAccountChanged(addr, reusedTxRes)
+						hitAddrIndex++
+					} else {
+						statedb.UpdateAccountChanged(addr, curtxRes)
+					}
+				}
+			} else if reuseStatus.HitType == cmptypes.DepHit || (reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
+			readDeps = reuseRound.ReadDeps
+			statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), reuseRound.RoundID, nil)
+		} else {
+			readDeps = updateNewReadDep(statedb, reuseRound.ReadDeps)
+			statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)
+		}
+		}else{
+			statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)
+		}
+
 		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash)
 
-		// update which accounts changed by this tx into statedb
-		statedb.UpdateAccountChangedWithMap(wobjects, tx.Hash(), txResRoundID, nil)
 	} else {
 		reuse.commitGround(tx, receipt, rwrecord, groundFlag)
 	}

@@ -13,9 +13,6 @@ import (
 func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
 	record := round.RWrecord
 
-	if record.ReadDetail.IsBlockSensitive && !trie.IsBlockSensitive {
-		trie.IsBlockSensitive = true
-	}
 	if blockNumber > trie.LatestBN {
 		trie.LatestBN = blockNumber
 	}
@@ -26,33 +23,7 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	currentNode := trie.Root
 	seqRecord := record.ReadDetail.ReadDetailSeq
 	for _, addrFieldValue := range seqRecord {
-		if currentNode.NodeType == nil {
-			currentNode.NodeType = addrFieldValue.AddLoc
-
-		} else {
-			// TODO: debug code, test well(would not be touched), can be removed
-			//key := currentNode.NodeType
-			//if !cmp.Equal(key, addrFieldValue.AddLoc) {
-			//
-			//	log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
-			//	log.Warn("addrfield", "addr", addrFieldValue.AddLoc.Address, "filed",
-			//		addrFieldValue.AddLoc.Field, "loc", addrFieldValue.AddLoc.Loc)
-			//
-			//	panic("should be the same key")
-			//}
-		}
-		if currentNode.Children == nil {
-			currentNode.Children = make(map[interface{}]*cmptypes.PreplayResTrieNode)
-		}
-		child, ok := currentNode.Children[addrFieldValue.Value]
-		if ok {
-			currentNode = child
-			continue
-		} else {
-			child = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
-			currentNode.Children[addrFieldValue.Value] = child
-			currentNode = child
-		}
+		currentNode = insertNode(currentNode, addrFieldValue)
 	}
 	if currentNode.IsLeaf {
 		// there is the same RWRecord before, assert they are the same
@@ -69,33 +40,18 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 }
 
 func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header) (*cmptypes.PreplayResTrieNode, bool) {
-
-	currentNode := trie.Root
-	if currentNode.NodeType == nil {
-		return nil, false
-	}
-	for ; !currentNode.IsLeaf; {
-		nodeType := currentNode.NodeType
-		value := getCurrentValue(nodeType, db, bc, header)
-		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
-		childNode, ok := currentNode.Children[value]
-		if ok {
-			currentNode = childNode
-		} else {
-			// TODO might search another path
-
-			return nil, false
-		}
-	}
-	return currentNode, true
+	return SearchTree(trie, db, bc, header, false)
 }
 
-func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
-	// TODO optimize the trie clear
-	if blockNumber > trie.LatestBN + 2 {
-		trie.Clear()
-		trie.LatestBN = blockNumber
-	}
+// return true is this round is inserted. false for this round is a repeated round
+func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) bool {
+	//// TODO optimize the trie clear
+	//if blockNumber > trie.LatestBN+2 {
+	//	trie.Clear()
+	//}
+
+	trie.ClearOld(3)
+	trie.LatestBN = blockNumber
 
 	var topseq []*cmptypes.AddrLocValue
 	topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.Number}, Value: blockNumber})
@@ -104,43 +60,10 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	currentNode := trie.Root
 
 	for _, readDep := range append(topseq, round.ReadDeps...) {
-
-		if currentNode.NodeType == nil {
-			currentNode.NodeType = readDep.AddLoc
-		} else {
-			//// TODO: debug code
-			//if currentNode.NodeType.Address != readDep.AddLoc.Address || currentNode.NodeType.Field != readDep.AddLoc.Field {
-			//	readdetailbs, _ := json.Marshal(record.ReadDetail)
-			//	log.Warn("curTx", "txhash", round.TxHash)
-			//	log.Warn("readdetail", string(readdetailbs))
-			//	log.Warn("currentNode vs new Node", "curNodeAddress", currentNode.NodeType.Address,
-			//		"newAddress", readDep.AddLoc.Address, "field", currentNode.NodeType.Field)
-			//	panic("there should be the same key in the dep tree")
-			//}
-		}
-
-		if currentNode.Children == nil {
-			currentNode.Children = make(map[interface{}]*cmptypes.PreplayResTrieNode)
-		}
-
-		var value interface{}
-		if currentNode.NodeType.Field == cmptypes.Dependence{
-			value = readDep.Value.(*cmptypes.ChangedBy).Hash()
-		}else{
-			value = readDep.Value
-		}
-		child, ok := currentNode.Children[value]
-
-		if ok {
-			currentNode = child
-			continue
-		} else {
-			child = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
-			currentNode.Children[value] = child
-			currentNode = child
-
-		}
+		currentNode = insertNode(currentNode, readDep)
 	}
+
+	trie.RoundIds[round.RoundID] = true
 	if currentNode.IsLeaf {
 		// there is the same RWRecord before, assert they are the same
 		// TODO debug code
@@ -196,15 +119,242 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		//	panic("the rwrecord in dep tree should be the same")
 		//	return
 		//}
+		return false
 	} else {
 		currentNode.IsLeaf = true
 		currentNode.Round = round
 		trie.LeafCount += 1
+		return true
 	}
-	trie.RoundIds[round.RoundID] = true
+
 }
 
 func SearchAccDep(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header) (*cmptypes.PreplayResTrieNode, bool) {
+	return SearchTree(trie, db, bc, header, false)
+}
+
+// only some of addresses's would inserted into detail check subtree,
+const FixedDepCheckCount = 4
+
+func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
+	//if len(round.ReadDeps) > 10 {
+	//	return
+	//}
+
+	trie.ClearOld(3)
+	trie.LatestBN = blockNumber
+
+	var topseq []*cmptypes.AddrLocValue
+	topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.Number}, Value: blockNumber})
+	topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.PreBlockHash}, Value: *preBlockHash})
+	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
+
+	currentNode := trie.Root
+
+	for _, blockDep := range topseq {
+		currentNode = insertNode(currentNode, blockDep)
+	}
+
+	hitDep := make(map[interface{}]bool)
+	depCheckedAddr := make(map[common.Address]bool)
+	checkedButNoHit := 0
+	leafCount := new(int)
+
+	insertDep2MixTree(currentNode, 0, round.ReadDeps, 0, detailSeq, hitDep, depCheckedAddr, checkedButNoHit, round, leafCount)
+
+	// TODO: clear top layer' DetailChild
+	topDetail := &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
+	topNode := trie.Root
+	if !round.RWrecord.ReadDetail.IsBlockNumberSensitive {
+		topNode.DetailChild = topDetail
+	} else {
+		topNode = topNode.Children[blockNumber]
+		topNode.DetailChild = topDetail
+	}
+	for _, detailAlv := range detailSeq {
+		topDetail = insertNode(topDetail, detailAlv)
+	}
+	topDetail.IsLeaf = true
+	topDetail.Round = round
+
+	trie.LeafCount += 1
+	trie.RoundIds[round.RoundID] = true
+
+	//if *leafCount > 100 {
+	//	//rbs, _ := json.Marshal(round)
+	//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+	//	log.Warn("Big leaf count", "tx", round.TxHash.Hex(), "leafCount", *leafCount, "addrCount", len(depCheckedAddr), "depChecked", string(depCheckedAddrbs))
+	//}
+}
+
+func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDepSeq []*cmptypes.AddrLocValue, dIndex int,
+	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int, round *cache.PreplayResult, leafCount *int) {
+
+	if rIndex >= len(readDepSeq) {
+		for _, detailalv := range detailSeq[dIndex:] {
+			if cmptypes.IsChainField(detailalv.AddLoc.Field) || hitDep[detailalv.AddLoc.Address] {
+				continue
+			}
+			currentNode = insertNode(currentNode, detailalv)
+		}
+		*leafCount = *leafCount + 1
+		if currentNode.IsLeaf {
+		} else {
+			currentNode.IsLeaf = true
+			currentNode.Round = round
+		}
+
+		return
+	}
+	curDep := readDepSeq[rIndex]
+	curAddr := curDep.AddLoc.Address
+	child := currentNode
+
+	if cmptypes.IsChainField(curDep.AddLoc.Field) {
+
+		hitDep[curDep.AddLoc.Field] = true
+		child = insertNode(currentNode, curDep)
+
+		insertDep2MixTree(child, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, leafCount)
+
+		hitDep[curDep.AddLoc.Field] = false
+	} else {
+		// assert hitDep[curAddr] == false, depCheckedAddr[curAddr]= false
+		//if hitDep[curAddr] || depCheckedAddr[curAddr] {
+		//	rbs, _ := json.Marshal(round)
+		//	hitdepbs, _ := json.Marshal(hitDep)
+		//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+		//	log.Warn("insert dep wrong", "tx", round.TxHash.Hex(), "rIndex", rIndex, "dIndex", dIndex,
+		//		"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+		//
+		//	panic("Insert dep check wrong")
+		//}
+
+		hitDep[curAddr] = true
+		depCheckedAddr[curAddr] = true
+		child = insertNode(currentNode, curDep)
+
+		//insertDep2MixTree(child, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round)
+		insertDetail2MixTree(child, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, leafCount)
+
+		hitDep[curAddr] = false
+
+		if currentNode.DetailChild == nil {
+			currentNode.DetailChild = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
+		}
+
+		insertDetail2MixTree(currentNode.DetailChild, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit+1, round, leafCount)
+
+		depCheckedAddr[curAddr] = false
+	}
+}
+
+func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDep []*cmptypes.AddrLocValue, dIndex int,
+	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int, round *cache.PreplayResult, leafCount *int) {
+
+	if dIndex >= len(detailSeq) {
+		*leafCount = *leafCount + 1
+		if currentNode.IsLeaf {
+		} else {
+			currentNode.IsLeaf = true
+			currentNode.Round = round
+		}
+		return
+	}
+	detailRead := detailSeq[dIndex]
+
+	if cmptypes.IsChainField(detailRead.AddLoc.Field) {
+		if !hitDep[detailRead.AddLoc.Field] {
+			// assert readDep[rIndex] is chainfield
+			if detailRead.AddLoc.Field != cmptypes.Number && detailRead.AddLoc.Field != cmptypes.Blockhash {
+				// Debug code
+				//if rIndex >= len(readDep) || readDep[rIndex].AddLoc.Field != detailRead.AddLoc.Field {
+				//	rbs, _ := json.Marshal(round)
+				//	hitdepbs, _ := json.Marshal(hitDep)
+				//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+				//	log.Warn("set mix tree", "tx", round.TxHash.Hex(), "rIndex", rIndex, "dIndex", dIndex,
+				//		"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+				//
+				//	log.Error("chain dep and chain detail are not aligned")
+				//	panic("NOT ALIGNED")
+				//}
+				rIndex++
+			}
+			currentNode = insertNode(currentNode, detailRead)
+		}
+		insertDetail2MixTree(currentNode, rIndex, readDep, dIndex+1, detailSeq, hitDep, depCheckedAddr, noHit, round, leafCount)
+		return
+	} else {
+		detailReadAddr := detailRead.AddLoc.Address
+		isNewAddr := !depCheckedAddr[detailReadAddr]
+		// to reduce the node number, ifnoHit <= FixedDepCheckCount, only append detail node, regardless of this addr is not checked by deb
+		if isNewAddr && noHit < FixedDepCheckCount && !(noHit > 0 && noHit <= FixedDepCheckCount && rIndex > FixedDepCheckCount+3) {
+			insertDep2MixTree(currentNode, rIndex, readDep, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, leafCount)
+		} else {
+			if !hitDep[detailReadAddr] {
+				currentNode = insertNode(currentNode, detailRead)
+			}
+			if isNewAddr {
+				//if hitDep[detailReadAddr] {
+				//	rbs, _ := json.Marshal(round)
+				//	hitdepbs, _ := json.Marshal(hitDep)
+				//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+				//	log.Warn("set mix tree", "tx", round.TxHash.Hex(), "rIndex", rIndex, "dIndex", dIndex,
+				//		"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+				//	panic("no possible to hit dep ")
+				//}
+				//// assert readDep[rindex] is the detailReadAddr
+				//if readDep[rIndex].AddLoc.Address != detailReadAddr {
+				//	rbs, _ := json.Marshal(round)
+				//	hitdepbs, _ := json.Marshal(hitDep)
+				//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+				//	log.Warn("set mix tree", "tx", round.TxHash.Hex(), "rIndex", rIndex, "dIndex", dIndex,
+				//		"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+				//	panic("addr dep and addr detail are not aligned")
+				//}
+				depCheckedAddr[detailReadAddr] = true
+				noHit++
+				rIndex++
+			}
+			insertDetail2MixTree(currentNode, rIndex, readDep, dIndex+1, detailSeq, hitDep, depCheckedAddr, noHit, round, leafCount)
+			if isNewAddr {
+				depCheckedAddr[detailReadAddr] = false
+			}
+		}
+	}
+}
+
+func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) *cmptypes.PreplayResTrieNode {
+	if currentNode.NodeType == nil {
+		currentNode.NodeType = alv.AddLoc
+	} else {
+		////TODO: debug code, test well(would not be touched), can be removed
+		//key := currentNode.NodeType
+		//if !cmp.Equal(key, alv.AddLoc) {
+		//
+		//	log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
+		//	log.Warn("addrfield", "addr", alv.AddLoc.Address, "filed",
+		//		alv.AddLoc.Field, "loc", alv.AddLoc.Loc)
+		//
+		//	panic("should be the same key")
+		//}
+	}
+
+	var value interface{}
+	if currentNode.NodeType.Field == cmptypes.Dependence {
+		value = alv.Value.(*cmptypes.ChangedBy).Hash()
+	} else {
+		value = alv.Value
+	}
+	child, ok := currentNode.Children[value]
+	if !ok {
+		child = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
+		currentNode.Children[value] = child
+	}
+	return child
+}
+
+func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
 
 	currentNode := trie.Root
 	if currentNode.NodeType == nil {
@@ -213,26 +363,79 @@ func SearchAccDep(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Chai
 
 	for ; !currentNode.IsLeaf; {
 		nodeType := currentNode.NodeType
-
 		value := getCurrentValue(nodeType, db, bc, header)
 		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
 		childNode, ok := currentNode.Children[value]
+		if debug {
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value)
+		}
 		if ok {
 			currentNode = childNode
 		} else {
 			// TODO might search another path
-
 			return nil, false
 		}
 	}
 	return currentNode, true
 }
 
+func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, debug bool) (
+	*cmptypes.PreplayResTrieNode, *cmptypes.MixHitStatus, bool) {
+	currentNode := trie.Root
+
+	if currentNode.NodeType == nil {
+		return nil, nil, false
+	}
+
+	var matchedDeps []common.Address
+	allDepMatched := true
+	allDetailMatched := true
+
+	for ; !currentNode.IsLeaf; {
+		nodeType := currentNode.NodeType
+		value := getCurrentValue(nodeType, db, bc, header)
+		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
+		childNode, ok := currentNode.Children[value]
+		if debug {
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value)
+		}
+		if ok {
+			currentNode = childNode
+			if nodeType.Field == cmptypes.Dependence {
+				allDetailMatched = false
+				matchedDeps = append(matchedDeps, nodeType.Address)
+			}
+		} else {
+			if currentNode.DetailChild != nil {
+				// assert cmptypes.IsStateField(nodeType.Field) is false
+				allDepMatched = false
+				currentNode = currentNode.DetailChild
+				if debug {
+					log.Warn("search node type-detail node", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+						"loc", nodeType.Loc, "value", value)
+				}
+			} else {
+				return nil, nil, false
+			}
+		}
+	}
+	mixHitType := cmptypes.PartialHit
+	if allDepMatched {
+		mixHitType = cmptypes.AllDepHit
+	} else if allDetailMatched {
+		mixHitType = cmptypes.AllDetailHit
+	}
+
+	mixStatus := &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps}
+	return currentNode, mixStatus, true
+
+}
 
 func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc core.ChainContext, header *types.Header) interface{} {
 	addr := addrLoc.Address
 	switch addrLoc.Field {
-
 	case cmptypes.Coinbase:
 		return header.Coinbase
 	case cmptypes.Timestamp:
@@ -244,9 +447,14 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 	case cmptypes.GasLimit:
 		return header.GasLimit
 	case cmptypes.Blockhash:
-		getHashFn := core.GetHashFn(header, bc)
 		number := addrLoc.Loc.(uint64)
-		return getHashFn(number)
+		curBn := header.Number.Uint64()
+		if curBn-number<257 && number<curBn{
+			getHashFn := core.GetHashFn(header, bc)
+			return getHashFn(number)
+		}else{
+			return common.Hash{}
+		}
 	case cmptypes.PreBlockHash:
 		return header.ParentHash
 	case cmptypes.Exist:
@@ -258,7 +466,11 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 	case cmptypes.Nonce:
 		return statedb.GetNonce(addr)
 	case cmptypes.CodeHash:
-		return statedb.GetCodeHash(addr)
+		value := statedb.GetCodeHash(addr)
+		if value == emptyCodeHash {
+			value = nilCodeHash
+		}
+		return value
 	case cmptypes.Storage:
 		position := addrLoc.Loc.(common.Hash)
 		return statedb.GetState(addr, position)
@@ -279,56 +491,3 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 	}
 	return nil
 }
-
-// Deprecated
-//func GetRChainField(loc *cmptypes.AddrLocation, bc core.ChainContext, header *types.Header) interface{} {
-//	// assert loc.isChain is true
-//	switch loc.Field {
-//	case cmptypes.Coinbase:
-//		return header.Coinbase
-//	case cmptypes.Timestamp:
-//		return header.Time
-//	case cmptypes.Number:
-//		return header.Number.Uint64()
-//	case cmptypes.Difficulty:
-//		return common.BigToHash(header.Difficulty)
-//	case cmptypes.GasLimit:
-//		return header.GasLimit
-//	case cmptypes.Blockhash:
-//		getHashFn := core.GetHashFn(header, bc)
-//		number := loc.Loc.(uint64)
-//		return getHashFn(number)
-//	case cmptypes.PreBlockHash:
-//		return header.ParentHash
-//	default:
-//		log.Error("wrong chain field", "field ", loc.Field)
-//	}
-//	return nil
-//}
-
-// Deprecated
-//func GetRStateValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB) interface{} {
-//	addr := addrLoc.Address
-//	switch addrLoc.Field {
-//	case cmptypes.Exist:
-//		return statedb.Exist(addr)
-//	case cmptypes.Empty:
-//		return statedb.Empty(addr)
-//	case cmptypes.Balance:
-//		return common.BigToHash(statedb.GetBalance(addr)) // // convert complex type (big.Int) to simple type: bytes[32]
-//	case cmptypes.Nonce:
-//		return statedb.GetNonce(addr)
-//	case cmptypes.CodeHash:
-//		return statedb.GetCodeHash(addr)
-//	case cmptypes.Storage:
-//		position := addrLoc.Loc.(common.Hash)
-//		return statedb.GetState(addr, position)
-//	case cmptypes.CommittedStorage:
-//		position := addrLoc.Loc.(common.Hash)
-//		return statedb.GetCommittedState(addr, position)
-//	default:
-//		log.Error("wrong state field", "field ", addrLoc.Field)
-//
-//	}
-//	return nil
-//}
