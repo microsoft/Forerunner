@@ -50,17 +50,19 @@ func IsStateField(field Field) bool {
 }
 
 type ReuseStatus struct {
-	BaseStatus ReuseBaseStatus
-	HitType    HitType
-	MissType   MissType
+	BaseStatus   ReuseBaseStatus
+	HitType      HitType
+	MissType     MissType
 	MixHitStatus *MixHitStatus
 }
 
 type MixHitStatus struct {
 	MixHitType         MixHitType
 	DepHitAddr         []common.Address
+	DepHitAddrMap      map[common.Address]bool
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
 }
+
 
 func (s ReuseStatus) String() string {
 	var statusStr string

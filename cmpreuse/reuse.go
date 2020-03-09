@@ -206,6 +206,33 @@ func ApplyWObjects(statedb *state.StateDB, rw *cache.RWRecord, wobject state.Obj
 	}
 }
 
+func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.ObjectMap, mixStatus *cmptypes.MixHitStatus, abort func() bool) {
+	var suicideAddr []common.Address
+	for addr, object := range wobject {
+		if abort() {
+			return
+		}
+		if object != nil && mixStatus.DepHitAddrMap[addr] {
+			statedb.ApplyStateObject(object)
+			wobject[addr] = nil
+		} else {
+			wstate, ok := rw.WState[addr]
+			if !ok {
+				panic(fmt.Sprintf("Write object miss, addr = %s", addr.Hex()))
+			}
+			if ApplyWState(statedb, addr, wstate) {
+				suicideAddr = append(suicideAddr, addr)
+			}
+		}
+	}
+	for _, addr := range suicideAddr {
+		if abort() {
+			return
+		}
+		statedb.Suicide(addr)
+	}
+}
+
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
 	header *types.Header, blockPre *cache.BlockPre, isBlockProcess bool) (*cache.PreplayResult, *cmptypes.MixHitStatus, bool) {
 	//txPreplay.Mu.Lock()
@@ -454,8 +481,14 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, statedb *state.StateDB, header *types.Header,
 	tx *types.Transaction, round *cache.PreplayResult, status *cmptypes.ReuseStatus, abort func() bool) {
 
-	if status.BaseStatus == cmptypes.Hit && !statedb.IsRWMode() && (status.HitType == cmptypes.DepHit || (status.HitType == cmptypes.MixHit && status.MixHitStatus.MixHitType == cmptypes.AllDepHit)) {
-		ApplyWObjects(statedb, round.RWrecord, round.WObjects, abort)
+	if status.BaseStatus == cmptypes.Hit && !statedb.IsRWMode() {
+		if  status.HitType == cmptypes.DepHit {
+			ApplyWObjects(statedb, round.RWrecord, round.WObjects, abort)
+		}else if status.HitType == cmptypes.MixHit{
+			MixApplyObjState(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
+		}else{
+			ApplyWStates(statedb, round.RWrecord, abort)
+		}
 	} else {
 		ApplyWStates(statedb, round.RWrecord, abort)
 	}

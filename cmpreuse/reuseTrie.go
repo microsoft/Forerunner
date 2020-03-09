@@ -389,6 +389,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	}
 
 	var matchedDeps []common.Address
+	depMatchedMap := make(map[common.Address]bool)
 	allDepMatched := true
 	allDetailMatched := true
 
@@ -406,6 +407,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 			if nodeType.Field == cmptypes.Dependence {
 				allDetailMatched = false
 				matchedDeps = append(matchedDeps, nodeType.Address)
+				depMatchedMap[nodeType.Address] = true
 			}
 		} else {
 			if currentNode.DetailChild != nil {
@@ -428,7 +430,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 		mixHitType = cmptypes.AllDetailHit
 	}
 
-	mixStatus := &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps}
+	mixStatus := &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
 	return currentNode, mixStatus, true
 
 }
@@ -449,10 +451,10 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 	case cmptypes.Blockhash:
 		number := addrLoc.Loc.(uint64)
 		curBn := header.Number.Uint64()
-		if curBn-number<257 && number<curBn{
+		if curBn-number < 257 && number < curBn {
 			getHashFn := core.GetHashFn(header, bc)
 			return getHashFn(number)
-		}else{
+		} else {
 			return common.Hash{}
 		}
 	case cmptypes.PreBlockHash:
