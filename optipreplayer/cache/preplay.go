@@ -613,16 +613,13 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 }
 
 // SetMainResult set the result for a tx
-func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt *types.Receipt, rwRecord *RWRecord,
-	wobjects state.ObjectMap, readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
+func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord,	wobjects state.ObjectMap,
+	readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
 
 	if receipt == nil || rwRecord == nil {
-		log.Debug("[PreplayCache] Nil Error", "txHash", txHash)
+		log.Debug("[PreplayCache] Nil Error", "txHash", txPreplay.TxHash)
 		return nil, false
 	}
-	//
-	//txPreplay.Mu.Lock()
-	//defer txPreplay.Mu.Unlock()
 
 	round, _ := txPreplay.CreateOrGetRound(roundID)
 
@@ -636,8 +633,6 @@ func (r *GlobalCache) SetMainResult(roundID uint64, txHash common.Hash, receipt 
 	round.TimestampNano = uint64(nowTime.UnixNano())
 
 	round.BasedBlockHash = preBlockHash
-	//formerTx := *(statedb.ProcessedTxs)
-	//round.FormerTxs = formerTx[0 : len(formerTx)-1] // the last one is the current tx
 
 	if rwRecord.Round == nil {
 		// this is a new RWRecord (reuseStatus is noHit)

@@ -234,20 +234,20 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
-	header *types.Header, blockPre *cache.BlockPre, isBlockProcess bool) (*cache.PreplayResult, *cmptypes.MixHitStatus, bool) {
+	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool) (*cache.PreplayResult, *cmptypes.MixHitStatus, bool, bool) {
 	//txPreplay.Mu.Lock()
 	//defer txPreplay.Mu.Unlock()
 
 	trie := txPreplay.PreplayResults.MixTree
-	trieNode, mixHitStatus, ok := SearchMixTree(trie, statedb, bc, header, false)
+	res, mixHitStatus, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false)
 	if ok {
-		res := trieNode.Round.(*cache.PreplayResult)
+		//res := trieNode.Round.(*cache.PreplayResult)
 
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
 			if isBlockProcess {
 				log.Warn("mixhit fail caused by BLOCKPRE", "txhash", txPreplay.TxHash.Hex())
 			}
-			return nil, mixHitStatus, false
+			return nil, mixHitStatus, isAbort, false
 		}
 		//if !CheckRChain(res.RWrecord, bc, header) {
 		//	if isBlockProcess { // TODO: debug code
@@ -303,24 +303,25 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			mixHitStatus.DepUnmatchedInHead = headUmatched
 		}
 
-		return res, mixHitStatus, true
+		return res, mixHitStatus, isAbort, true
 	} else {
-		return nil, mixHitStatus, false
+		return nil, mixHitStatus, isAbort, false
 	}
 }
 
 func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
-	header *types.Header, blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (*cache.PreplayResult, bool) {
+	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (
+	res *cache.PreplayResult, isAbort bool, ok bool) {
 	//txPreplay.Mu.Lock()
 	//defer txPreplay.Mu.Unlock()
 
 	trie := txPreplay.PreplayResults.ReadDepTree
-	trieNode, ok := SearchTree(trie, statedb, bc, header, false)
+	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
-			return nil, false
+			return nil, isAbort, false
 		}
 		if cfg.MSRAVMSettings.CmpReuseChecking {
 			if !CheckRChain(res.RWrecord, bc, header) {
@@ -328,115 +329,111 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 					log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
 				}
 				panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
-				return nil, false
+				return nil, isAbort, false
 			} else if !CheckRState(res.RWrecord, statedb, true) {
 				log.Warn("depcheck unmatch due to state info", "blockHash", header.Hash(), "blockprocess", isBlockProcess, "txhash", txPreplay.TxHash.Hex())
 				br, _ := json.Marshal(res)
 				log.Warn("unmatch round ", "round", string(br))
 
-				//formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
-				//log.Warn("former tx", "former txs", string(formertxsbs))
-				//
-				//currentReadDep := statedb.GetTxDepsByAccounts(res.RWrecord.ReadDetail.ReadAddress)
-				//depMatch := true
-				//for _, adv := range res.ReadDeps {
-				//	if adv.AddLoc.Field != cmptypes.Dependence {
-				//		continue
-				//	}
-				//	addr := adv.AddLoc.Address
-				//	preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
-				//	if preTxResId == nil {
-				//		log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
-				//	} else {
-				//		log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
-				//		preTxPreplay := reuse.MSRACache.GetTxPreplay(*preTxResId.Txhash)
-				//		if preTxPreplay != nil {
-				//			preTxRound, okk := preTxPreplay.GetRound(preTxResId.RoundID)
-				//			if okk {
-				//				pretxbs, _ := json.Marshal(preTxRound)
-				//				//if jerr != nil {
-				//				log.Info("@@@@@@ pre tx info", "pretxRound", string(pretxbs))
-				//				//}
-				//			} else {
-				//				log.Warn("no this tx round")
-				//			}
-				//		} else {
-				//			log.Warn("no this tx preplay")
-				//		}
-				//
-				//	}
-				//	newTxResId := currentReadDep[addr].LastTxResID
-				//	if newTxResId == nil {
-				//		log.Info("show read dep (no tx changed)", "readaddress", addr)
-				//	} else {
-				//		log.Info("show read dep", "readaddress", addr, "lastTxhash", newTxResId.Txhash.Hex(), "preRoundID", newTxResId.RoundID)
-				//	}
-				//if preTxResId == nil {
-				//	if newTxResId == nil {
-				//		continue
-				//	} else {
-				//		depMatch = false
-				//		log.Warn("preTxResId is nil and newTxResId is not", "curHash", newTxResId.Hash(),
-				//			"curTxhash", newTxResId.Txhash.Hex(), "curRoundID", newTxResId.RoundID)
-				//		continue
-				//	}
-				//} else {
-				//	if newTxResId == nil {
-				//		depMatch = false
-				//
-				//		log.Warn("newTxResId is nil and preTxResId is not", "preHash", preTxResId.Hash(),
-				//			"preTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, )
-				//		continue
-				//	}
-				//}
-				//if preTxResId.Hash().Hex() == newTxResId.Hash().Hex() {
-				//	if !(preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID) {
-				//		depMatch = false
-				//		log.Warn("!! TxResID hash conflict: hash same; content diff", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
-				//			"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
-				//	}
-				//} else {
-				//	depMatch = false
-				//	if preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID {
-				//		log.Warn("!!!!! TxResID hash : hash diff; content same", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
-				//			"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
-				//	} else {
-				//		log.Warn("!!>> read dep hash and content diff <<!!", "preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(),
-				//			"preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
-				//	}
-				//}
-				//}
-				//if !depMatch {
-				//	panic("search res wrong!!!!!!!!!!!!!!!!!!!!!!")
-				//}
+				formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
+				log.Warn("former tx", "former txs", string(formertxsbs))
+
+				depMatch := true
+				for _, adv := range res.ReadDeps {
+					if adv.AddLoc.Field != cmptypes.Dependence {
+						continue
+					}
+					addr := adv.AddLoc.Address
+					preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+					if preTxResId == nil {
+						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
+					} else {
+						log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
+						preTxPreplay := reuse.MSRACache.GetTxPreplay(*preTxResId.Txhash)
+						if preTxPreplay != nil {
+							preTxRound, okk := preTxPreplay.GetRound(preTxResId.RoundID)
+							if okk {
+								pretxbs, _ := json.Marshal(preTxRound)
+								//if jerr != nil {
+								log.Info("@@@@@@ pre tx info", "pretxRound", string(pretxbs))
+								//}
+							} else {
+								log.Warn("no this tx round")
+							}
+						} else {
+							log.Warn("no this tx preplay")
+						}
+
+					}
+					newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
+					if newTxResId == nil {
+						log.Info("show read dep (no tx changed)", "readaddress", addr)
+					} else {
+						log.Info("show read dep", "readaddress", addr, "lastTxhash", newTxResId.Txhash.Hex(), "preRoundID", newTxResId.RoundID)
+					}
+					if preTxResId == nil {
+						if newTxResId == nil {
+							continue
+						} else {
+							depMatch = false
+							log.Warn("preTxResId is nil and newTxResId is not", "curHash", newTxResId.Hash(),
+								"curTxhash", newTxResId.Txhash.Hex(), "curRoundID", newTxResId.RoundID)
+							continue
+						}
+					} else {
+						if newTxResId == nil {
+							depMatch = false
+
+							log.Warn("newTxResId is nil and preTxResId is not", "preHash", preTxResId.Hash(),
+								"preTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, )
+							continue
+						}
+					}
+					if preTxResId.Hash().Hex() == newTxResId.Hash().Hex() {
+						if !(preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID) {
+							depMatch = false
+							log.Warn("!! TxResID hash conflict: hash same; content diff", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
+								"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+						}
+					} else {
+						depMatch = false
+						if preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID {
+							log.Warn("!!!!! TxResID hash : hash diff; content same", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
+								"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+						} else {
+							log.Warn("!!>> read dep hash and content diff <<!!", "preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(),
+								"preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+						}
+					}
+				}
+				if !depMatch {
+					panic("search res wrong!!!!!!!!!!!!!!!!!!!!!!")
+				}
 
 				log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 				panic("depcheck unmatch due to state info: txhash=" + txPreplay.TxHash.Hex())
 
-				return nil, false
+				return nil, false, false
 			}
 		}
-		return res, true
+		return res, isAbort, true
 	} else {
-		return nil, false
+		return nil, isAbort, false
 	}
 }
 
-func (reuse *Cmpreuse) trieCheckRState(txPreplay *cache.TxPreplay, bc core.ChainContext, db *state.StateDB, header *types.Header,
-	blockPre *cache.BlockPre) (*cache.PreplayResult, bool) {
-	//txPreplay.Mu.Lock()
-	//defer txPreplay.Mu.Unlock()
-
+func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, db *state.StateDB, header *types.Header, abort func() bool,
+	blockPre *cache.BlockPre) (res *cache.PreplayResult, isAbort bool, ok bool) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
-	trieNode, ok := SearchTree(trie, db, bc, header, false)
+	trieNode, isAbort, ok := SearchTree(trie, db, bc, header, abort, false)
 	if ok {
 		res := trieNode.RWRecord.GetPreplayRes().(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
-			return nil, false
+			return nil, false, false
 		}
-		return res, true
+		return res, isAbort, true
 	}
-	return nil, false
+	return nil, isAbort, false
 }
 
 // Deprecated:  getValidRW get valid transaction from tx preplay cache
@@ -482,11 +479,11 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 	tx *types.Transaction, round *cache.PreplayResult, status *cmptypes.ReuseStatus, abort func() bool) {
 
 	if status.BaseStatus == cmptypes.Hit && !statedb.IsRWMode() {
-		if  status.HitType == cmptypes.DepHit {
+		if status.HitType == cmptypes.DepHit {
 			ApplyWObjects(statedb, round.RWrecord, round.WObjects, abort)
-		}else if status.HitType == cmptypes.MixHit{
+		} else if status.HitType == cmptypes.MixHit {
 			MixApplyObjState(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
-		}else{
+		} else {
 			ApplyWStates(statedb, round.RWrecord, abort)
 		}
 	} else {
@@ -526,10 +523,10 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 }
 
 func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, isFinish func() bool, isBlockProcess bool, cfg *vm.Config) (status *cmptypes.ReuseStatus,
+	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (status *cmptypes.ReuseStatus,
 	round *cache.PreplayResult, cmpCnt int64, d0 time.Duration, d1 time.Duration) {
 
-	var ok bool
+	var ok, isAbort bool
 	var mixStatus *cmptypes.MixHitStatus
 
 	t0 := time.Now()
@@ -540,47 +537,136 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 	txPreplay.Mu.Lock()
 
-	round, mixStatus, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, isBlockProcess)
+	round, mixStatus, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
 	if ok {
 		d0 = time.Since(t0)
 		cmpCnt = 1
-
 		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
+	} else if isAbort {
+		d0 = time.Since(t0)
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+		txPreplay.Mu.Unlock()
+		return
 	} else {
-		round, ok = reuse.depCheck(txPreplay, bc, statedb, header, blockPre, isBlockProcess, cfg)
+		round, isAbort, ok = reuse.depCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess, cfg)
 		if ok {
 			d0 = time.Since(t0)
-
 			cmpCnt = 1
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DepHit}
-			//if isBlockProcess {
-			//	mixbs, _ := json.Marshal(mixStatus)
-			//	roundbs, _ := json.Marshal(round)
-			//	log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
-			//	SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, true)
-			//	log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
-			//	SearchTree(txPreplay.PreplayResults.ReadDepTree, statedb, bc, header, true)
-			//	panic("unsupposed match")
-			//}
+			if isBlockProcess {
+				mixbs, _ := json.Marshal(mixStatus)
+				roundbs, _ := json.Marshal(round)
+				log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
+				SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true)
+				log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
+				SearchTree(txPreplay.PreplayResults.ReadDepTree, statedb, bc, header, func() bool { return false }, true)
+				panic("unsupposed match by dep hit")
+			}
+		} else if isAbort {
+			d0 = time.Since(t0)
+			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+			txPreplay.Mu.Unlock()
+			return
 		} else {
-			round, ok = reuse.trieCheckRState(txPreplay, bc, statedb, header, blockPre)
+			round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre)
 			if ok {
 				d0 = time.Since(t0)
 				cmpCnt = 1
 				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit}
 
 				// FIXME: why trie hit instead of mixhit:
-				//       the most reason is the matched round is generated based on former block instead of preblock
-				//if isBlockProcess {
-				//	mixbs, _ := json.Marshal(mixStatus)
-				//	roundbs, _ := json.Marshal(round)
-				//	log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
-				//	SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, true)
-				//	log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
-				//	SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, true)
-				//}
+				//       over matching dep leads to a wrong way; the round found by trie might miss all deps
+				if false && isBlockProcess {
+					mixbs, _ := json.Marshal(mixStatus)
+					roundbs, _ := json.Marshal(round)
+					log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
+					SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true)
+					log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
+					SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, func() bool { return false }, true)
+					formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
+					log.Warn("former tx", "former txs", string(formertxsbs))
+
+					depMatch := true
+					for _, adv := range round.ReadDeps {
+						if adv.AddLoc.Field != cmptypes.Dependence {
+							continue
+						}
+						addr := adv.AddLoc.Address
+						preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+						if preTxResId == nil {
+							log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
+						} else {
+							log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
+							preTxPreplay := reuse.MSRACache.GetTxPreplay(*preTxResId.Txhash)
+							if preTxPreplay != nil {
+								preTxRound, okk := preTxPreplay.PeekRound(preTxResId.RoundID)
+								if okk {
+									pretxbs, _ := json.Marshal(preTxRound)
+									//if jerr != nil {
+									log.Info("@@@@@@ pre tx info", "pretxRound", string(pretxbs))
+									//}
+								} else {
+									log.Warn("no this tx round")
+								}
+							} else {
+								log.Warn("no this tx preplay")
+							}
+
+						}
+						newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
+						if newTxResId == nil {
+							log.Info("show read dep (no tx changed)", "readaddress", addr)
+						} else {
+							log.Info("show read dep", "readaddress", addr, "lastTxhash", newTxResId.Txhash.Hex(), "preRoundID", newTxResId.RoundID)
+						}
+						if preTxResId == nil {
+							if newTxResId == nil {
+								continue
+							} else {
+								depMatch = false
+								log.Warn("preTxResId is nil and newTxResId is not", "curHash", newTxResId.Hash(),
+									"curTxhash", newTxResId.Txhash.Hex(), "curRoundID", newTxResId.RoundID)
+								continue
+							}
+						} else {
+							if newTxResId == nil {
+								depMatch = false
+
+								log.Warn("newTxResId is nil and preTxResId is not", "preHash", preTxResId.Hash(),
+									"preTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, )
+								continue
+							}
+						}
+						if preTxResId.Hash().Hex() == newTxResId.Hash().Hex() {
+							if !(preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID) {
+								depMatch = false
+								log.Warn("!! TxResID hash conflict: hash same; content diff", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
+									"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+							}
+						} else {
+							depMatch = false
+							if preTxResId.Txhash.Hex() == newTxResId.Txhash.Hex() && preTxResId.RoundID == newTxResId.RoundID {
+								log.Warn("!!!!! TxResID hash : hash diff; content same", "preHash", preTxResId.Hash(), "curHash", newTxResId.Hash(),
+									"preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+							} else {
+								log.Warn("!!>> read dep hash and content diff <<!!", "preTxhash", preTxResId.Txhash.Hex(), "curTxhash", newTxResId.Txhash.Hex(),
+									"preRoundID", preTxResId.RoundID, "curRoundID", newTxResId.RoundID)
+							}
+						}
+					}
+
+					log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++", "depmatch", depMatch)
+
+
+					//panic("unsupposed match by trie hit")
+				}
+			} else if isAbort {
+				d0 = time.Since(t0)
+				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+				txPreplay.Mu.Unlock()
+				return
 			} else {
-				//round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, isFinish)
+				//round, ok, leastOne, abort, cmpCnt = reuse.getValidRW(txPreplay, bc, statedb, header, blockPre, abort)
 				//d0 = time.Since(t0)
 				//if ok {
 				//	if isBlockProcess {
@@ -618,7 +704,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				cmpCnt = 1
 				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss}
 				txPreplay.Mu.Unlock()
-
 				return
 			}
 		}
@@ -634,9 +719,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail} // fail for gas limit reach, quit compete
 		return
 	}
-
+	
 	t1 := time.Now()
-	reuse.setStateDB(bc, author, statedb, header, tx, round, status, isFinish)
+	reuse.setStateDB(bc, author, statedb, header, tx, round, status, abort)
 	d1 = time.Since(t1)
 
 	return

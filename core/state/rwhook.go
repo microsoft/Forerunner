@@ -300,10 +300,12 @@ func (h *rwRecorderImpl) UpdateRHeader(field cmptypes.Field, val interface{}) {
 		addLoc := cmptypes.AddrLocation{Field: field}
 		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: value}
 		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
-		if field != cmptypes.Number {
-			h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, newAlv)
-		} else {
+		h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, newAlv)
+
+		if field == cmptypes.Number {
 			h.ReadDetail.IsBlockNumberSensitive = true
+		} else {
+			//h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, newAlv)
 		}
 	}
 
@@ -319,6 +321,8 @@ func (h *rwRecorderImpl) UpdateRBlockhash(num uint64, val common.Hash) {
 		addLoc := cmptypes.AddrLocation{Field: cmptypes.Blockhash, Loc: num}
 		newAlv := &cmptypes.AddrLocValue{AddLoc: &addLoc, Value: val}
 		h.ReadDetail.ReadDetailSeq = append(h.ReadDetail.ReadDetailSeq, newAlv)
+		h.ReadDetail.ReadAddressAndBlockSeq = append(h.ReadDetail.ReadAddressAndBlockSeq, newAlv)
+
 	}
 }
 

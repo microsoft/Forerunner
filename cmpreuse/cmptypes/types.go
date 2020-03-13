@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
 type Field int
@@ -62,7 +63,6 @@ type MixHitStatus struct {
 	DepHitAddrMap      map[common.Address]bool
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
 }
-
 
 func (s ReuseStatus) String() string {
 	var statusStr string
@@ -162,16 +162,43 @@ func (t *TxResID) Hash() *common.Hash {
 	}
 }
 
+const AccountSnapLen = 90
+
+type AccountSnap [AccountSnapLen]byte
+
+func (a AccountSnap) String() string {
+	return hexutil.Encode(a[:])
+}
+
+func (a AccountSnap) MarshalJSON() ([]byte, error) {
+	return []byte(a.String()), nil
+}
+
+func BytesToAccountSnap(bs []byte) *AccountSnap {
+	if len(bs) > AccountSnapLen {
+		bs = bs[len(bs)-AccountSnapLen:]
+		//fixme:
+		panic("too long bytes " + "" + string(len(bs)))
+	}
+	var as AccountSnap
+	copy(as[AccountSnapLen-len(bs):], bs)
+	return &as
+}
+
 type ChangedBy struct {
+	AccountSnap *AccountSnap
 	LastTxResID *TxResID `json:"lastRes"`
-	//Bytes       []byte
-	//
-	hash        *common.Hash // for each seq, only cal once
+
+	hash        interface{} // for each seq, only cal once
 	hashUpdated bool
 }
 
 func NewChangedBy() *ChangedBy {
 	return &ChangedBy{LastTxResID: nil, hash: nil, hashUpdated: false}
+}
+
+func NewChangedBy2(accountSnap *AccountSnap) *ChangedBy {
+	return &ChangedBy{AccountSnap: accountSnap, LastTxResID: nil, hash: nil, hashUpdated: false}
 }
 
 func (c *ChangedBy) AppendTx(txResID *TxResID) {
@@ -180,26 +207,29 @@ func (c *ChangedBy) AppendTx(txResID *TxResID) {
 }
 
 func (c *ChangedBy) Copy() *ChangedBy {
-	//newPtr := new(big.Int).Set(c.LastTxResID)
-	//return &ChangedBy{LastTxResID:newPtr}
 	c.updateHash()
-	return &ChangedBy{LastTxResID: c.LastTxResID, hash: c.hash, hashUpdated: c.hashUpdated}
+	return &ChangedBy{AccountSnap: c.AccountSnap, LastTxResID: c.LastTxResID, hash: c.hash, hashUpdated: c.hashUpdated}
 }
 
 func (c *ChangedBy) updateHash() {
 	if !c.hashUpdated {
 		if c.LastTxResID == nil {
-			c.hash = &common.Hash{}
+			c.hash = c.AccountSnap
 		} else {
 			c.hash = c.LastTxResID.Hash()
-			c.hashUpdated = true
+
 		}
 	}
+	c.hashUpdated = true
 }
-func (c *ChangedBy) Hash() common.Hash {
-	c.updateHash()
 
-	return *c.hash
+func (c *ChangedBy) Hash() interface{} {
+	c.updateHash()
+	if c.LastTxResID == nil {
+		return *c.hash.(*AccountSnap)
+	} else {
+		return *c.hash.(*common.Hash)
+	}
 }
 
 func GetBytes(v interface{}) []byte {
@@ -218,17 +248,6 @@ func (cm ChangedMap) Copy() ChangedMap {
 	}
 	return newCM
 }
-
-// Deprecated
-type StateDBChangedBy struct {
-	ChangedBy   *ChangedBy
-	CannotMatch bool // true for: When block processing, there is a tx whose result did not exist. which means if true, the following txs which read this account cannot be matched in dep tree
-}
-
-// Deprecated
-type StateDBChangedMap map[common.Address]*StateDBChangedBy
-
-//var AddressForChainField = common.BigToAddress(big.NewInt(-1))
 
 type Location struct {
 	Field Field

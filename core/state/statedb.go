@@ -253,7 +253,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		EnableFeeToCoinbase: true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
-		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, 300),
+		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
 	}, nil
 }
 
@@ -562,19 +562,22 @@ func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxRe
 	if changedBy, ok := s.AccountChangedBy[addr]; ok {
 		changedBy.AppendTx(txRes)
 	} else {
-		changedBy = cmptypes.NewChangedBy()
+		accSnap := s.TrieGetSnap(addr)
+		changedBy = cmptypes.NewChangedBy2(accSnap)
 		changedBy.AppendTx(txRes)
 		s.AccountChangedBy[addr] = changedBy
 	}
 }
 
 func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy {
-	if changed, ok := s.AccountChangedBy[address]; ok {
-		// TODO: might just return Hash
-		return changed.Copy()
-	} else {
-		return cmptypes.NewChangedBy()
+	changed, ok := s.AccountChangedBy[address]
+	if !ok {
+		accSnap := s.TrieGetSnap(address)
+		changed = cmptypes.NewChangedBy2(accSnap)
+		s.AccountChangedBy[address] = changed
 	}
+	// TODO: just return Hash
+	return changed.Copy()
 }
 
 func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
@@ -1019,6 +1022,18 @@ func (s *StateDB) Update() {
 	}
 }
 
+func (s *StateDB) TrieGetSnap(address common.Address) *cmptypes.AccountSnap {
+	snap, err := s.trie.TryGet(address[:])
+	if err != nil {
+		panic(err.Error())
+	}
+	return cmptypes.BytesToAccountSnap(snap)
+}
+
+func (s *StateDB) TrieGet(address common.Address) ([]byte, error) {
+	return s.trie.TryGet(address[:])
+}
+
 func (s *StateDB) updateObject(db *StateDB) {
 	for addr := range db.journal.dirties {
 		if _, ok := s.journal.dirties[addr]; ok {
@@ -1213,8 +1228,6 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		hexKeys := make([][]byte, len(toUpdateRoot))
 		hashedStrings := make([]string, len(toUpdateRoot))
 		keyCopies := make([][]byte, len(toUpdateRoot))
-
-
 
 		// execute the updateRoots in parallel
 		if len(toUpdateRoot) > 0 {
