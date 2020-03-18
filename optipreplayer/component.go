@@ -9,11 +9,41 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"math/big"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
 
 type TransactionPool map[common.Address]types.Transactions
+
+func (p TransactionPool) String() string {
+	retStr := "{"
+	for sender, txns := range p {
+		retStr += sender.Hex() + ":["
+		for i, txn := range txns {
+			if i > 0 {
+				retStr += ", "
+			}
+			var priceStr string
+			var raw = txn.GasPrice().String()
+			for len(raw) > 0 {
+				newEnd := len(raw) - 3
+				if newEnd > 0 {
+					priceStr = "," + raw[newEnd:] + priceStr
+					raw = raw[:newEnd]
+				} else {
+					priceStr = raw + priceStr
+					raw = ""
+				}
+			}
+			retStr += fmt.Sprintf("%s:%d-%v", txn.Hash().TerminalString(), txn.Nonce(), priceStr)
+		}
+		retStr += "],"
+	}
+	retStr += "}"
+	return retStr
+}
 
 func (p TransactionPool) size() int {
 	size := 0
@@ -49,8 +79,8 @@ func (p TransactionPool) copy() TransactionPool {
 	newPool := make(TransactionPool, len(p))
 	for addr, txns := range p {
 		newPool[addr] = make(types.Transactions, len(txns))
-		for index, txn := range txns {
-			newPool[addr][index] = txn
+		for i, txn := range txns {
+			newPool[addr][i] = txn
 		}
 	}
 	return newPool
@@ -92,15 +122,17 @@ const (
 )
 
 type MinerList struct {
-	list  [minerRecallSize]common.Address
-	next  int
-	count map[common.Address]int
+	list       [minerRecallSize]common.Address
+	next       int
+	count      map[common.Address]int
+	top5Active []common.Address
 }
 
 func NewMinerList(chain *core.BlockChain) MinerList {
 	minerList := MinerList{
-		list:  [minerRecallSize]common.Address{},
-		count: make(map[common.Address]int),
+		list:       [minerRecallSize]common.Address{},
+		count:      make(map[common.Address]int),
+		top5Active: make([]common.Address, 5),
 	}
 	nextBlk := chain.CurrentBlock().NumberU64() + 1
 	start := nextBlk - minerRecallSize
@@ -109,7 +141,19 @@ func NewMinerList(chain *core.BlockChain) MinerList {
 		minerList.list[index] = coinbase
 		minerList.count[coinbase]++
 	}
+	minerList.updateTop5Active()
 	return minerList
+}
+
+func (l *MinerList) updateTop5Active() {
+	minerList := make([]common.Address, 0, len(l.count))
+	for miner := range l.count {
+		minerList = append(minerList, miner)
+	}
+	sort.Slice(minerList, func(i, j int) bool {
+		return l.count[minerList[i]] > l.count[minerList[j]]
+	})
+	copy(l.top5Active, minerList[:5])
 }
 
 func (l *MinerList) addMiner(newMiner common.Address) {
@@ -121,6 +165,8 @@ func (l *MinerList) addMiner(newMiner common.Address) {
 	}
 	l.count[oldMiner]--
 	l.count[newMiner]++
+
+	l.updateTop5Active()
 }
 
 func (l *MinerList) getWhiteList() map[common.Address]struct{} {
@@ -131,20 +177,6 @@ func (l *MinerList) getWhiteList() map[common.Address]struct{} {
 		}
 	}
 	return whiteList
-}
-
-func (l *MinerList) getMostActive() common.Address {
-	var (
-		activeMiner common.Address
-		minerCount  int
-	)
-	for miner, count := range l.count {
-		if count > minerCount {
-			activeMiner = miner
-			minerCount = count
-		}
-	}
-	return activeMiner
 }
 
 const (
@@ -292,11 +324,15 @@ func NewRWRecord(rw *cache.RWRecord) *RWRecord {
 	}
 }
 
+func (r *RWRecord) isCoinbaseDep() bool {
+	return r.ReadChain&coinbase > 0
+}
+
 func (r *RWRecord) isTimestampDep() bool {
 	return r.ReadChain&timestamp > 0
 }
 
-func (r *RWRecord) isDep() bool {
+func (r *RWRecord) isChainDep() bool {
 	return r.ReadChain > 0
 }
 
@@ -329,6 +365,18 @@ type Header struct {
 }
 type TxnOrder []common.Hash
 
+func (o TxnOrder) String() string {
+	retStr := "["
+	for i, hash := range o {
+		if i > 0 {
+			retStr += ","
+		}
+		retStr += fmt.Sprintf("%d:%s", i, hash.TerminalString())
+	}
+	retStr += "]"
+	return retStr
+}
+
 type TxnGroup struct {
 	hash common.Hash
 	txns TransactionPool
@@ -336,15 +384,19 @@ type TxnGroup struct {
 
 	valid int32
 
-	txnCount     int
 	preplayCount int
 	priority     int
 
 	parent *types.Block
 	header Header
 
-	inOrder   map[common.Address]int
-	nextOrder chan TxnOrder
+	txnCount   int
+	orderCount *big.Int
+
+	startList   []int
+	subpoolList []TransactionPool
+	nextInList  []map[common.Address]int
+	nextOrder   chan TxnOrder
 }
 
 func (g *TxnGroup) setInvalid() {
@@ -359,14 +411,113 @@ func (g *TxnGroup) isValid() bool {
 	return atomic.LoadInt32(&g.valid) == 1
 }
 
-func (g *TxnGroup) isAllInOrder() bool {
-	for from, txns := range g.txns {
-		if g.inOrder[from]+1 < len(txns) {
+func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
+	subPool := g.subpoolList[subpoolIndex]
+	nextIn := g.nextInList[subpoolIndex]
+	for from, txns := range subPool {
+		if nextIn[from] < len(txns) {
 			return false
 		}
 	}
 	return true
 }
+
+func (g *TxnGroup) divideTransactionPool() {
+	g.txnCount = g.txns.size()
+	g.orderCount = new(big.Int).SetUint64(1)
+	var (
+		inPoolList int
+		poolCpy    = g.txns.copy()
+	)
+	for inPoolList < g.txnCount {
+		var (
+			maxPriceFrom = make([]common.Address, 0)
+			maxPrice     = new(big.Int)
+		)
+		for from, txns := range poolCpy {
+			if len(txns) == 0 {
+				continue
+			}
+			headTxn := txns[0]
+			headGasPrice := headTxn.GasPrice()
+			cmp := headGasPrice.Cmp(maxPrice)
+			switch {
+			case cmp > 0:
+				maxPrice = headGasPrice
+				maxPriceFrom = []common.Address{from}
+			case cmp == 0:
+				maxPriceFrom = append(maxPriceFrom, from)
+			}
+		}
+		var (
+			maxPriceTotal  int64
+			maxPriceCounts []int64
+			subPool        = make(TransactionPool)
+		)
+		for _, from := range maxPriceFrom {
+			var (
+				index         int
+				txns          = poolCpy[from]
+				txnsSize      = len(txns)
+				maxPriceCount int64
+			)
+			for ; index < txnsSize; index++ {
+				cmp := txns[index].GasPrice().Cmp(maxPrice)
+				switch {
+				case cmp == 0:
+					maxPriceCount++
+				case cmp < 0:
+					break
+				}
+			}
+			maxPriceTotal += maxPriceCount
+			maxPriceCounts = append(maxPriceCounts, maxPriceCount)
+			if index == txnsSize {
+				subPool[from] = poolCpy[from]
+				delete(poolCpy, from)
+			} else {
+				subPool[from] = txns[:index]
+				poolCpy[from] = txns[index:]
+			}
+		}
+		factor := getFactorial(maxPriceTotal)
+		for _, count := range maxPriceCounts {
+			factor.Div(factor, getFactorial(count))
+		}
+		g.orderCount.Mul(g.orderCount, factor)
+		g.startList = append(g.startList, inPoolList)
+		g.subpoolList = append(g.subpoolList, subPool)
+		nextIn := make(map[common.Address]int)
+		for from := range subPool {
+			nextIn[from] = 0
+		}
+		g.nextInList = append(g.nextInList, nextIn)
+
+		inPoolList += subPool.size()
+	}
+}
+
+var getFactorial = func() func(n int64) *big.Int {
+	factorCache := map[int64]*big.Int{
+		0: new(big.Int).SetUint64(1),
+		1: new(big.Int).SetUint64(1),
+		2: new(big.Int).SetUint64(2),
+		3: new(big.Int).SetUint64(6),
+	}
+	return func(n int64) *big.Int {
+		if factor, ok := factorCache[n]; ok {
+			return new(big.Int).Set(factor)
+		}
+		var factor = new(big.Int).SetInt64(1)
+		for mul := n; mul >= 1; mul-- {
+			if cache, ok := factorCache[mul]; ok {
+				return factor.Mul(factor, cache)
+			}
+			factor.Mul(factor, new(big.Int).SetInt64(mul))
+		}
+		return factor
+	}
+}()
 
 type TaskQueue struct {
 	sync.RWMutex

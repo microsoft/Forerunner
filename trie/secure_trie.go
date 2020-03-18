@@ -172,15 +172,28 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 // Committing flushes nodes from memory. Subsequent Get calls will load nodes
 // from the database.
 func (t *SecureTrie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
-	// Write all the pre-images to the actual disk database
-	if len(t.getSecKeyCache()) > 0 {
-		t.trie.db.lock.Lock()
-		for hk, key := range t.secKeyCache {
-			t.trie.db.insertPreimage(common.BytesToHash([]byte(hk)), key)
-		}
-		t.trie.db.lock.Unlock()
+	doInsertPreimage := func() {
+		// Write all the pre-images to the actual disk database
+		if len(t.getSecKeyCache()) > 0 {
+			t.trie.db.lock.Lock()
+			for hk, key := range t.secKeyCache {
+				t.trie.db.insertPreimage(common.BytesToHash([]byte(hk)), key)
+			}
+			t.trie.db.lock.Unlock()
 
-		t.secKeyCache = make(map[string][]byte)
+			t.secKeyCache = make(map[string][]byte)
+		}
+	}
+	if t.trie.parallelHasherEnabled {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		defer wg.Wait()
+		go func() {
+			doInsertPreimage()
+			wg.Done()
+		}()
+	} else {
+		doInsertPreimage()
 	}
 	// Commit the trie to its intermediate node database
 	return t.trie.Commit(onleaf)

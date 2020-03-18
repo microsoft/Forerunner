@@ -146,6 +146,16 @@ type StateDB struct {
 	nextDeltaObjectIndex        int
 	preAllocatedBigInt          []*big.Int
 	nextBigIntIndex             int
+
+	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
+	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
+	FromWarmuper       bool
+	AddrWarmupMiss     int
+	AddrNoWarmup       int
+	AddrWarmupHelpless map[common.Address]struct{}
+	KeyWarmupMiss      int
+	KeyNoWarmup        int
+	KeyWarmupHelpless  int
 }
 
 func (self *StateDB) GetStateObject() map[common.Address]*stateObject {
@@ -780,12 +790,21 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	enc, err := s.trie.TryGet(addr[:])
 	if len(enc) == 0 {
 		s.setError(err)
+		if s.FromWarmuper {
+			s.AddrWarmupHelpless[addr] = struct{}{}
+		}
 		return nil
 	}
 	var data Account
 	if err := rlp.DecodeBytes(enc, &data); err != nil {
 		log.Error("Failed to decode state object", "addr", addr, "err", err)
 		return nil
+	}
+	if s.FromWarmuper {
+		s.AddrWarmupMiss++
+		if !s.IsAddrWarmup(addr) {
+			s.AddrNoWarmup++
+		}
 	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
@@ -1019,6 +1038,7 @@ func (s *StateDB) Update() {
 		s.clearJournalAndRefund()
 		s.pair.clearJournalAndRefund()
 		s.pair.nextRevisionId = s.nextRevisionId
+		s.updateMeasurements(s.pair)
 	}
 }
 
@@ -1104,6 +1124,17 @@ func (s *StateDB) updatePreimages(db *StateDB) {
 	if len(db.delta.preimages) > 0 {
 		db.delta.preimages = make(map[common.Hash][]byte)
 	}
+}
+
+func (s *StateDB) updateMeasurements(db *StateDB) {
+	db.AccountReads = s.AccountReads
+	db.AccountHashes = s.AccountHashes
+	db.AccountUpdates = s.AccountUpdates
+	db.AccountCommits = s.AccountCommits
+	db.StorageReads = s.StorageReads
+	db.StorageHashes = s.StorageHashes
+	db.StorageUpdates = s.StorageUpdates
+	db.StorageCommits = s.StorageCommits
 }
 
 func (s *StateDB) MergeDelta() {
@@ -1400,6 +1431,33 @@ func (s *StateDB) ApplyStateObject(object *stateObject) {
 	} else {
 		s.setStateObject(object)
 	}
+}
+
+func (s *StateDB) IsAddrWarmup(addr common.Address) bool {
+	_, ok1 := s.ProcessedForDb[addr]
+	_, ok2 := s.ProcessedForObj[addr]
+	return ok1 || ok2
+}
+
+func (s *StateDB) IsKeyWarmup(addr common.Address, key common.Hash) bool {
+	_, ok1 := s.ProcessedForDb[addr]
+	if ok1 {
+		_, ok1 = s.ProcessedForDb[addr][key]
+	}
+	_, ok2 := s.ProcessedForObj[addr]
+	if ok2 {
+		_, ok2 = s.ProcessedForObj[addr][key]
+	}
+	return ok1 || ok2
+}
+
+func (s *StateDB) HaveMiss() bool {
+	return s.AddrWarmupMiss+len(s.AddrWarmupHelpless)+s.KeyWarmupMiss+s.KeyWarmupHelpless > 0
+}
+
+func (s *StateDB) ClearMiss() {
+	s.AddrWarmupMiss, s.AddrWarmupHelpless, s.KeyWarmupMiss, s.KeyWarmupHelpless = 0, make(map[common.Address]struct{}), 0, 0
+	s.AddrNoWarmup, s.KeyNoWarmup = 0, 0
 }
 
 func IntermediateRootCalc(s *StateDB) common.Hash {

@@ -18,11 +18,13 @@ package types
 
 import (
 	"fmt"
-	"math/big"
-	"sync"
-
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
+	"math/big"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"unsafe"
 )
 
 type bytesBacked interface {
@@ -96,26 +98,79 @@ func (b *Bloom) UnmarshalText(input []byte) error {
 //var bloomPool = grpool.NewPool(1, 1000)
 //var bloomMutex sync.Mutex
 
+type SingleThreadSpinningAsyncProcessor struct {
+	theJob   unsafe.Pointer
+	stopFlag int64
+	wg       sync.WaitGroup
+	mutex    sync.Mutex
+}
+
+func NewSingleThreadAsyncProcessor() *SingleThreadSpinningAsyncProcessor {
+	sp := &SingleThreadSpinningAsyncProcessor{}
+	sp.Pause()
+	go sp.loop()
+	return sp
+}
+
+func (sp *SingleThreadSpinningAsyncProcessor) loop() {
+	for atomic.LoadInt64(&sp.stopFlag) == 0 {
+		sp.mutex.Lock() // use mutex to make sure that Pause will never be called within Wait
+		sp.wg.Wait()
+		sp.mutex.Unlock()
+		if jobPointer := atomic.LoadPointer(&sp.theJob); jobPointer != nil {
+			theJob := *((*func())(jobPointer))
+			theJob()
+			atomic.StorePointer(&sp.theJob, nil)
+		}
+	}
+}
+
+// this can only be called from a single thread
+func (sp *SingleThreadSpinningAsyncProcessor) RunJob(job func()) {
+	theJob := unsafe.Pointer(&job)
+	for atomic.CompareAndSwapPointer(&sp.theJob, nil, theJob) != true {
+		runtime.Gosched()
+	}
+}
+
+func (sp *SingleThreadSpinningAsyncProcessor) Stop() {
+	atomic.StoreInt64(&sp.stopFlag, 1)
+}
+
+func (sp *SingleThreadSpinningAsyncProcessor) Pause() {
+	sp.mutex.Lock()
+	sp.wg.Add(1)
+	sp.mutex.Unlock()
+}
+
+func (sp *SingleThreadSpinningAsyncProcessor) Start() {
+	sp.wg.Done()
+}
+
 type ParallelBloomProcessor struct {
 	bloomWg       sync.WaitGroup
 	blockBloomBin *big.Int
 	receiptChan   chan *Receipt
+	stopped       bool
 }
 
 func NewParallelBloomProcessor() *ParallelBloomProcessor {
 	bp := &ParallelBloomProcessor{
 		blockBloomBin: new(big.Int),
-		receiptChan: make(chan *Receipt, 1000),
+		receiptChan:   make(chan *Receipt, 1000),
 	}
 	go bp.bloomWorker()
 	return bp
 }
 
-func (bp *ParallelBloomProcessor) bloomWorker()  {
+func (bp *ParallelBloomProcessor) bloomWorker() {
 	for {
 		select {
-		case receipt := <- bp.receiptChan:
+		case receipt := <-bp.receiptChan:
 			{
+				if receipt == nil {
+					return
+				}
 				bin := LogsBloom(receipt.Logs)
 				receipt.Bloom = BytesToBloom(bin.Bytes())
 				bp.blockBloomBin.Or(bp.blockBloomBin, bin)
@@ -125,7 +180,14 @@ func (bp *ParallelBloomProcessor) bloomWorker()  {
 	}
 }
 
-func (bp *ParallelBloomProcessor) CreateBloomForTransaction(receipt *Receipt)  {
+func (bp *ParallelBloomProcessor) Stop() {
+	if !bp.stopped {
+		bp.stopped = true
+		close(bp.receiptChan)
+	}
+}
+
+func (bp *ParallelBloomProcessor) CreateBloomForTransaction(receipt *Receipt) {
 	if len(receipt.Logs) == 0 {
 		receipt.Bloom = CreateBloom(Receipts{receipt})
 		return

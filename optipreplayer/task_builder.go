@@ -113,10 +113,20 @@ func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Bac
 
 func (b *TaskBuilder) mainLoop() {
 	defer b.chainHeadSub.Unsubscribe()
+
+	waitNewTxCh := make(chan struct{})
+	go func() {
+		for {
+			b.listener.waitForNewTx()
+			b.startCh <- struct{}{}
+			<-waitNewTxCh
+		}
+	}()
+
 	for {
 		select {
 		case <-b.startCh:
-			b.listener.waitForNewTx()
+			//b.listener.waitForNewTx()
 			b.resetPackagePool()
 			b.preplayLog.reportNewPackage()
 			if b.removedTxn || len(b.addedTxn) > 0 {
@@ -124,7 +134,8 @@ func (b *TaskBuilder) mainLoop() {
 				b.updateTxnGroup()
 				b.preplayLog.reportNewBuild()
 			}
-			b.startCh <- struct{}{}
+			waitNewTxCh <- struct{}{}
+			//b.startCh <- struct{}{}
 		case chainHeadEvent := <-b.chainHeadCh:
 			currentBlock := chainHeadEvent.Block
 
@@ -311,20 +322,20 @@ func (b *TaskBuilder) updateTxnGroup() {
 		b.pastGroups[groupHash] = group
 		b.preplayLog.reportNewGroup(group)
 		group.setValid()
-		group.txnCount = group.txns.size()
 		group.parent = b.parent
 		group.header = b.nowHeader
-		group.inOrder = make(map[common.Address]int)
 		group.nextOrder = make(chan TxnOrder)
 
-		for from, txns := range group.txns {
+		for _, txns := range group.txns {
 			sort.Sort(types.TxByNonce(txns))
-			group.inOrder[from] = -1
 		}
+
+		group.divideTransactionPool()
 
 		// start walk for new group
 		go func(group *TxnGroup) {
-			walkTxnsPool(b.nowHeader, group, []common.Hash{})
+			lastIndex := len(group.subpoolList) - 1
+			walkTxnsPool(lastIndex, group.startList[lastIndex], group, make(TxnOrder, group.txnCount), b.minerList.top5Active)
 			close(group.nextOrder)
 			b.preplayLog.reportGroupEnd(group)
 		}(group)
@@ -348,7 +359,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 		delete(b.rwrecord, txn.Hash())
 	}
 	b.nowHeader = Header{
-		coinbase: b.minerList.getMostActive(),
+		coinbase: b.minerList.top5Active[0],
 		time:     uint64(b.globalCache.GetTimeStamp()),
 		gasLimit: b.gasLimit,
 	}
@@ -360,32 +371,55 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	b.parent = block
 }
 
-var timeShift = []int{0, -1, 1, -2, 2}
+var timeShift = []int{0, -1, 1}
 
-func walkTxnsPool(header Header, group *TxnGroup, txnOrder TxnOrder) {
+func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, activeMiner []common.Address) {
 	// boundaries of recursion
 	if !group.isValid() {
 		return
 	}
-	if group.isAllInOrder() {
-		if group.isTimestampDep() {
-			for _, shift := range timeShift {
-				if group.isValid() {
-					group.header.time = uint64(int(header.time) + shift)
-					group.nextOrder <- txnOrder
+	if group.isSubInOrder(subpoolLoc) {
+		if subpoolLoc == 0 {
+			var finalOrder = make(TxnOrder, len(order))
+			copy(finalOrder, order)
+			if group.isChainDep() {
+				var (
+					coinbaseTryCount  = 1
+					timestampTryCount = 1
+				)
+				if group.isCoinbaseDep() {
+					coinbaseTryCount = len(activeMiner)
 				}
+				if group.isTimestampDep() {
+					timestampTryCount = len(timeShift)
+				}
+				for i := 0; i < coinbaseTryCount; i++ {
+					for j := 0; j < timestampTryCount; j++ {
+						if group.isValid() {
+							group.header.coinbase = activeMiner[i]
+							group.header.time = uint64(int(group.header.time) + timeShift[j])
+							group.nextOrder <- finalOrder
+						}
+					}
+				}
+			} else {
+				group.nextOrder <- finalOrder
 			}
+			return
 		} else {
-			group.nextOrder <- txnOrder
+			subpoolLoc--
+			txnLoc = group.startList[subpoolLoc]
 		}
-		return
 	}
+
+	subpool := group.subpoolList[subpoolLoc]
+	nextIn := group.nextInList[subpoolLoc]
 	var (
 		maxPriceFrom = make([]common.Address, 0)
 		maxPrice     = new(big.Int)
 	)
-	for from, txns := range group.txns {
-		nextIndex := group.inOrder[from] + 1
+	for from, txns := range subpool {
+		nextIndex := nextIn[from]
 		if nextIndex >= len(txns) {
 			continue
 		}
@@ -400,11 +434,15 @@ func walkTxnsPool(header Header, group *TxnGroup, txnOrder TxnOrder) {
 			maxPriceFrom = append(maxPriceFrom, from)
 		}
 	}
+	sort.Slice(maxPriceFrom, func(i, j int) bool {
+		return bytes.Compare(maxPriceFrom[i].Bytes(), maxPriceFrom[j].Bytes()) < 0
+	})
 	for _, from := range maxPriceFrom {
-		group.inOrder[from]++
-		txn := group.txns[from][group.inOrder[from]]
-		walkTxnsPool(header, group, append(txnOrder, txn.Hash()))
-		group.inOrder[from]--
+		txn := subpool[from][nextIn[from]]
+		order[txnLoc] = txn.Hash()
+		nextIn[from]++
+		walkTxnsPool(subpoolLoc, txnLoc+1, group, order, activeMiner)
+		nextIn[from]--
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ivpusic/grpool"
 	"sync"
 	"time"
 
@@ -164,7 +163,7 @@ func (reuse *Cmpreuse) TryCreateReceipt(statedb *state.StateDB, header *types.He
 //		4: abort before hit or miss;
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg *vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *core.Controller, pMsg *types.Message, signer types.Signer) (*types.Receipt,
+	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller, pMsg *types.Message, signer types.Signer) (*types.Receipt,
 	error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
@@ -205,9 +204,9 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		}
 		realApply.Done()
 	}
-	if routinePool != nil { // artificially use routine pool
-		go doRealApply()
-	}
+
+	asyncPool.RunJob(doRealApply)
+	//go doRealApply()
 
 	reuseStart := time.Now()
 	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre, cfg); round != nil {

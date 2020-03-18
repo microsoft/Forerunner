@@ -114,8 +114,6 @@ type stateObject struct {
 
 	delta *deltaObject
 	pair  *stateObject
-
-	RoundId uint64
 }
 
 // empty returns whether the account is considered empty.
@@ -260,6 +258,18 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 			s.setError(err)
 		}
 		value.SetBytes(content)
+		if s.db.FromWarmuper {
+			s.db.KeyWarmupMiss++
+			if !s.db.IsKeyWarmup(s.address, key) {
+				s.db.KeyNoWarmup++
+			}
+		}
+	} else {
+		if s.db.FromWarmuper {
+			if _, ok := s.db.AddrWarmupHelpless[s.address]; ok {
+				s.db.KeyWarmupHelpless++
+			}
+		}
 	}
 	if s.isShared() {
 		s.delta.originStorage[key] = value

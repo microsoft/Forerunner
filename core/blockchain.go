@@ -187,6 +187,7 @@ type BlockChain struct {
 	MSRACache    *cache.GlobalCache
 	Warmuper     *Warmuper
 	execTimeList ExecTimeList
+	asyncWriteWg sync.WaitGroup
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -844,6 +845,7 @@ func (bc *BlockChain) Stop() {
 	atomic.StoreInt32(&bc.procInterrupt, 1)
 
 	bc.wg.Wait()
+	bc.asyncWriteWg.Wait()
 
 	// Ensure the state of a recent block is also stored to disk before exiting.
 	// We're writing three different states to catch different restart scenarios:
@@ -1306,6 +1308,24 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	bc.wg.Add(1)
 	defer bc.wg.Done()
 
+	var delayedWrites []func()
+	pipelinedWrite := state.BloomProcessor != nil && !bc.cacheConfig.TrieDirtyDisabled // Todo: use a dedicated control
+	if pipelinedWrite {
+		bc.asyncWriteWg.Wait()
+		defer func() {
+			if delayedWrites == nil || err != nil {
+				return
+			}
+			bc.asyncWriteWg.Add(1)
+			go func() {
+				for _, f := range delayedWrites {
+					f()
+				}
+				bc.asyncWriteWg.Done()
+			}()
+		}()
+	}
+
 	// Calculate the total difficulty of the block
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
@@ -1320,70 +1340,99 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err := bc.hc.WriteTd(block.Hash(), block.NumberU64(), externTd); err != nil {
 		return NonStatTy, err
 	}
-	rawdb.WriteBlock(bc.db, block)
+
+	if pipelinedWrite {
+		var writeBlockWg sync.WaitGroup
+		writeBlockWg.Add(1)
+		go func() {
+			rawdb.WriteBlock(bc.db, block)
+			writeBlockWg.Done()
+		}()
+		defer writeBlockWg.Wait()
+	} else {
+		rawdb.WriteBlock(bc.db, block)
+	}
 
 	root, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
 	if err != nil {
 		return NonStatTy, err
 	}
+
 	triedb := bc.stateCache.TrieDB()
 
 	// If we're running an archive node, always flush
 	if bc.cacheConfig.TrieDirtyDisabled {
+		if pipelinedWrite {
+			panic("Do not support pipelinedWrite in archive node")
+		}
 		if err := triedb.Commit(root, false); err != nil {
 			return NonStatTy, err
 		}
 	} else {
-		// Full but not archive node, do proper garbage collection
-		triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
-		bc.triegc.Push(root, -int64(block.NumberU64()))
+		doTrieGC := func() {
+			// Full but not archive node, do proper garbage collection
+			triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
+			bc.triegc.Push(root, -int64(block.NumberU64()))
 
-		if current := block.NumberU64(); current > TriesInMemory {
-			// If we exceeded our memory allowance, flush matured singleton nodes to disk
-			var (
-				nodes, imgs = triedb.Size()
-				limit       = common.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
-			)
-			if nodes > limit || imgs > 4*1024*1024 {
-				triedb.Cap(limit - ethdb.IdealBatchSize)
-			}
-			// Find the next state trie we need to commit
-			chosen := current - TriesInMemory
+			if current := block.NumberU64(); current > TriesInMemory {
+				// If we exceeded our memory allowance, flush matured singleton nodes to disk
+				var (
+					nodes, imgs = triedb.Size()
+					limit       = common.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
+				)
+				if nodes > limit || imgs > 4*1024*1024 {
+					triedb.Cap(limit - ethdb.IdealBatchSize)
+				}
+				// Find the next state trie we need to commit
+				chosen := current - TriesInMemory
 
-			// If we exceeded out time allowance, flush an entire trie to disk
-			if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
-				// If the header is missing (canonical chain behind), we're reorging a low
-				// diff sidechain. Suspend committing until this operation is completed.
-				header := bc.GetHeaderByNumber(chosen)
-				if header == nil {
-					log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
-				} else {
-					// If we're exceeding limits but haven't reached a large enough memory gap,
-					// warn the user that the system is becoming unstable.
-					if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
-						log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
+				// If we exceeded out time allowance, flush an entire trie to disk
+				if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
+					// If the header is missing (canonical chain behind), we're reorging a low
+					// diff sidechain. Suspend committing until this operation is completed.
+					header := bc.GetHeaderByNumber(chosen)
+					if header == nil {
+						log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
+					} else {
+						// If we're exceeding limits but haven't reached a large enough memory gap,
+						// warn the user that the system is becoming unstable.
+						if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
+							log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
+						}
+						// Flush an entire trie and restart the counters
+						triedb.Commit(header.Root, true)
+						lastWrite = chosen
+						bc.gcproc = 0
 					}
-					// Flush an entire trie and restart the counters
-					triedb.Commit(header.Root, true)
-					lastWrite = chosen
-					bc.gcproc = 0
+				}
+				// Garbage collect anything below our required write retention
+				for !bc.triegc.Empty() {
+					root, number := bc.triegc.Pop()
+					if uint64(-number) > chosen {
+						bc.triegc.Push(root, number)
+						break
+					}
+					triedb.Dereference(root.(common.Hash))
 				}
 			}
-			// Garbage collect anything below our required write retention
-			for !bc.triegc.Empty() {
-				root, number := bc.triegc.Pop()
-				if uint64(-number) > chosen {
-					bc.triegc.Push(root, number)
-					break
-				}
-				triedb.Dereference(root.(common.Hash))
-			}
+		}
+		if pipelinedWrite {
+			delayedWrites = append(delayedWrites, doTrieGC)
+		} else {
+			doTrieGC()
 		}
 	}
 
 	// Write other block data using a batch.
 	batch := bc.db.NewBatch()
-	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
+	doWriteReceipts := func() {
+		rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
+	}
+	if pipelinedWrite {
+		delayedWrites = append(delayedWrites, doWriteReceipts)
+	} else {
+		doWriteReceipts()
+	}
 
 	// If the total difficulty is higher than our known, add it to the canonical chain
 	// Second clause in the if statement reduces the vulnerability to selfish mining.
@@ -1411,15 +1460,33 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			}
 		}
 		// Write the positional metadata for transaction/receipt lookups and preimages
-		rawdb.WriteTxLookupEntries(batch, block)
-		rawdb.WritePreimages(batch, state.Preimages())
+		doWriteLookupAndPreimage := func() {
+			rawdb.WriteTxLookupEntries(batch, block)
+			rawdb.WritePreimages(batch, state.Preimages())
+		}
+		if pipelinedWrite {
+			delayedWrites = append(delayedWrites, doWriteLookupAndPreimage)
+		} else {
+			doWriteLookupAndPreimage()
+		}
 
 		status = CanonStatTy
 	} else {
 		status = SideStatTy
 	}
-	if err := batch.Write(); err != nil {
-		return NonStatTy, err
+
+	if pipelinedWrite {
+		doBatchWrite := func() {
+			err := batch.Write()
+			if err != nil {
+				log.Warn("Batched write fail with error ", err)
+			}
+		}
+		delayedWrites = append(delayedWrites, doBatchWrite)
+	} else {
+		if err := batch.Write(); err != nil {
+			return NonStatTy, err
+		}
 	}
 
 	// Set new head.
@@ -1704,6 +1771,15 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		statedb := bc.Warmuper.GetStateDB(parent.Root)
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
+		} else {
+			statedb.ProcessedForDb, statedb.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
+			statedb.FromWarmuper = true
+			statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
+			if pair := statedb.GetPair(); pair != nil {
+				pair.ProcessedForDb, pair.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
+				pair.FromWarmuper = true
+				pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+			}
 		}
 		if err != nil {
 			return it.index, err
@@ -1730,13 +1806,15 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		bc.MSRACache.Pause()
 		substart := time.Now()
 		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
-			statedb.SetBloomProcessor(types.NewParallelBloomProcessor())
+			bp := types.NewParallelBloomProcessor()
+			defer bp.Stop()
+			statedb.SetBloomProcessor(bp)
 		}
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
-		execTime := time.Since(substart)
+		cache.Process = time.Since(substart)
 		bc.MSRACache.Continue()
 		if !bc.vmConfig.MSRAVMSettings.Silent {
-			bc.MSRACache.InfoPrint(block, execTime, bc.vmConfig)
+			bc.MSRACache.InfoPrint(block, bc.vmConfig, bc.MSRACache.Synced())
 		}
 
 		if err != nil {
@@ -1819,8 +1897,18 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)
 
-		bc.execTimeList.addExecTime(execTime)
+		bc.execTimeList.addExecTime(cache.Process)
 		bc.execTimeList.print(block.NumberU64())
+		if metrics.Enabled {
+			log.Info("Read from trie cost",
+				"accountRead", common.PrettyDuration(statedb.AccountReads),
+				"storageRead", common.PrettyDuration(statedb.StorageReads),
+				"count", storageReadTimer.Count(),
+				"accountRead average", common.PrettyDuration(time.Duration(accountReadTimer.Mean())),
+				"storageRead average", common.PrettyDuration(time.Duration(storageReadTimer.Mean())),
+				"accountRead median", common.PrettyDuration(time.Duration(accountReadTimer.Percentile(0.5))),
+				"storageRead median", common.PrettyDuration(time.Duration(storageReadTimer.Percentile(0.5))))
+		}
 		if block.NumberU64()%5 == 0 {
 			m := new(runtime.MemStats)
 			runtime.ReadMemStats(m)

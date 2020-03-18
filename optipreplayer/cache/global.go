@@ -18,7 +18,6 @@ package cache
 
 import (
 	"encoding/json"
-	"github.com/ivpusic/grpool"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -83,7 +82,7 @@ type GlobalCache struct {
 	// BucketCache *lru.Cache // Feature Cache
 	pause int32
 
-	RoutinePool *grpool.Pool
+	Synced func() bool
 }
 
 // NewGlobalCache create new global cache structure
@@ -111,8 +110,6 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 
 	g.CreateTimeStamp = time.Now()
 	// g.BucketCache, _ = lru.New(bSize)
-
-	g.RoutinePool = grpool.NewPool(1, 10)
 
 	logDir = filepath.Join(logRoot, g.CreateTimeStamp.Format("2006_01_02_15_04_05")+"_"+strconv.FormatInt(g.CreateTimeStamp.Unix(), 10))
 	_, err := os.Stat(logDir)
@@ -159,9 +156,6 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	}
 
 	r.CreateTimeStamp = time.Now()
-
-	r.RoutinePool.Release()
-	r.RoutinePool = grpool.NewPool(100, 100)
 
 	return true
 }

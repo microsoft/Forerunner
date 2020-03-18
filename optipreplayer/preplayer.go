@@ -77,7 +77,7 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 	}
 
 	go taskBuilder.mainLoop()
-	taskBuilder.startCh <- struct{}{}
+	//taskBuilder.startCh <- struct{}{}
 
 	for i := 0; i < trigger.ExecutorNum; i++ {
 		preplayer.routinePool.JobQueue <- func() {
@@ -101,7 +101,7 @@ func (p *Preplayer) mainLoop() {
 					task.preplayCount++
 					task.priority = task.preplayCount * task.txnCount
 					if task.preplayCount < 1 {
-						//if task.txnCount > 1 || task.isDep() {
+						//if task.txnCount > 1 || task.isChainDep() {
 						taskQueue.pushTask(task)
 					} else {
 						task.setInvalid()

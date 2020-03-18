@@ -213,7 +213,6 @@ func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transac
 			if object == nil {
 				continue
 			}
-			object.RoundId = round.RoundID
 			objectListMap[address] = append(objectListMap[address], object)
 		}
 	}
@@ -237,8 +236,23 @@ func (w *Warmuper) GetStateDB(root common.Hash) (retDb *state.StateDB) {
 
 		retDb = box.statedbList[box.usableDb]
 		box.usableDb++
+
+		retDb.AccountReads = 0
+		retDb.StorageReads = 0
+
+		if pair := retDb.GetPair(); pair != nil {
+			pair.AccountReads = 0
+			pair.StorageReads = 0
+		}
 	}
 	return
+}
+
+func (w *Warmuper) GetProcessed(root common.Hash) (map[common.Address]map[common.Hash]struct{}, map[common.Address]map[common.Hash]struct{}) {
+	if box := w.getStatedbBox(root); box != nil {
+		return box.processedForDb, box.processedForObj
+	}
+	return nil, nil
 }
 
 func (w *Warmuper) warmupMiner(root common.Hash) {
@@ -248,11 +262,13 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 		miner := rawMiner.(common.Address)
 		addrMap[miner] = make(map[common.Hash]struct{})
 	}
-	task := &ColdTask{
-		root:         root,
-		contentForDb: addrMap,
-	}
-	w.coldQueue <- task
+	go func() {
+		task := &ColdTask{
+			root:         root,
+			contentForDb: addrMap,
+		}
+		w.coldQueue <- task
+	}()
 }
 
 func (w *Warmuper) commitNewWork(task *ColdTask) {

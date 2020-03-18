@@ -65,37 +65,45 @@ type MixHitStatus struct {
 }
 
 func (s ReuseStatus) String() string {
-	var statusStr string
+	var statusStr = s.BaseStatus.String()
 	switch s.BaseStatus {
-	case Fail:
-		statusStr = "Fail"
-	case NoPreplay:
-		statusStr = "NoPreplay"
 	case Hit:
-		statusStr = "Hit:"
 		switch s.HitType {
 		case IteraHit:
-			statusStr += "IteraHit"
+			statusStr += ":IteraHit"
 		case TrieHit:
-			statusStr += "TrieHit"
+			statusStr += ":TrieHit"
 		case DepHit:
-			statusStr += "DepHit"
+			statusStr += ":DepHit"
 		}
 	case Miss:
-		statusStr = "Miss:"
 		switch s.MissType {
 		case NoInMiss:
-			statusStr += "NoInMiss"
+			statusStr += ":NoInMiss"
 		case NoMatchMiss:
-			statusStr += "NoMatchMiss"
+			statusStr += ":NoMatchMiss"
 		}
-	case Unknown:
-		statusStr = "Unknown"
 	}
 	return statusStr
 }
 
 type ReuseBaseStatus int
+
+func (s ReuseBaseStatus) String() string {
+	switch s {
+	case Fail:
+		return "Fail"
+	case NoPreplay:
+		return "NoPreplay"
+	case Hit:
+		return "Hit"
+	case Miss:
+		return "Miss"
+	case Unknown:
+		return "Unknown"
+	}
+	return ""
+}
 
 const (
 	Fail ReuseBaseStatus = iota

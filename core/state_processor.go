@@ -29,7 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ivpusic/grpool"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -43,7 +42,7 @@ type TransactionApplier interface {
 
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg *vm.Config, blockPre *cache.BlockPre, routinePool *grpool.Pool, controller *Controller, tmsg *types.Message, signer types.Signer) (*types.Receipt,
+		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller, tmsg *types.Message, signer types.Signer) (*types.Receipt,
 		error, *cmptypes.ReuseStatus)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
@@ -66,17 +65,19 @@ type TransactionApplier interface {
 //
 // StateProcessor implements Processor.
 type StateProcessor struct {
-	config *params.ChainConfig // Chain configuration options
-	bc     *BlockChain         // Canonical block chain
-	engine consensus.Engine    // Consensus engine used for block rewards
+	config         *params.ChainConfig                       // Chain configuration options
+	bc             *BlockChain                               // Canonical block chain
+	engine         consensus.Engine                          // Consensus engine used for block rewards
+	asyncProcessor *types.SingleThreadSpinningAsyncProcessor // global processor
 }
 
 // NewStateProcessor initialises a new StateProcessor.
 func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consensus.Engine) *StateProcessor {
 	return &StateProcessor{
-		config: config,
-		bc:     bc,
-		engine: engine,
+		config:         config,
+		bc:             bc,
+		engine:         engine,
+		asyncProcessor: types.NewSingleThreadAsyncProcessor(),
 	}
 }
 
@@ -159,6 +160,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		groundGP      = new(GasPool).AddGas(block.GasLimit())
 		groundUsedGas = new(uint64)
 	)
+
+	p.asyncProcessor.Start()
+	defer p.asyncProcessor.Pause()
+
 	// Mutate the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
@@ -207,6 +212,9 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}()
 	}
 
+	//asyncPool := types.NewSingleThreadAsyncProcessor()
+	//defer asyncPool.Stop()
+
 	blockHash := block.Hash()
 	printCmp := true
 
@@ -236,7 +244,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			}
 
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
-				tx, usedGas, &cfg, blockPre, p.bc.MSRACache.RoutinePool, controller, pMsg, signer)
+				tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, pMsg, signer)
 			reuseResult = append(reuseResult, reuseStatus)
 
 			if cfg.MSRAVMSettings.CmpReuseChecking {
@@ -245,6 +253,35 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 					diff := CmpStateDB(groundStatedb, statedb, tx, i, reuseStatus)
 					printCmp = !diff
 				}
+			}
+
+			var checkDb = statedb
+			if pair := statedb.GetPair(); pair != nil && reuseStatus.BaseStatus != cmptypes.Hit {
+				checkDb = pair
+			}
+			if checkDb.HaveMiss() {
+				word := "Should(Hit)"
+				if reuseStatus.BaseStatus != cmptypes.Hit {
+					word = fmt.Sprintf("May(%s)", reuseStatus.BaseStatus)
+					if reuseStatus.BaseStatus == cmptypes.NoPreplay {
+						txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+						if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
+							word = "Cannot(NoPreplay)"
+						}
+					}
+				}
+				cache.WarmupMissTxnCount[word]++
+				cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
+				cache.AddrNoWarmup[word] += statedb.AddrNoWarmup
+				cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
+				cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
+				cache.KeyNoWarmup[word] += statedb.KeyNoWarmup
+				cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
+			}
+
+			statedb.ClearMiss()
+			if pair := statedb.GetPair(); pair != nil {
+				pair.ClearMiss()
 			}
 		} else {
 			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)

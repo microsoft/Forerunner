@@ -8,10 +8,14 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"math/big"
 	"os"
+	"sort"
 	"time"
 )
+
+const k = 10
 
 // LogBlockInfo define blockInfo log format
 type LogBlockInfo struct {
@@ -109,6 +113,10 @@ type LogPreplayItem struct {
 type LogBlockGround []*LogRWrecord
 
 var (
+	syncStart uint64
+	toScreen  bool
+
+	Process       time.Duration
 	Apply         []time.Duration
 	Finalize      time.Duration
 	WaitReuse     []time.Duration
@@ -116,13 +124,47 @@ var (
 	TxFinalize    []time.Duration
 	Update        []time.Duration
 	GetRW         []time.Duration
-	FastGetRW     []time.Duration
 	SetDB         []time.Duration
 	RunTx         []time.Duration
 
-	ReuseResult   []*cmptypes.ReuseStatus
-	ReuseGasCount uint64
 	RWCmpCnt      []int64
+	ReuseGasCount uint64
+
+	ReuseResult []*cmptypes.ReuseStatus
+
+	WarmupMissTxnCount = make(map[string]int)
+	AddrWarmupMiss     = make(map[string]int)
+	AddrNoWarmup       = make(map[string]int)
+	AddrWarmupHelpless = make(map[string]int)
+	KeyWarmupMiss      = make(map[string]int)
+	KeyNoWarmup        = make(map[string]int)
+	KeyWarmupHelpless  = make(map[string]int)
+
+	CumWarmupMissTxnCount = make(map[string]int)
+	CumAddrWarmupMiss     = make(map[string]int)
+	CumAddrNoWarmup       = make(map[string]int)
+	CumAddrWarmupHelpless = make(map[string]int)
+	CumKeyWarmupMiss      = make(map[string]int)
+	CumKeyNoWarmup        = make(map[string]int)
+	CumKeyWarmupHelpless  = make(map[string]int)
+
+	cumApply         = metrics.NewRegisteredTimer("apply", nil)
+	cumFinalize      = metrics.NewRegisteredTimer("finalize", nil)
+	cumWaitReuse     = metrics.NewRegisteredTimer("apply.waitReuse", nil)
+	cumWaitRealApply = metrics.NewRegisteredTimer("apply.waitRealApply", nil)
+	cumTxFinalize    = metrics.NewRegisteredTimer("apply.txFinalize", nil)
+	cumUpdate        = metrics.NewRegisteredTimer("apply.update", nil)
+	cumGetRW         = metrics.NewRegisteredTimer("apply.waitReuse.getRW", nil)
+	cumSetDB         = metrics.NewRegisteredTimer("apply.waitReuse.setDB", nil)
+	cumRunTx         = metrics.NewRegisteredTimer("apply.waitRealApply.runTx", nil)
+
+	blkCount uint64
+	txnCount uint64
+	listen   uint64
+	Package  uint64
+	preplay  uint64
+	hit      uint64
+	unknown  uint64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -140,6 +182,14 @@ func SumCount(counts []int64) (sum int64) {
 }
 
 func ResetLogVar(size int) {
+	WarmupMissTxnCount = make(map[string]int)
+	AddrWarmupMiss = make(map[string]int)
+	AddrNoWarmup = make(map[string]int)
+	AddrWarmupHelpless = make(map[string]int)
+	KeyWarmupMiss = make(map[string]int)
+	KeyNoWarmup = make(map[string]int)
+	KeyWarmupHelpless = make(map[string]int)
+
 	Apply = make([]time.Duration, 0, size)
 	Finalize = 0
 	WaitReuse = make([]time.Duration, 0, size)
@@ -147,12 +197,11 @@ func ResetLogVar(size int) {
 	TxFinalize = make([]time.Duration, 0, size)
 	Update = make([]time.Duration, 0, size)
 	GetRW = make([]time.Duration, 0, size)
-	FastGetRW = make([]time.Duration, 0, size)
 	SetDB = make([]time.Duration, 0, size)
 	RunTx = make([]time.Duration, 0, size)
 
+	RWCmpCnt = make([]int64, 0, size)
 	ReuseGasCount = 0
-	RWCmpCnt = make([]int64, 0, 50)
 }
 
 // LogPrint print v to filePath file
@@ -186,17 +235,8 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 	}
 }
 
-var isLog = false
-var blkCount uint64
-var txnCount uint64
-var listen uint64
-var Package uint64
-var preplay uint64
-var hit uint64
-var unknown uint64
-
 // InfoPrint block info to block folder
-func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg vm.Config) {
+func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) {
 
 	var (
 		sumApply         = SumDuration(Apply)
@@ -205,9 +245,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		sumTxFinalize    = SumDuration(TxFinalize)
 		sumUpdate        = SumDuration(Update)
 		sumGetRW         = SumDuration(GetRW)
-		//sumFastGetRW     = SumDuration(FastGetRW)
-		sumSetDB = SumDuration(SetDB)
-		sumRunTx = SumDuration(RunTx)
+		sumSetDB         = SumDuration(SetDB)
+		sumRunTx         = SumDuration(RunTx)
 
 		sumCmpCount = SumCount(RWCmpCnt)
 	)
@@ -223,7 +262,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		SetDB:         sumSetDB.Microseconds(),
 		RunTx:         sumRunTx.Microseconds(),
 		ReuseGas:      int(ReuseGasCount),
-		ProcTime:      procTime.Nanoseconds(),
+		ProcTime:      Process.Nanoseconds(),
 		TxnCount:      len(block.Transactions()),
 		Header:        block.Header(),
 	}
@@ -289,6 +328,113 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		infoResult.RunMode = "only_preplay"
 	default:
 		infoResult.RunMode = "reuse"
+	}
+
+	filePath := fmt.Sprintf("%s/block/%s",
+		logDir,
+		block.Number().String())
+
+	infoFileName := fmt.Sprintf("%s_%s_info_%d.json",
+		block.Number().String(), block.Hash().String(), block.Header().Time)
+
+	r.LogPrint(filePath, infoFileName, infoResult)
+
+	if syncStart == 0 && synced {
+		syncStart = block.NumberU64()
+	}
+	if syncStart != 0 && block.NumberU64() >= syncStart+k {
+		toScreen = true
+	}
+
+	if !toScreen {
+		return
+	}
+
+	for word := range WarmupMissTxnCount {
+		CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
+		CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
+		CumAddrNoWarmup[word] += AddrNoWarmup[word]
+		CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
+		CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
+		CumKeyNoWarmup[word] += KeyNoWarmup[word]
+		CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
+	}
+
+	var keySort []string
+	for word := range CumWarmupMissTxnCount {
+		keySort = append(keySort, word)
+	}
+	sort.Strings(keySort)
+
+	for _, word := range keySort {
+		if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
+			context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word]}
+			if CumAddrWarmupMiss[word] > 0 {
+				context = append(context, "cum addr miss-helpless",
+					fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrWarmupHelpless[word]))
+				if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
+					context = append(context, "addr miss-helpless",
+						fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrWarmupHelpless[word]))
+				}
+			}
+			if CumKeyWarmupMiss[word] > 0 {
+				context = append(context, "cum key miss",
+					fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
+				if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
+					context = append(context, "key miss",
+						fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
+				}
+			}
+			log.Info("Warmup miss statistics", context...)
+		}
+	}
+
+	cumApply.Update(sumApply)
+	cumFinalize.Update(Finalize)
+	cumWaitReuse.Update(sumWaitReuse)
+	cumWaitRealApply.Update(sumWaitRealApply)
+	cumTxFinalize.Update(sumTxFinalize)
+	cumUpdate.Update(sumUpdate)
+	cumGetRW.Update(sumGetRW)
+	cumSetDB.Update(sumSetDB)
+	cumRunTx.Update(sumRunTx)
+
+	context := []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
+	if len(block.Transactions()) != 0 {
+		context = append(context,
+			"reuse/realApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
+			"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
+		if sumWaitReuse != 0 {
+			context = append(context,
+				"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),
+				"setDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
+		}
+		if sumWaitRealApply != 0 {
+			context = append(context,
+				"runTx", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
+		}
+	}
+	log.Info("Time consumption detail", context...)
+
+	context = []interface{}{"apply", common.PrettyDuration(cumApply.Sum()), "finalize", common.PrettyDuration(cumFinalize.Sum())}
+	if len(block.Transactions()) != 0 {
+		context = append(context,
+			"reuse/realApply",
+			fmt.Sprintf("%.2f/%.2f", float64(cumWaitReuse.Sum())/float64(cumApply.Sum()), float64(cumWaitRealApply.Sum())/float64(cumApply.Sum())),
+			"finalize+update", fmt.Sprintf("%.2f", float64(cumTxFinalize.Sum()+cumUpdate.Sum())/float64(cumApply.Sum())))
+		if sumWaitReuse != 0 {
+			context = append(context,
+				"getRW", fmt.Sprintf("%.2f", float64(cumGetRW.Sum())/float64(cumWaitReuse.Sum())),
+				"setDB", fmt.Sprintf("%.2f", float64(cumSetDB.Sum())/float64(cumWaitReuse.Sum())))
+		}
+		if sumWaitRealApply != 0 {
+			context = append(context,
+				"runTx", fmt.Sprintf("%.2f", float64(cumRunTx.Sum())/float64(cumWaitRealApply.Sum())))
+		}
+	}
+	log.Info("Cumulative time consumption detail", context...)
+
+	if cfg.MSRAVMSettings.EnablePreplay && cfg.MSRAVMSettings.CmpReuse {
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
@@ -328,54 +474,23 @@ func (r *GlobalCache) InfoPrint(block *types.Block, procTime time.Duration, cfg 
 		}
 		context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
 
-		if listenCnt == infoResult.TxnCount && infoResult.TxnCount != 0 {
-			isLog = true
-		}
-		if isLog {
-			blkCount++
-			txnCount += uint64(infoResult.TxnCount)
-			listen += uint64(listenCnt)
-			Package += uint64(packageCnt)
-			preplay += uint64(preplayCnt)
-			hit += uint64(infoResult.Hit)
-			unknown += uint64(infoResult.Unknown)
-			log.Info("Cumulative log", "block", blkCount, "txn", txnCount,
-				"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
-				"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
-				"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
-				"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
-				"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
-			)
-		}
+		log.Info("Block reuse", context...)
 
-		log.Info("BlockReuse", context...)
-
-		context = []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
-		if infoResult.TxnCount != 0 {
-			context = append(context,
-				"reuse/realApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
-				"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
-			if sumWaitReuse != 0 {
-				context = append(context,
-					"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),
-					"setDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
-			}
-			if sumWaitRealApply != 0 {
-				context = append(context,
-					"runTx", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
-			}
-		}
-		log.Info("Time consuming for each section", context...)
+		blkCount++
+		txnCount += uint64(infoResult.TxnCount)
+		listen += uint64(listenCnt)
+		Package += uint64(packageCnt)
+		preplay += uint64(preplayCnt)
+		hit += uint64(infoResult.Hit)
+		unknown += uint64(infoResult.Unknown)
+		log.Info("Cumulative block reuse", "block", blkCount, "txn", txnCount,
+			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
+			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
+			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
+			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
+			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
+		)
 	}
-
-	filePath := fmt.Sprintf("%s/block/%s",
-		logDir,
-		block.Number().String())
-
-	infoFileName := fmt.Sprintf("%s_%s_info_%d.json",
-		block.Number().String(), block.Hash().String(), block.Header().Time)
-
-	r.LogPrint(filePath, infoFileName, infoResult)
 }
 
 // CachePrint print reuse result of all txns in a block to block folder
