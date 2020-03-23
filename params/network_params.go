@@ -58,4 +58,6 @@ const (
 	// hard limit against deep ancestors, by the blockchain against deep reorgs, by
 	// the freezer as the cutoff treshold and by clique as the snapshot trust limit.
 	ImmutabilityThreshold = 90000
+
+	MSRAFreezerCutoff = 90000 * 24 // around a year
 )

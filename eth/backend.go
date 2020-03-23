@@ -21,9 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -38,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/emulator"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/filters"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
@@ -103,6 +106,9 @@ type Ethereum struct {
 
 	lock          sync.RWMutex // Protects the variadic fields (e.g. gas price and etherbase)
 	reuseVerifier *reuseverify.ReuseVerifier
+
+	emulatorWriter emulator.Stoppable
+	recorder       emulator.Stoppable
 }
 
 func (s *Ethereum) AddLesServer(ls LesServer) {
@@ -138,11 +144,16 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	}
 	log.Info("Allocated trie memory caches", "clean", common.StorageSize(config.TrieCleanCache)*1024*1024, "dirty", common.StorageSize(config.TrieDirtyCache)*1024*1024)
 
+	config.MSRAVMSettings.InitEmulateHook() // must be called before setup freezer
+
 	// Assemble the Ethereum object
 	chainDb, err := ctx.OpenDatabaseWithFreezer("chaindata", config.DatabaseCache, config.DatabaseHandles, config.DatabaseFreezer, "eth/db/chaindata/")
 	if err != nil {
 		return nil, err
 	}
+
+	rawdb.GlobalEmulateHook.SetChainDB(chainDb)
+
 	chainConfig, genesisHash, genesisErr := core.SetupGenesisBlockWithOverride(chainDb, config.Genesis, config.OverrideIstanbul, config.OverrideMuirGlacier)
 	if _, ok := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !ok {
 		return nil, genesisErr
@@ -270,6 +281,30 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 
 	if config.MSRAVMSettings.HasherParallelism > 0 {
 		trie.InitParallelHasher(config.MSRAVMSettings.HasherParallelism)
+	}
+
+	if config.MSRAVMSettings.EnableEmulatorLogger {
+		logDir := fmt.Sprintf("%s/%s",
+			config.MSRAVMSettings.EmulatorDir, time.Now().Format("20060102T150405.999999"))
+
+		_, err = os.Stat(logDir)
+		if err != nil {
+			err = os.MkdirAll(logDir, os.ModePerm)
+			if err != nil {
+				panic("Cannot make " + logDir)
+			}
+		}
+
+		writer := emulator.NewFileLogWriter(logDir)
+		recorder := emulator.NewGethRecorder(writer, true, false)
+
+		emulator.GlobalGethRecorder = recorder
+
+		eth.emulatorWriter = writer
+		eth.recorder = recorder
+
+		eth.blockchain.InsertChainRecorder = recorder
+		eth.txPool.TxPoolRecorder = recorder
 	}
 
 	return eth, nil
@@ -522,6 +557,7 @@ func (s *Ethereum) StartMining(threads int) error {
 		// If mining is started, we can disable the transaction rejection mechanism
 		// introduced to speed sync times.
 		atomic.StoreUint32(&s.protocolManager.acceptTxs, 1)
+		startRecorder()
 
 		go s.miner.Start(eb)
 		if s.config.MSRAVMSettings.EnablePreplay {
@@ -581,7 +617,9 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 // Start implements node.Service, starting all internal goroutines needed by the
 // Ethereum protocol implementation.
 func (s *Ethereum) Start(srvr *p2p.Server) error {
-	s.startEthEntryUpdate(srvr.LocalNode())
+	if !s.config.MSRAVMSettings.IsEmulateMode {
+		s.startEthEntryUpdate(srvr.LocalNode())
+	}
 
 	// Start the bloom bits servicing goroutines
 	s.startBloomHandlers(params.BloomBitsBlocks)
@@ -617,6 +655,10 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 // Stop implements node.Service, terminating all internal goroutines used by the
 // Ethereum protocol.
 func (s *Ethereum) Stop() error {
+	if s.config.MSRAVMSettings.EnableEmulatorLogger {
+		s.recorder.Stop() // Must stop recorder first
+		s.emulatorWriter.Stop()
+	}
 	if s.config.MSRAVMSettings.EnableReuseVerifier {
 		s.reuseVerifier.Close()
 	}
@@ -633,6 +675,16 @@ func (s *Ethereum) Stop() error {
 	if s.config.MSRAVMSettings.EnablePreplay {
 		s.frame.Stop()
 	}
+	s.eventMux.Stop()
+
+	s.chainDb.Close()
+	close(s.shutdownChan)
+	return nil
+}
+
+func (s *Ethereum) MsraCloseCalledFromGethEmulatorGenerator() error {
+	s.blockchain.Stop()
+	s.engine.Close()
 	s.eventMux.Stop()
 
 	s.chainDb.Close()

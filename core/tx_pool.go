@@ -32,6 +32,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/prque"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
@@ -330,6 +331,9 @@ type TxPool struct {
 	reorgDoneCh     chan chan struct{}
 	reorgShutdownCh chan struct{}  // requests shutdown of scheduleReorgLoop
 	wg              sync.WaitGroup // tracks loop, scheduleReorgLoop
+
+	// !!! MSRA Fields
+	TxPoolRecorder TxPoolRecorder
 }
 
 type txpoolResetRequest struct {
@@ -399,6 +403,55 @@ func (pool *TxPool) checkTxConfirmed(hash common.Hash) string {
 		return "confirmed:" + fmt.Sprintf("%d", blockNumber) + ":" + blockHash.String()
 	}
 	return "outdated"
+}
+
+//MSRA
+func (pool *TxPool) RecordTxPoolSnapshot() {
+	if pool.TxPoolRecorder != nil {
+		pool.mu.Lock()
+		defer pool.mu.Unlock() // lock continues until written to writer
+
+		timestamp, pending, queue := pool.takeTxPoolSnapshot()
+
+		pool.TxPoolRecorder.RecordTxPoolSnapshot(timestamp, pending, queue)
+	}
+}
+
+//MSRA
+func (pool *TxPool) takeTxPoolSnapshot() (time.Time, []*types.Transaction, []*types.Transaction) {
+	timestamp := time.Now()
+
+	var pending []*types.Transaction
+	var queue []*types.Transaction
+
+	for _, list := range pool.pending {
+		pending = append(pending, list.Flatten()...)
+	}
+	for _, list := range pool.queue {
+		queue = append(queue, list.Flatten()...)
+	}
+	return timestamp, pending, queue
+}
+
+func (pool *TxPool) LoadTxPoolSnapshot(pending, queue []*types.Transaction) []error {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	var txs []*types.Transaction
+	txs = append(txs, pending...)
+	txs = append(txs, queue...)
+
+	now := time.Now()
+	for i := range txs {
+		tx := txs[i]
+		if addr, err := types.Sender(pool.signer, tx); err == nil {
+			pool.beats[addr] = now
+		}
+	}
+
+	errs, _ := pool.addTxsLocked(txs, false)
+
+	return errs
 }
 
 //MSRA
@@ -538,7 +591,7 @@ func (pool *TxPool) loop() {
 			if ev.Block != nil {
 				pool.config.MSRATxPoolSettings.PoolState = "NewChainHead"
 
-				pool.requestReset(head.Header(), ev.Block.Header())
+				resetDone := pool.requestReset(head.Header(), ev.Block.Header())
 				head = ev.Block
 
 				if pool.config.MSRATxPoolSettings.DataLoggerTxPoolSnap && ev.Block.NumberU64()%20 == 0 {
@@ -547,6 +600,13 @@ func (pool *TxPool) loop() {
 				}
 				pool.config.MSRATxPoolSettings.PoolStateStage = ""
 				pool.config.MSRATxPoolSettings.PoolState = ""
+
+				if ev.Block.NumberU64()%1000 == 0 {
+					select {
+					case <-resetDone:
+						pool.RecordTxPoolSnapshot()
+					}
+				}
 			}
 
 		// System shutdown.
@@ -562,7 +622,11 @@ func (pool *TxPool) loop() {
 			pool.mu.RUnlock()
 
 			if pending != prevPending || queued != prevQueued || stales != prevStales {
-				log.Debug("Transaction pool status report", "executable", pending, "queued", queued, "stales", stales)
+				logger := log.Debug
+				if rawdb.GlobalEmulateHook.IsEmulateMode() {
+					logger = log.Info
+				}
+				logger("Transaction pool status report", "executable", pending, "queued", queued, "stales", stales)
 				prevPending, prevQueued, prevStales = pending, queued, stales
 			}
 
@@ -570,6 +634,9 @@ func (pool *TxPool) loop() {
 		case <-evict.C:
 			pool.mu.Lock()
 			pool.config.MSRATxPoolSettings.PoolState = "Evicting"
+
+			tooOldCount := 0
+
 			for addr := range pool.queue {
 				// Skip local transactions from the eviction mechanism
 				if pool.locals.contains(addr) {
@@ -578,6 +645,7 @@ func (pool *TxPool) loop() {
 				// Any non-locals old enough should be removed
 				if time.Since(pool.beats[addr]) > pool.config.Lifetime {
 					for _, tx := range pool.queue[addr].Flatten() {
+						tooOldCount += 1
 						if pool.config.MSRATxPoolSettings.DataLoggerTxPoolIO {
 							pool.removeTxWithReason(tx.Hash(), true, "account heartbeat too old")
 						} else {
@@ -586,6 +654,11 @@ func (pool *TxPool) loop() {
 					}
 				}
 			}
+
+			if tooOldCount > 0 {
+				log.Info("Removed too old", "count", tooOldCount)
+			}
+
 			pool.config.MSRATxPoolSettings.PoolState = ""
 			pool.mu.Unlock()
 
@@ -1076,6 +1149,8 @@ func (pool *TxPool) AddRemote(tx *types.Transaction) error {
 
 // addTxs attempts to queue a batch of transactions if they are valid.
 func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
+	addTxsEntranceTime := time.Now()
+
 	// Filter out known ones without obtaining the pool lock or recovering signatures
 	var (
 		errs = make([]error, len(txs))
@@ -1098,8 +1173,13 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
 	for _, tx := range news {
 		types.Sender(pool.signer, tx)
 	}
+
 	// Process all the new transaction and merge any errors into the original slice
 	pool.mu.Lock()
+
+	if pool.TxPoolRecorder != nil && !local {
+		pool.TxPoolRecorder.RecordAddRemotes(addTxsEntranceTime, news)
+	}
 
 	pool.config.MSRATxPoolSettings.PoolState = "NewTxs"
 	pool.config.MSRATxPoolSettings.PoolStateStage = "addTxs"

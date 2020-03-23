@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"runtime"
 	godebug "runtime/debug"
@@ -34,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/console"
+	"github.com/ethereum/go-ethereum/emulator"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -215,6 +217,12 @@ var (
 		utils.ReuseVerifierFlag,
 		utils.HasherParallelismFlag,
 		utils.ParallelBloomFlag,
+		utils.EmulatorDirFlag,
+		utils.EmulatorLoggerFlag,
+		utils.EmulateFromFlag,
+		utils.EmulateFileFlag,
+		utils.GenerateEmulatorLogFromFlag,
+		utils.GenerateEmulatorLogToFlag,
 		alliedNodeFileFlag,
 	}
 )
@@ -327,6 +335,14 @@ func prepare(ctx *cli.Context) {
 // It creates a default node based on the command line arguments and runs it in
 // blocking mode, waiting for it to be shut down.
 func geth(ctx *cli.Context) error {
+	if ctx.GlobalIsSet(utils.GenerateEmulatorLogFromFlag.Name) {
+		return runEmulatorLogGenerator(ctx)
+	}
+
+	if ctx.GlobalIsSet(utils.EmulateFromFlag.Name) {
+		return emulatedGeth(ctx)
+	}
+
 	if args := ctx.Args(); len(args) > 0 {
 		return fmt.Errorf("invalid command: %q", args[0])
 	}
@@ -335,6 +351,130 @@ func geth(ctx *cli.Context) error {
 	defer node.Close()
 	startNode(ctx, node)
 	node.Wait()
+	return nil
+}
+
+// noinspection GoUnhandledErrorResult, GoImportUsedAsName
+func runEmulatorLogGenerator(ctx *cli.Context) error {
+	if args := ctx.Args(); len(args) > 0 {
+		return fmt.Errorf("invalid command: %q", args[0])
+	}
+	prepare(ctx)
+
+	stack, cfg := makeConfigNode(ctx)
+
+	log.Warn("!!!Generate Block Mode!!!")
+
+	if ctx.GlobalIsSet(utils.OverrideIstanbulFlag.Name) {
+		cfg.Eth.OverrideIstanbul = new(big.Int).SetUint64(ctx.GlobalUint64(utils.OverrideIstanbulFlag.Name))
+	}
+	if ctx.GlobalIsSet(utils.OverrideMuirGlacierFlag.Name) {
+		cfg.Eth.OverrideMuirGlacier = new(big.Int).SetUint64(ctx.GlobalUint64(utils.OverrideMuirGlacierFlag.Name))
+	}
+
+	stack.IsEmulatedMode = true
+	stack.EmulatedEthFunc = func(c *node.ServiceContext) (node.Service, error) {
+		backend, err := eth.New(c, &cfg.Eth)
+		if err != nil {
+			return nil, err
+		}
+		defer backend.MsraCloseCalledFromGethEmulatorGenerator()
+
+		log.Warn("!!!Backend initialized!!!")
+
+		stack.EmulatorReplay = func() {
+		}
+
+		dir := ctx.GlobalString(utils.EmulatorDirFlag.Name)
+
+		logDir := fmt.Sprintf("%s/%s",
+			dir, time.Now().Format("20060102T150405.999999"))
+
+		_, err = os.Stat(logDir)
+		if err != nil {
+			err = os.MkdirAll(logDir, os.ModePerm)
+			if err != nil {
+				panic("Cannot make " + logDir)
+			}
+		}
+
+		writer := emulator.NewFileLogWriter(logDir)
+		recorder := emulator.NewGethRecorder(writer, true, true)
+
+		generator := emulator.LogGenerator{
+			Writer:     &emulator.GenLogWriterImpl{Recorder: recorder},
+			BlockChain: backend.BlockChain(),
+		}
+
+		generator.Generate(
+			ctx.GlobalUint64(utils.GenerateEmulatorLogFromFlag.Name),
+			ctx.GlobalUint64(utils.GenerateEmulatorLogToFlag.Name))
+
+		log.Warn("!!!Generate complete, stopping!!!")
+
+		recorder.Stop() // Must stop recorder first
+		writer.Stop()
+
+		log.Warn("!!!Generate done!!!")
+
+		return nil, fmt.Errorf("generate succeed, exit now") // no error is also an error
+		//return backend, err
+	}
+
+	defer stack.Close()
+	debug.Memsize.Add("node", stack)
+
+	// Start up the node itself
+	utils.StartNode(stack)
+	stack.Wait()
+	return nil
+}
+
+func emulatedGeth(ctx *cli.Context) error {
+	if args := ctx.Args(); len(args) > 0 {
+		return fmt.Errorf("invalid command: %q", args[0])
+	}
+	prepare(ctx)
+
+	stack, cfg := makeConfigNode(ctx)
+	stack.IsEmulatedMode = true
+	cfg.Eth.MSRAVMSettings.IsEmulateMode = true
+	cfg.Eth.MSRAVMSettings.EmulateFromBlock = ctx.GlobalUint64(utils.EmulateFromFlag.Name)
+
+	log.Warn("This is emulate mode, all changes will be discarded upon restart", "emulatefrom", cfg.Eth.MSRAVMSettings.EmulateFromBlock)
+
+	if ctx.GlobalIsSet(utils.OverrideIstanbulFlag.Name) {
+		cfg.Eth.OverrideIstanbul = new(big.Int).SetUint64(ctx.GlobalUint64(utils.OverrideIstanbulFlag.Name))
+	}
+	if ctx.GlobalIsSet(utils.OverrideMuirGlacierFlag.Name) {
+		cfg.Eth.OverrideMuirGlacier = new(big.Int).SetUint64(ctx.GlobalUint64(utils.OverrideMuirGlacierFlag.Name))
+	}
+
+	stack.EmulatedEthFunc = func(ctx *node.ServiceContext) (node.Service, error) {
+		backend, err := eth.New(ctx, &cfg.Eth)
+		if err != nil {
+			return nil, err
+		}
+
+		reader := emulator.NewFileLogReader(cfg.Eth.MSRAVMSettings.EmulatorDir, cfg.Eth.MSRAVMSettings.EmulateFile)
+		replayer := emulator.NewGethReplayer(backend.BlockChain(), backend.TxPool())
+
+		emulator.GlobalGethReplayer = replayer
+
+		stack.EmulatorReplay = func() {
+			replayer.RunReplay(reader)
+		}
+
+		return backend, err
+	}
+	//utils.RegisterEthService(stack, &cfg.Eth)
+
+	defer stack.Close()
+	debug.Memsize.Add("node", stack)
+
+	// Start up the node itself
+	utils.StartNode(stack)
+	stack.Wait()
 	return nil
 }
 

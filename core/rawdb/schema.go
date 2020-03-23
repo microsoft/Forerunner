@@ -136,7 +136,11 @@ func blockBodyKey(number uint64, hash common.Hash) []byte {
 }
 
 // blockReceiptsKey = blockReceiptsPrefix + num (uint64 big endian) + hash
-func blockReceiptsKey(number uint64, hash common.Hash) []byte {
+func blockReceiptsKey(number uint64, hash common.Hash, msraPrefix bool) (ret []byte) {
+	if msraPrefix {
+		defer func() { ret = GlobalEmulateHook.PrefixKey(ret) }()
+	}
+
 	return append(append(blockReceiptsPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
 }
 
@@ -146,7 +150,11 @@ func txLookupKey(hash common.Hash) []byte {
 }
 
 // bloomBitsKey = bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash
-func bloomBitsKey(bit uint, section uint64, hash common.Hash) []byte {
+func bloomBitsKey(bit uint, section uint64, hash common.Hash, msraPrefix bool) (ret []byte) {
+	if msraPrefix {
+		defer func() { ret = GlobalEmulateHook.PrefixKey(ret) }()
+	}
+
 	key := append(append(bloomBitsPrefix, make([]byte, 10)...), hash.Bytes()...)
 
 	binary.BigEndian.PutUint16(key[1:], uint16(bit))

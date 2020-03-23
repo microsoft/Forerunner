@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/emulator"
 	"github.com/hashicorp/golang-lru"
 	"math"
 	"math/big"
@@ -196,12 +197,21 @@ func NewProtocolManager(config *params.ChainConfig, checkpoint *params.TrustedCh
 		n, err := manager.blockchain.InsertChain(blocks)
 		if err == nil {
 			atomic.StoreUint32(&manager.acceptTxs, 1) // Mark initial sync done on any fetcher import
+
+			startRecorder()
 		}
 		return n, err
 	}
 	manager.fetcher = fetcher.New(blockchain.GetBlockByHash, validator, manager.BroadcastBlock, heighter, inserter, manager.removePeer)
 
 	return manager, nil
+}
+
+func startRecorder() {
+	recorder := emulator.GlobalGethRecorder
+	if recorder != nil {
+		recorder.Start()
+	}
 }
 
 func (pm *ProtocolManager) makeProtocol(version uint) p2p.Protocol {
@@ -406,13 +416,13 @@ func (pm *ProtocolManager) timer(hash string) {
 	time.Sleep(10 * time.Minute)
 
 	vHash, okHash := pm.msgHashCache.Get(hash)
-	hashMsg, okHash2 := vHash.(HashMsg);
+	hashMsg, okHash2 := vHash.(HashMsg)
 	if !okHash2 {
 		okHash = false
 	}
 
 	vBlock, okBlock := pm.msgBlockCache.Get(hash)
-	blockMsg, okBlock2 := vBlock.(BlockMsg);
+	blockMsg, okBlock2 := vBlock.(BlockMsg)
 	if !okBlock2 {
 		okBlock = false
 	}
@@ -506,7 +516,7 @@ func (pm *ProtocolManager) recoder() {
 						go pm.timer(announce.Hash.String())
 					}
 				} else {
-					ReceivedAt, ok := v.(time.Time);
+					ReceivedAt, ok := v.(time.Time)
 					if !ok {
 						continue
 					}

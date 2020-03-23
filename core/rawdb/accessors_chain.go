@@ -32,6 +32,10 @@ import (
 
 // ReadCanonicalHash retrieves the hash assigned to a canonical block number.
 func ReadCanonicalHash(db ethdb.Reader, number uint64) common.Hash {
+	if hash, overrides := GlobalEmulateHook.ReadEmulateHash(number); overrides {
+		return hash
+	}
+
 	data, _ := db.Ancient(freezerHashTable, number)
 	if len(data) == 0 {
 		data, _ = db.Get(headerHashKey(number))
@@ -51,6 +55,10 @@ func ReadCanonicalHash(db ethdb.Reader, number uint64) common.Hash {
 
 // WriteCanonicalHash stores the hash assigned to a canonical block number.
 func WriteCanonicalHash(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	if overrides := GlobalEmulateHook.WriteEmulateHash(hash, number); overrides {
+		return
+	}
+
 	if err := db.Put(headerHashKey(number), hash.Bytes()); err != nil {
 		log.Crit("Failed to store number to hash mapping", "err", err)
 	}
@@ -58,6 +66,10 @@ func WriteCanonicalHash(db ethdb.KeyValueWriter, hash common.Hash, number uint64
 
 // DeleteCanonicalHash removes the number to hash canonical mapping.
 func DeleteCanonicalHash(db ethdb.KeyValueWriter, number uint64) {
+	if overrides := GlobalEmulateHook.DeleteEmulateHash(number); overrides {
+		return
+	}
+
 	if err := db.Delete(headerHashKey(number)); err != nil {
 		log.Crit("Failed to delete number to hash mapping", "err", err)
 	}
@@ -74,7 +86,11 @@ func ReadAllHashes(db ethdb.Iteratee, number uint64) []common.Hash {
 
 	for it.Next() {
 		if key := it.Key(); len(key) == len(prefix)+32 {
-			hashes = append(hashes, common.BytesToHash(key[len(key)-32:]))
+			hash := common.BytesToHash(key[len(key)-32:])
+			if GlobalEmulateHook.HideBlock(hash, number) {
+				continue
+			}
+			hashes = append(hashes, hash)
 		}
 	}
 	return hashes
@@ -92,6 +108,8 @@ func ReadHeaderNumber(db ethdb.KeyValueReader, hash common.Hash) *uint64 {
 
 // WriteHeaderNumber stores the hash->number mapping.
 func WriteHeaderNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	GlobalEmulateHook.PutExecutedBlock(hash, number)
+
 	key := headerNumberKey(hash)
 	enc := encodeBlockNumber(number)
 	if err := db.Put(key, enc); err != nil {
@@ -101,6 +119,11 @@ func WriteHeaderNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64)
 
 // DeleteHeaderNumber removes hash->number mapping.
 func DeleteHeaderNumber(db ethdb.KeyValueWriter, hash common.Hash) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		// it's rather expensive to decide accurately, so deny all for now.
+		return
+	}
+
 	if err := db.Delete(headerNumberKey(hash)); err != nil {
 		log.Crit("Failed to delete hash to number mapping", "err", err)
 	}
@@ -108,6 +131,10 @@ func DeleteHeaderNumber(db ethdb.KeyValueWriter, hash common.Hash) {
 
 // ReadHeadHeaderHash retrieves the hash of the current canonical head header.
 func ReadHeadHeaderHash(db ethdb.KeyValueReader) common.Hash {
+	if data := GlobalEmulateHook.HeadHeaderHash(); (data != common.Hash{}) {
+		return data
+	}
+
 	data, _ := db.Get(headHeaderKey)
 	if len(data) == 0 {
 		return common.Hash{}
@@ -117,6 +144,10 @@ func ReadHeadHeaderHash(db ethdb.KeyValueReader) common.Hash {
 
 // WriteHeadHeaderHash stores the hash of the current canonical head header.
 func WriteHeadHeaderHash(db ethdb.KeyValueWriter, hash common.Hash) {
+	if GlobalEmulateHook.SetHeadHeaderHash(hash) {
+		return
+	}
+
 	if err := db.Put(headHeaderKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last header's hash", "err", err)
 	}
@@ -124,6 +155,10 @@ func WriteHeadHeaderHash(db ethdb.KeyValueWriter, hash common.Hash) {
 
 // ReadHeadBlockHash retrieves the hash of the current canonical head block.
 func ReadHeadBlockHash(db ethdb.KeyValueReader) common.Hash {
+	if data := GlobalEmulateHook.HeadBlockHash(); (data != common.Hash{}) {
+		return data
+	}
+
 	data, _ := db.Get(headBlockKey)
 	if len(data) == 0 {
 		return common.Hash{}
@@ -133,6 +168,10 @@ func ReadHeadBlockHash(db ethdb.KeyValueReader) common.Hash {
 
 // WriteHeadBlockHash stores the head block's hash.
 func WriteHeadBlockHash(db ethdb.KeyValueWriter, hash common.Hash) {
+	if GlobalEmulateHook.SetHeadBlockHash(hash) {
+		return
+	}
+
 	if err := db.Put(headBlockKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last block's hash", "err", err)
 	}
@@ -140,6 +179,10 @@ func WriteHeadBlockHash(db ethdb.KeyValueWriter, hash common.Hash) {
 
 // ReadHeadFastBlockHash retrieves the hash of the current fast-sync head block.
 func ReadHeadFastBlockHash(db ethdb.KeyValueReader) common.Hash {
+	if data := GlobalEmulateHook.HeadFastBlockHash(); (data != common.Hash{}) {
+		return data
+	}
+
 	data, _ := db.Get(headFastBlockKey)
 	if len(data) == 0 {
 		return common.Hash{}
@@ -149,6 +192,10 @@ func ReadHeadFastBlockHash(db ethdb.KeyValueReader) common.Hash {
 
 // WriteHeadFastBlockHash stores the hash of the current fast-sync head block.
 func WriteHeadFastBlockHash(db ethdb.KeyValueWriter, hash common.Hash) {
+	if GlobalEmulateHook.SetHeadFastBlockHash(hash) {
+		return
+	}
+
 	if err := db.Put(headFastBlockKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last fast block's hash", "err", err)
 	}
@@ -199,6 +246,10 @@ func ReadHeaderRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValu
 
 // HasHeader verifies the existence of a block header corresponding to the hash.
 func HasHeader(db ethdb.Reader, hash common.Hash, number uint64) bool {
+	if GlobalEmulateHook.HideBlock(hash, number) {
+		return false
+	}
+
 	if has, err := db.Ancient(freezerHashTable, number); err == nil && common.BytesToHash(has) == hash {
 		return true
 	}
@@ -210,6 +261,10 @@ func HasHeader(db ethdb.Reader, hash common.Hash, number uint64) bool {
 
 // ReadHeader retrieves the block header corresponding to the hash.
 func ReadHeader(db ethdb.Reader, hash common.Hash, number uint64) *types.Header {
+	if GlobalEmulateHook.HideBlock(hash, number) {
+		return nil
+	}
+
 	data := ReadHeaderRLP(db, hash, number)
 	if len(data) == 0 {
 		return nil
@@ -245,6 +300,11 @@ func WriteHeader(db ethdb.KeyValueWriter, header *types.Header) {
 
 // DeleteHeader removes all block header data associated with a hash.
 func DeleteHeader(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		// it's rather expensive to decide accurately, so deny all for now.
+		return
+	}
+
 	deleteHeaderWithoutNumber(db, hash, number)
 	if err := db.Delete(headerNumberKey(hash)); err != nil {
 		log.Crit("Failed to delete hash to number mapping", "err", err)
@@ -254,6 +314,11 @@ func DeleteHeader(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 // deleteHeaderWithoutNumber removes only the block header but does not remove
 // the hash to number mapping.
 func deleteHeaderWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		// it's rather expensive to decide accurately, so deny all for now.
+		return
+	}
+
 	if err := db.Delete(headerKey(number, hash)); err != nil {
 		log.Crit("Failed to delete header", "err", err)
 	}
@@ -261,6 +326,10 @@ func deleteHeaderWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number
 
 // ReadBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
 func ReadBodyRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValue {
+	if GlobalEmulateHook.HideBlock(hash, number) {
+		return nil
+	}
+
 	// First try to look up the data in ancient database. Extra hash
 	// comparison is necessary since ancient database only maintains
 	// the canonical data.
@@ -299,6 +368,10 @@ func WriteBodyRLP(db ethdb.KeyValueWriter, hash common.Hash, number uint64, rlp 
 
 // HasBody verifies the existence of a block body corresponding to the hash.
 func HasBody(db ethdb.Reader, hash common.Hash, number uint64) bool {
+	if GlobalEmulateHook.HideBlock(hash, number) {
+		return false
+	}
+
 	if has, err := db.Ancient(freezerHashTable, number); err == nil && common.BytesToHash(has) == hash {
 		return true
 	}
@@ -333,6 +406,11 @@ func WriteBody(db ethdb.KeyValueWriter, hash common.Hash, number uint64, body *t
 
 // DeleteBody removes all block body data associated with a hash.
 func DeleteBody(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		// it's rather expensive to decide accurately, so deny all for now.
+		return
+	}
+
 	if err := db.Delete(blockBodyKey(number, hash)); err != nil {
 		log.Crit("Failed to delete block body", "err", err)
 	}
@@ -396,6 +474,11 @@ func WriteTd(db ethdb.KeyValueWriter, hash common.Hash, number uint64, td *big.I
 
 // DeleteTd removes all block total difficulty data associated with a hash.
 func DeleteTd(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		// it's rather expensive to decide accurately, so deny all for now.
+		return
+	}
+
 	if err := db.Delete(headerTDKey(number, hash)); err != nil {
 		log.Crit("Failed to delete block total difficulty", "err", err)
 	}
@@ -404,10 +487,17 @@ func DeleteTd(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 // HasReceipts verifies the existence of all the transaction receipts belonging
 // to a block.
 func HasReceipts(db ethdb.Reader, hash common.Hash, number uint64) bool {
+	// In emulate mode, look up prefixed version first
+	if GlobalEmulateHook.IsEmulateMode() {
+		if has, err := db.Has(blockReceiptsKey(number, hash, true)); has && err == nil {
+			return true
+		}
+	}
+
 	if has, err := db.Ancient(freezerHashTable, number); err == nil && common.BytesToHash(has) == hash {
 		return true
 	}
-	if has, err := db.Has(blockReceiptsKey(number, hash)); !has || err != nil {
+	if has, err := db.Has(blockReceiptsKey(number, hash, false)); !has || err != nil {
 		return false
 	}
 	return true
@@ -415,10 +505,18 @@ func HasReceipts(db ethdb.Reader, hash common.Hash, number uint64) bool {
 
 // ReadReceiptsRLP retrieves all the transaction receipts belonging to a block in RLP encoding.
 func ReadReceiptsRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValue {
+	// In emulate mode, look up prefixed version first
+	var data rlp.RawValue
+	if GlobalEmulateHook.IsEmulateMode() {
+		data, _ = db.Get(blockReceiptsKey(number, hash, true))
+		if len(data) > 0 {
+			return data
+		}
+	}
 	// First try to look up the data in ancient database. Extra hash
 	// comparison is necessary since ancient database only maintains
 	// the canonical data.
-	data, _ := db.Ancient(freezerReceiptTable, number)
+	data, _ = db.Ancient(freezerReceiptTable, number)
 	if len(data) > 0 {
 		h, _ := db.Ancient(freezerHashTable, number)
 		if common.BytesToHash(h) == hash {
@@ -426,7 +524,7 @@ func ReadReceiptsRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawVa
 		}
 	}
 	// Then try to look up the data in leveldb.
-	data, _ = db.Get(blockReceiptsKey(number, hash))
+	data, _ = db.Get(blockReceiptsKey(number, hash, false))
 	if len(data) > 0 {
 		return data
 	}
@@ -503,14 +601,18 @@ func WriteReceipts(db ethdb.KeyValueWriter, hash common.Hash, number uint64, rec
 		log.Crit("Failed to encode block receipts", "err", err)
 	}
 	// Store the flattened receipt slice
-	if err := db.Put(blockReceiptsKey(number, hash), bytes); err != nil {
+	if err := db.Put(blockReceiptsKey(number, hash, GlobalEmulateHook.IsEmulateMode()), bytes); err != nil {
 		log.Crit("Failed to store block receipts", "err", err)
 	}
 }
 
 // DeleteReceipts removes all receipt data associated with a block hash.
 func DeleteReceipts(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
-	if err := db.Delete(blockReceiptsKey(number, hash)); err != nil {
+	if err := db.Delete(blockReceiptsKey(number, hash, GlobalEmulateHook.IsEmulateMode())); err != nil {
+		if GlobalEmulateHook.IsEmulateMode() {
+			// it's rather expensive to decide accurately, so ignore all for now.
+			return
+		}
 		log.Crit("Failed to delete block receipts", "err", err)
 	}
 }
@@ -522,6 +624,10 @@ func DeleteReceipts(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 // Note, due to concurrent download of header and block body the header and thus
 // canonical hash can be stored in the database but the body data not (yet).
 func ReadBlock(db ethdb.Reader, hash common.Hash, number uint64) *types.Block {
+	if GlobalEmulateHook.HideBlock(hash, number) {
+		return nil
+	}
+
 	header := ReadHeader(db, hash, number)
 	if header == nil {
 		return nil

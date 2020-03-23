@@ -72,6 +72,11 @@ type Node struct {
 	lock sync.RWMutex
 
 	log log.Logger
+
+	// !!!MSRA
+	IsEmulatedMode  bool
+	EmulatedEthFunc func(ctx *ServiceContext) (Service, error)
+	EmulatorReplay  func()
 }
 
 // New creates a new P2P node, ready for protocol registration.
@@ -160,6 +165,10 @@ func (n *Node) Register(constructor ServiceConstructor) error {
 
 // Start create a live P2P node and starts running it.
 func (n *Node) Start() error {
+	if n.IsEmulatedMode {
+		return n.startEmulatedMode()
+	}
+
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
@@ -185,7 +194,7 @@ func (n *Node) Start() error {
 	}
 
 	// add allied nodes into staticNodes and TrustedNodes
-	if n.serverConfig.AlliedNodes != nil{
+	if n.serverConfig.AlliedNodes != nil {
 		n.serverConfig.StaticNodes = append(n.serverConfig.StaticNodes, n.serverConfig.AlliedNodes...)
 		n.serverConfig.TrustedNodes = append(n.serverConfig.TrustedNodes, n.serverConfig.AlliedNodes...)
 	}
@@ -250,6 +259,59 @@ func (n *Node) Start() error {
 		running.Stop()
 		return err
 	}
+	// Finish initializing the startup
+	n.services = services
+	n.server = running
+	n.stop = make(chan struct{})
+	return nil
+}
+
+// Start create a emulated node and starts running it.
+func (n *Node) startEmulatedMode() error {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	// Short circuit if the node's already running
+	if n.server != nil {
+		return ErrNodeRunning
+	}
+	if err := n.openDataDir(); err != nil {
+		return err
+	}
+
+	// Initialize the p2p server. This creates the node key and
+	// discovery databases.
+	n.serverConfig = n.config.P2P
+	n.serverConfig.PrivateKey = n.config.NodeKey()
+	n.serverConfig.Name = n.config.NodeName()
+
+	running := &p2p.Server{Config: n.serverConfig}
+
+	service, err := n.EmulatedEthFunc(&ServiceContext{
+		config:         n.config,
+		services:       make(map[reflect.Type]Service),
+		EventMux:       n.eventmux,
+		AccountManager: n.accman,
+	})
+	if err != nil {
+		return err
+	}
+
+	err = service.Start(running)
+	if err != nil {
+		return err
+	}
+
+	services := make(map[reflect.Type]Service)
+
+	kind := reflect.TypeOf(service)
+	if _, exists := services[kind]; exists {
+		return &DuplicateServiceError{Kind: kind}
+	}
+	services[kind] = service
+
+	go n.EmulatorReplay()
+
 	// Finish initializing the startup
 	n.services = services
 	n.server = running

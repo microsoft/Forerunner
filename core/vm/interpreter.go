@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -54,9 +55,32 @@ type MSRAVMConfig struct {
 	CacheRecord         bool
 	GroundRecord        bool
 	PreplayRecord       bool
+	NoReusePrint        bool
 	EnableReuseVerifier bool
 	HasherParallelism   int
 	PipelinedBloom      bool
+
+	// emulator
+	EmulatorDir          string
+	EnableEmulatorLogger bool
+	IsEmulateMode        bool
+	EmulateFromBlock     uint64
+	EmulateFile          string
+}
+
+func (p *MSRAVMConfig) IsPrintRecord() bool {
+	return !p.NoReusePrint
+}
+
+func (p *MSRAVMConfig) InitEmulateHook() {
+	var hook rawdb.EmulateHook
+	if p.IsEmulateMode {
+		hook = rawdb.NewEmulateHook(p.EmulateFromBlock)
+	} else {
+		hook = &rawdb.EmptyEmulateHook{}
+	}
+
+	rawdb.GlobalEmulateHook = hook
 }
 
 // Interpreter is used to run Ethereum based contracts and will utilise the

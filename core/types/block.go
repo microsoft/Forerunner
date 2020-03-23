@@ -166,11 +166,31 @@ type Block struct {
 
 // MSRA marshal block for logging
 func (b *Block) MarshalJSON() ([]byte, error) {
+	// todo: use enc/dec pattern shared with Unmarshal?
 	tmpMap := make(map[string]interface{})
 	tmpMap["header"] = b.header
 	tmpMap["uncles"] = b.uncles
 	tmpMap["transactions"] = b.transactions
 	return json.Marshal(tmpMap)
+}
+
+// MSRA
+func (b *Block) UnmarshalJSON(input []byte) error {
+	type block struct {
+		Header       *Header      `json:"header"`
+		Uncles       []*Header    `json:"uncles"`
+		Transactions Transactions `json:"transactions"`
+	}
+	var dec block
+	if err := json.Unmarshal(input, &dec); err != nil {
+		return err
+	}
+	*b = Block{
+		header:       dec.Header,
+		uncles:       dec.Uncles,
+		transactions: dec.Transactions,
+	}
+	return nil
 }
 
 // DeprecatedTd is an old relic for extracting the TD of a block. It is in the

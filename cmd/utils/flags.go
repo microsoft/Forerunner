@@ -758,7 +758,7 @@ var (
 	}
 	SilentFlag = cli.BoolFlag{
 		Name:  "silent",
-		Usage: "Enable logging",
+		Usage: "Disable logging",
 	}
 	LogRootFlag = DirectoryFlag{
 		Name:  "logdir",
@@ -830,7 +830,8 @@ var (
 
 	RatioFlag = cli.IntFlag{
 		Name:  "ratio",
-		Usage: "External ratio log configuration (default = 1)",
+		Usage: "External ratio log configuration (default = 0)",
+		Value: 0,
 	}
 
 	// MSRA New flag
@@ -857,6 +858,37 @@ var (
 	ParallelBloomFlag = cli.BoolFlag{
 		Name:  "parallelbloom",
 		Usage: "Enable pipelined bloom creation",
+	}
+
+	EmulatorDirFlag = DirectoryFlag{
+		Name:  "emulatordir",
+		Usage: "Emulator data directory, shared by Emulator Logger and Emulate Mode",
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "emulatorLog")),
+	}
+	EmulatorLoggerFlag = cli.BoolFlag{
+		Name:  "emulatorlogger",
+		Usage: "Enable the Emulator Logger service",
+	}
+	EmulateFromFlag = cli.Uint64Flag{
+		Name:  "emulatefrom",
+		Usage: "Enable the Emulate Mode, and set its start block (exclusive)",
+		Value: 9271712,
+	}
+	EmulateFileFlag = cli.StringFlag{
+		Name:  "emulatefile",
+		Usage: "The log file for emulate mode to read, relative to emulatordir",
+	}
+
+	// Emulator Log Generator
+	GenerateEmulatorLogFromFlag = cli.Uint64Flag{
+		Name:  "generateemulatorlogfrom",
+		Usage: "Generate emulator log from the given block number (inclusive)",
+		Value: 9271712,
+	}
+	GenerateEmulatorLogToFlag = cli.Uint64Flag{
+		Name:  "generateemulatorlogto",
+		Usage: "Generate emulator log to the given block number (exclusive)",
+		Value: 9271812,
 	}
 )
 
@@ -1713,12 +1745,22 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
 		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
 		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
+
+		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
+		EmulatorDir:          "/anadrive/emulator",
+		EmulateFile:          "my.json",
 	}
 	if ctx.GlobalIsSet(CmpResueLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpResueLogDirFlag.Name)
 	}
 	if ctx.GlobalIsSet(LogRootFlag.Name) {
 		cfg.MSRAVMSettings.LogRoot = ctx.GlobalString(LogRootFlag.Name)
+	}
+	if ctx.GlobalIsSet(EmulatorDirFlag.Name) {
+		cfg.MSRAVMSettings.EmulatorDir = ctx.GlobalString(EmulatorDirFlag.Name)
+	}
+	if ctx.GlobalIsSet(EmulateFileFlag.Name) {
+		cfg.MSRAVMSettings.EmulateFile = ctx.GlobalString(EmulateFileFlag.Name)
 	}
 }
 

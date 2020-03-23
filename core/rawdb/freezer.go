@@ -220,6 +220,10 @@ func (f *freezer) AppendAncient(number uint64, hash, header, body, receipts, td 
 
 // Truncate discards any recent data above the provided threshold number.
 func (f *freezer) TruncateAncients(items uint64) error {
+	if GlobalEmulateHook.IsEmulateMode() {
+		panic("TruncateAncients is not supported in emulate mode")
+	}
+
 	if atomic.LoadUint64(&f.frozen) <= items {
 		return nil
 	}
@@ -252,9 +256,17 @@ func (f *freezer) Sync() error {
 // This functionality is deliberately broken off from block importing to avoid
 // incurring additional data shuffling delays on block propagation.
 func (f *freezer) freeze(db ethdb.KeyValueStore) {
+	if GlobalEmulateHook.IsEmulateMode() {
+		return // MSRA!!! this is crucial in preventing corruption of db in emulate mode
+	}
+
 	nfdb := &nofreezedb{KeyValueStore: db}
 
 	for {
+		if GlobalEmulateHook.IsEmulateMode() {
+			panic("Emulate Mode turned on after freezer setup")
+		}
+
 		// Retrieve the freezing threshold.
 		hash := ReadHeadBlockHash(nfdb)
 		if hash == (common.Hash{}) {
@@ -269,12 +281,12 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			time.Sleep(freezerRecheckInterval)
 			continue
 
-		case *number < params.ImmutabilityThreshold:
-			log.Debug("Current full block not old enough", "number", *number, "hash", hash, "delay", params.ImmutabilityThreshold)
+		case *number < params.MSRAFreezerCutoff:
+			log.Debug("Current full block not old enough", "number", *number, "hash", hash, "delay", params.MSRAFreezerCutoff)
 			time.Sleep(freezerRecheckInterval)
 			continue
 
-		case *number-params.ImmutabilityThreshold <= f.frozen:
+		case *number-params.MSRAFreezerCutoff <= f.frozen:
 			log.Debug("Ancient blocks frozen already", "number", *number, "hash", hash, "frozen", f.frozen)
 			time.Sleep(freezerRecheckInterval)
 			continue
@@ -286,7 +298,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			continue
 		}
 		// Seems we have data ready to be frozen, process in usable batches
-		limit := *number - params.ImmutabilityThreshold
+		limit := *number - params.MSRAFreezerCutoff
 		if limit-f.frozen > freezerBatchLimit {
 			limit = f.frozen + freezerBatchLimit
 		}

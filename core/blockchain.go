@@ -188,6 +188,10 @@ type BlockChain struct {
 	Warmuper     *Warmuper
 	execTimeList ExecTimeList
 	asyncWriteWg sync.WaitGroup
+
+	InsertChainRecorder InsertChainRecorder
+
+	EmulateHook rawdb.EmulateHook
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -227,7 +231,6 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		vmConfig:       vmConfig,
 		badBlocks:      badBlocks,
 		//MSRA
-		//Cmpreuse:       &DefaultTransactionApplier{},
 		execTimeList: NewExecTimeList(),
 	}
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
@@ -287,13 +290,17 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 			}
 		}
 		if needRewind {
-			var hashes []common.Hash
-			previous := bc.CurrentHeader().Number.Uint64()
-			for i := low + 1; i <= bc.CurrentHeader().Number.Uint64(); i++ {
-				hashes = append(hashes, rawdb.ReadCanonicalHash(bc.db, i))
+			if !rawdb.GlobalEmulateHook.IsEmulateMode() {
+				var hashes []common.Hash
+				previous := bc.CurrentHeader().Number.Uint64()
+				for i := low + 1; i <= bc.CurrentHeader().Number.Uint64(); i++ {
+					hashes = append(hashes, rawdb.ReadCanonicalHash(bc.db, i))
+				}
+				bc.Rollback(hashes)
+				log.Warn("Truncate ancient chain", "from", previous, "to", low)
+			} else {
+				log.Error("Prevented truncating ancient chain in emulate mode")
 			}
-			bc.Rollback(hashes)
-			log.Warn("Truncate ancient chain", "from", previous, "to", low)
 		}
 	}
 	// Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
@@ -593,6 +600,11 @@ func (bc *BlockChain) repair(head **types.Block) error {
 		// Abort if we've rewound to a head block that does have associated state
 		if _, err := state.New((*head).Root(), bc.stateCache); err == nil {
 			log.Info("Rewound blockchain to past state", "number", (*head).Number(), "hash", (*head).Hash())
+
+			if rawdb.GlobalEmulateHook.IsEmulateMode() {
+				log.Crit("Emulate mode start failed, state not found")
+			}
+
 			return nil
 		}
 		// Otherwise rewind one block and recheck state availability there
@@ -913,6 +925,11 @@ const (
 // Rollback is designed to remove a chain of links from the database that aren't
 // certain enough to be valid.
 func (bc *BlockChain) Rollback(chain []common.Hash) {
+	if rawdb.GlobalEmulateHook.IsEmulateMode() { // prevent db corruption in emulate mode
+		log.Error("Rollback is not supposed to be called in emulate mode")
+		return
+	}
+
 	bc.chainmu.Lock()
 	defer bc.chainmu.Unlock()
 
@@ -987,6 +1004,10 @@ type numberHash struct {
 // InsertReceiptChain attempts to complete an already existing header chain with
 // transaction and receipt data.
 func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain []types.Receipts, ancientLimit uint64) (int, error) {
+	if rawdb.GlobalEmulateHook.IsEmulateMode() { // MSRA!!! guard against dangerous methods in emulate mode
+		panic("InsertReceiptChain is not supposed to be called in emulate mode")
+	}
+
 	// We don't require the chainMu here since we want to maximize the
 	// concurrency of header insertion and receipt insertion.
 	bc.wg.Add(1)
@@ -1386,6 +1407,24 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 				// Find the next state trie we need to commit
 				chosen := current - TriesInMemory
 
+				if !rawdb.GlobalEmulateHook.IsEmulateMode() {
+					/* !!! MSRA force commit per 1000 blocks !!! */
+					if chosen%1000 < 10 && chosen > lastWrite+10 {
+						header := bc.GetHeaderByNumber(chosen)
+						if header == nil {
+							log.Warn("Reorg in progress, per 1000 block trie commit postponed", "number", chosen)
+						} else {
+							log.Warn("!Flushing per 1000 block!", "number", chosen)
+
+							// Flush an entire trie and restart the counters
+							triedb.Commit(header.Root, true)
+							lastWrite = chosen
+							bc.gcproc = 0
+						}
+					}
+					/**/
+				}
+
 				// If we exceeded out time allowance, flush an entire trie to disk
 				if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
 					// If the header is missing (canonical chain behind), we're reorging a low
@@ -1533,6 +1572,10 @@ func (bc *BlockChain) addFutureBlock(block *types.Block) error {
 //
 // After insertion is done, all accumulated events will be fired.
 func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
+	if bc.InsertChainRecorder != nil {
+		bc.InsertChainRecorder.RecordInsertChain(time.Now(), chain)
+	}
+
 	// Sanity check that we have something meaningful to import
 	if len(chain) == 0 {
 		return 0, nil
@@ -2424,4 +2467,8 @@ func (bc *BlockChain) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscript
 // block processing has started while false means it has stopped.
 func (bc *BlockChain) SubscribeBlockProcessingEvent(ch chan<- bool) event.Subscription {
 	return bc.scope.Track(bc.blockProcFeed.Subscribe(ch))
+}
+
+func (bc *BlockChain) IsEmulateMode() bool {
+	return rawdb.GlobalEmulateHook.IsEmulateMode()
 }
