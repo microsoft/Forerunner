@@ -763,7 +763,7 @@ var (
 	LogRootFlag = DirectoryFlag{
 		Name:  "logdir",
 		Usage: "Log directory",
-		Value: DirectoryString("/datadrive/reuse"),
+		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "reuse")),
 	}
 
 	PreplayEnabledChainheadFlag = cli.BoolFlag{
@@ -1747,7 +1747,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
 
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
-		EmulatorDir:          "/anadrive/emulator",
+		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",
 	}
 	if ctx.GlobalIsSet(CmpResueLogDirFlag.Name) {

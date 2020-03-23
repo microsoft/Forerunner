@@ -495,7 +495,7 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 		if ok {
 			value = changedBy.Hash()
 		} else {
-			value = *statedb.TrieGetSnap(addr)
+			value = *statedb.GetAccountSnap(addr)
 		}
 		return value
 	default:

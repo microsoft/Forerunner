@@ -19,6 +19,7 @@ package state
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"io"
 	"math/big"
 	"time"
@@ -114,6 +115,8 @@ type stateObject struct {
 
 	delta *deltaObject
 	pair  *stateObject
+
+	snap *cmptypes.AccountSnap
 }
 
 // empty returns whether the account is considered empty.
@@ -490,6 +493,10 @@ func (s *stateObject) deepCopy(db *StateDB) *stateObject {
 		stateObject.dirtyStorageCount[k] = v
 	}
 
+	if s.snap != nil {
+		stateSnap := *s.snap
+		stateObject.snap = &stateSnap
+	}
 	return stateObject
 }
 

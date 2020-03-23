@@ -131,7 +131,8 @@ type StateDB struct {
 	delta   *deltaDB
 
 	// Deprecated
-	ProcessedTxs     []common.Hash // txs which have been processed after the base block
+	ProcessedTxs []common.Hash // txs which have been processed after the base block
+
 	AccountChangedBy cmptypes.ChangedMap
 	IsParallelHasher bool
 	BloomProcessor   *types.ParallelBloomProcessor
@@ -572,8 +573,7 @@ func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxRe
 	if changedBy, ok := s.AccountChangedBy[addr]; ok {
 		changedBy.AppendTx(txRes)
 	} else {
-		accSnap := s.TrieGetSnap(addr)
-		changedBy = cmptypes.NewChangedBy2(accSnap)
+		changedBy = cmptypes.NewChangedBy()
 		changedBy.AppendTx(txRes)
 		s.AccountChangedBy[addr] = changedBy
 	}
@@ -582,7 +582,7 @@ func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxRe
 func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy {
 	changed, ok := s.AccountChangedBy[address]
 	if !ok {
-		accSnap := s.TrieGetSnap(address)
+		accSnap := s.GetAccountSnap(address)
 		changed = cmptypes.NewChangedBy2(accSnap)
 		s.AccountChangedBy[address] = changed
 	}
@@ -808,6 +808,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
+	obj.snap = cmptypes.BytesToAccountSnap(enc)
 	if s.IsShared() {
 		obj.addDelta()
 		s.setDeltaStateObject(obj)
@@ -1042,7 +1043,14 @@ func (s *StateDB) Update() {
 	}
 }
 
-func (s *StateDB) TrieGetSnap(address common.Address) *cmptypes.AccountSnap {
+func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
+	obj, ok := s.stateObjects[address]
+	if ok && obj != nil {
+		if obj.snap != nil {
+			return obj.snap
+		}
+	}
+
 	snap, err := s.trie.TryGet(address[:])
 	if err != nil {
 		panic(err.Error())
