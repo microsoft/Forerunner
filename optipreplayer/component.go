@@ -19,7 +19,13 @@ type TransactionPool map[common.Address]types.Transactions
 
 func (p TransactionPool) String() string {
 	retStr := "{"
+	var first = true
 	for sender, txns := range p {
+		if first {
+			first = false
+		} else {
+			retStr += ","
+		}
 		retStr += sender.Hex() + ":["
 		for i, txn := range txns {
 			if i > 0 {
@@ -39,7 +45,7 @@ func (p TransactionPool) String() string {
 			}
 			retStr += fmt.Sprintf("%s:%d-%v", txn.Hash().TerminalString(), txn.Nonce(), priceStr)
 		}
-		retStr += "],"
+		retStr += "]"
 	}
 	retStr += "}"
 	return retStr
@@ -199,24 +205,51 @@ type ReadState struct {
 type ReadChain = State
 type WriteState ReadState
 
+func (s ReadState) String() string {
+	retStr := fmt.Sprintf("%b", s.State)
+	var keyList []string
+	for key := range s.storage {
+		keyList = append(keyList, key.Hex())
+	}
+	if len(keyList) > 0 {
+		retStr += "-" + fmt.Sprintf("%v", keyList)
+	}
+	return retStr
+}
+
+func (r ReadChain) String() string {
+	return fmt.Sprintf("ReadChain: %b", r)
+}
+
+func (s WriteState) String() string {
+	retStr := fmt.Sprintf("%b", s.State)
+	var keyList []string
+	for key := range s.storage {
+		keyList = append(keyList, key.Hex())
+	}
+	if len(keyList) > 0 {
+		retStr += "-" + fmt.Sprintf("%v", keyList)
+	}
+	return retStr
+}
+
 func NewReadState(r *state.ReadState) *ReadState {
 	readState := &ReadState{
 		storage: make(map[common.Hash]struct{}),
 	}
 	if r.Empty != nil {
 		readState.State = all
-		return readState
 	} else {
 		readState.State = suicided
-	}
-	if r.Balance != nil {
-		readState.State |= balance
-	}
-	if r.Nonce != nil {
-		readState.State |= nonce
-	}
-	if r.CodeHash != nil {
-		readState.State |= code
+		if r.Balance != nil {
+			readState.State |= balance
+		}
+		if r.Nonce != nil {
+			readState.State |= nonce
+		}
+		if r.CodeHash != nil {
+			readState.State |= code
+		}
 	}
 	for key := range r.Storage {
 		readState.storage[key] = struct{}{}
@@ -251,6 +284,9 @@ func NewWriteState(w *state.WriteState) *WriteState {
 	if w.Code != nil {
 		writeState.State |= code
 	}
+	if w.Suicided != nil {
+		writeState.State |= suicided
+	}
 	for key := range w.DirtyStorage {
 		writeState.storage[key] = struct{}{}
 	}
@@ -259,6 +295,34 @@ func NewWriteState(w *state.WriteState) *WriteState {
 
 type ReadStates map[common.Address]*ReadState
 type WriteStates map[common.Address]*WriteState
+
+func (r ReadStates) String() string {
+	var ret string
+	var first = true
+	for addr, readState := range r {
+		if first {
+			first = false
+		} else {
+			ret += ", "
+		}
+		ret += addr.Hex() + ":" + readState.String()
+	}
+	return "ReadStates:{" + ret + "}"
+}
+
+func (w WriteStates) String() string {
+	var ret string
+	var first = true
+	for addr, writeState := range w {
+		if first {
+			first = false
+		} else {
+			ret += ", "
+		}
+		ret += addr.Hex() + ":" + writeState.String()
+	}
+	return "WriteStates:{" + ret + "}"
+}
 
 func (r ReadStates) merge(readStates ReadStates) {
 	for addr, readState := range readStates {
@@ -324,6 +388,10 @@ func NewRWRecord(rw *cache.RWRecord) *RWRecord {
 	}
 }
 
+func (r *RWRecord) String() string {
+	return fmt.Sprintf("RWRecord:{%v, %v, %v}", r.readStates, r.ReadChain, r.writeStates)
+}
+
 func (r *RWRecord) isCoinbaseDep() bool {
 	return r.ReadChain&coinbase > 0
 }
@@ -387,16 +455,18 @@ type TxnGroup struct {
 	preplayCount int
 	priority     int
 
-	parent *types.Block
-	header Header
+	parent      *types.Block
+	header      Header
+	chainFactor int
 
 	txnCount   int
 	orderCount *big.Int
 
-	startList   []int
-	subpoolList []TransactionPool
-	nextInList  []map[common.Address]int
-	nextOrder   chan TxnOrder
+	startList      []int
+	subpoolList    []TransactionPool
+	nextInList     []map[common.Address]int
+	nextOrder      chan TxnOrder // order read from this channel is read-only
+	preplayHistory []TxnOrder
 }
 
 func (g *TxnGroup) setInvalid() {
@@ -424,7 +494,7 @@ func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
 
 func (g *TxnGroup) divideTransactionPool() {
 	g.txnCount = g.txns.size()
-	g.orderCount = new(big.Int).SetUint64(1)
+	g.orderCount = new(big.Int).SetUint64(uint64(g.chainFactor))
 	var (
 		inPoolList int
 		poolCpy    = g.txns.copy()
@@ -495,6 +565,49 @@ func (g *TxnGroup) divideTransactionPool() {
 
 		inPoolList += subPool.size()
 	}
+}
+
+func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, bool) {
+	orderBeforeSize := len(orderBefore)
+	groundOrderMap := make(map[common.Hash]struct{}, len(groundOrder))
+	for _, txn := range groundOrder {
+		groundOrderMap[txn] = struct{}{}
+	}
+
+	snapMiss := true
+	for _, order := range g.preplayHistory {
+		if len(order) < orderBeforeSize {
+			panic("Detect missing txn but not find in before process")
+		}
+		var snapHit = true
+		for _, txnInOrder := range order[:orderBeforeSize] {
+			if _, ok := groundOrderMap[txnInOrder]; !ok {
+				snapHit = false
+				break
+			}
+		}
+		if snapHit {
+			snapMiss = false
+			break
+		}
+	}
+	if snapMiss {
+		return false, false
+	}
+
+	for _, order := range g.preplayHistory {
+		var orderHit = true
+		for index, txnInOrder := range order[:orderBeforeSize] {
+			if txnInOrder != orderBefore[index] {
+				orderHit = false
+				break
+			}
+		}
+		if orderHit {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 var getFactorial = func() func(n int64) *big.Int {

@@ -50,6 +50,12 @@ type TransactionApplier interface {
 		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64) (*types.Receipt, error)
 }
 
+type MissReporter interface {
+	SetBlock(block *types.Block)
+	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{})
+	ReportMiss()
+}
+
 //
 //type DefaultTransactionApplier struct{}
 //

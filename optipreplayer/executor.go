@@ -601,7 +601,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 			}
 		}
 
-		// Already have cache.Result, it is posible for some already "in" txs
+		// Already have cache.Result, it is possible for some already "in" txs
 		if _, ok := e.resultMap[txHash]; ok {
 			delete(unpreplayedRawTxsList, txHash)
 			e.executionOrder = append(e.executionOrder, tx)

@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	lru "github.com/hashicorp/golang-lru"
 	"sync"
 )
@@ -26,28 +27,27 @@ type ColdTask struct {
 }
 
 type ObjWarmupTask struct {
+	root    common.Hash
 	objects state.ObjectList
 	storage map[common.Hash]struct{}
 }
 
 type StatedbBox struct {
 	sync.Mutex
-	warmuper *Warmuper
 
 	usableDb       int
 	statedbList    [dbListSize]*state.StateDB
 	processedForDb map[common.Address]map[common.Hash]struct{}
 	dbWarmupCh     chan *ColdTask
 
-	wobjectMap      state.ObjectListMap
+	wobjectListMap  state.ObjectListMap
+	wobjectMapMap   state.ObjectMapMap
 	prepareForObj   map[common.Address]map[common.Hash]struct{}
 	processedForObj map[common.Address]map[common.Hash]struct{}
-	objWarmupChList [objSubgroupSize]chan *ObjWarmupTask
 
-	valid           bool
-	dbWarmupExitCh  chan struct{}
-	objWarmupExitCh chan struct{}
-	wg              sync.WaitGroup
+	valid  bool
+	exitCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 func (b *StatedbBox) warmupDbLoop() {
@@ -79,24 +79,7 @@ func (b *StatedbBox) warmupDbLoop() {
 					}
 				}
 			}
-		case <-b.dbWarmupExitCh:
-			b.wg.Done()
-			return
-		}
-	}
-}
-
-func (b *StatedbBox) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
-	for {
-		select {
-		case task := <-objWarmupCh:
-			for _, wobject := range task.objects {
-				db := wobject.GetDatabase()
-				for key := range task.storage {
-					wobject.GetCommittedState(db, key)
-				}
-			}
-		case <-b.objWarmupExitCh:
+		case <-b.exitCh:
 			b.wg.Done()
 			return
 		}
@@ -110,10 +93,7 @@ func (b *StatedbBox) exit() {
 	b.valid = false
 
 	b.Lock()
-	b.dbWarmupExitCh <- struct{}{}
-	for i := byte(0); i < objSubgroupSize; i++ {
-		b.objWarmupExitCh <- struct{}{}
-	}
+	b.exitCh <- struct{}{}
 	b.Unlock()
 }
 
@@ -128,23 +108,36 @@ type Warmuper struct {
 	chainHeadSub event.Subscription
 	exitCh       chan struct{}
 
+	// Cache
+	GlobalCache *cache.GlobalCache
+
 	valid           bool
+	root            common.Hash
 	statedbBoxCache *lru.Cache
 	minerList       *lru.Cache
+
+	objWarmupChList [objSubgroupSize]chan *ObjWarmupTask
+	objWarmupExitCh chan struct{}
 }
 
 func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
 	chainHeadCh := make(chan ChainHeadEvent, chainHeadChanSize)
 	warmuper := &Warmuper{
-		chain:        chain,
-		cfg:          cfg,
-		coldQueue:    make(chan *ColdTask, coldQueueSize),
-		chainHeadCh:  chainHeadCh,
-		chainHeadSub: chain.SubscribeChainHeadEvent(chainHeadCh),
-		exitCh:       make(chan struct{}),
+		chain:           chain,
+		cfg:             cfg,
+		coldQueue:       make(chan *ColdTask, coldQueueSize),
+		chainHeadCh:     chainHeadCh,
+		chainHeadSub:    chain.SubscribeChainHeadEvent(chainHeadCh),
+		exitCh:          make(chan struct{}),
+		objWarmupChList: [objSubgroupSize]chan *ObjWarmupTask{},
+		objWarmupExitCh: make(chan struct{}, objSubgroupSize),
 	}
 	warmuper.statedbBoxCache, _ = lru.New(dbCacheSize)
 	go warmuper.mainLoop()
+	for index := range warmuper.objWarmupChList {
+		warmuper.objWarmupChList[index] = make(chan *ObjWarmupTask, warmupQueueSize)
+		go warmuper.warmupObjLoop(warmuper.objWarmupChList[index])
+	}
 
 	return warmuper
 }
@@ -158,6 +151,7 @@ func (w *Warmuper) mainLoop() {
 			currentBlock := w.chain.CurrentBlock()
 
 			w.valid = true
+			w.root = currentBlock.Root()
 			if w.minerList == nil {
 				w.minerList, _ = lru.New(minerListSize)
 				nextBlk := w.chain.CurrentBlock().NumberU64() + 1
@@ -177,8 +171,31 @@ func (w *Warmuper) mainLoop() {
 	}
 }
 
+func (w *Warmuper) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
+	for {
+		select {
+		case task := <-objWarmupCh:
+			if w.root != task.root {
+				continue
+			}
+			w.GlobalCache.PauseForProcess()
+			for _, wobject := range task.objects {
+				db := wobject.GetDatabase()
+				for key := range task.storage {
+					wobject.GetCommittedState(db, key)
+				}
+			}
+		case <-w.exitCh:
+			return
+		}
+	}
+}
+
 func (w *Warmuper) exit() {
 	w.exitCh <- struct{}{}
+	for i := byte(0); i < objSubgroupSize; i++ {
+		w.objWarmupExitCh <- struct{}{}
+	}
 }
 
 func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transaction, root common.Hash) {
@@ -293,8 +310,9 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 				groupId := address[0] % objSubgroupSize
 				box.Lock()
 				if box.valid {
-					box.objWarmupChList[groupId] <- &ObjWarmupTask{
-						objects: box.wobjectMap[address][:],
+					w.objWarmupChList[groupId] <- &ObjWarmupTask{
+						root:    task.root,
+						objects: box.wobjectListMap[address][:],
 						storage: deltaStorage,
 					}
 				}
@@ -310,6 +328,12 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 		}
 	}
 	for address, objectList := range task.contentForObject {
+		newObjectList := make(state.ObjectList, 0, len(objectList))
+		for _, obj := range objectList {
+			if _, ok := box.wobjectMapMap[address][obj]; !ok {
+				newObjectList = append(newObjectList, obj)
+			}
+		}
 		if _, ok := box.processedForObj[address]; !ok {
 			if keyMap, ok := box.prepareForObj[address]; ok {
 				box.processedForObj[address] = keyMap
@@ -327,7 +351,7 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 				}
 			}
 		} else {
-			for _, wobject := range objectList {
+			for _, wobject := range newObjectList {
 				for key := range wobject.GetOriginStorage() {
 					if _, ok := baseStorage[key]; !ok {
 						deltaStorage[key] = struct{}{}
@@ -345,18 +369,26 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 
 		box.Lock()
 		if box.valid {
-			box.objWarmupChList[groupId] <- &ObjWarmupTask{
-				objects: box.wobjectMap[address][:],
+			w.objWarmupChList[groupId] <- &ObjWarmupTask{
+				root:    task.root,
+				objects: box.wobjectListMap[address][:],
 				storage: deltaStorage,
 			}
-			box.objWarmupChList[groupId] <- &ObjWarmupTask{
-				objects: objectList,
+			w.objWarmupChList[groupId] <- &ObjWarmupTask{
+				root:    task.root,
+				objects: newObjectList,
 				storage: baseStorageCpy,
 			}
 		}
 		box.Unlock()
 
-		box.wobjectMap[address] = append(box.wobjectMap[address], objectList...)
+		box.wobjectListMap[address] = append(box.wobjectListMap[address], newObjectList...)
+		if _, ok := box.wobjectMapMap[address]; !ok {
+			box.wobjectMapMap[address] = make(state.ObjectPointerMap)
+		}
+		for _, obj := range newObjectList {
+			box.wobjectMapMap[address][obj] = struct{}{}
+		}
 	}
 }
 
@@ -377,25 +409,19 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 	if !ok {
 		statedb, _ := w.chain.StateAt(root)
 		box := &StatedbBox{
-			warmuper:        w,
 			statedbList:     [dbListSize]*state.StateDB{statedb, statedb.Copy()},
 			processedForDb:  make(map[common.Address]map[common.Hash]struct{}),
 			dbWarmupCh:      make(chan *ColdTask, warmupQueueSize),
-			wobjectMap:      make(state.ObjectListMap),
+			wobjectListMap:  make(state.ObjectListMap),
+			wobjectMapMap:   make(state.ObjectMapMap),
 			prepareForObj:   make(map[common.Address]map[common.Hash]struct{}),
 			processedForObj: make(map[common.Address]map[common.Hash]struct{}),
-			objWarmupChList: [objSubgroupSize]chan *ObjWarmupTask{},
 			valid:           true,
-			dbWarmupExitCh:  make(chan struct{}, 1),
-			objWarmupExitCh: make(chan struct{}, objSubgroupSize),
+			exitCh:          make(chan struct{}, 1),
 		}
 
 		go box.warmupDbLoop()
-		for index := range box.objWarmupChList {
-			box.objWarmupChList[index] = make(chan *ObjWarmupTask, warmupQueueSize)
-			go box.warmupObjLoop(box.objWarmupChList[index])
-		}
-		box.wg.Add(int(objSubgroupSize) + 1)
+		box.wg.Add(1)
 
 		if w.cfg.MSRAVMSettings.CmpReuse {
 			for _, statedb := range box.statedbList {

@@ -552,8 +552,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 				}
 				var reducedKeys []uint64
 				for _, key := range keys {
-					rawRound, _ := txPreplay.PreplayResults.Rounds.Peek(key)
-					round := rawRound.(*PreplayResult)
+					round, _ := txPreplay.PeekRound(key)
 					if round.Filled != -1 {
 						continue
 					}

@@ -193,6 +193,13 @@ func (f *Frame) GetPreplayer(pID uint64) *Preplayer {
 	return f.preplayers[pID]
 }
 
+func (f *Frame) GetMissReporter() *MissReporter {
+	for _, preplayer := range f.preplayers {
+		return preplayer.missReporter
+	}
+	return nil
+}
+
 func (f *Frame) GetGlobalCache() *cache.GlobalCache {
 	return f.GlobalCache
 }

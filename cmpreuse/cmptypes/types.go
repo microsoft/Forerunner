@@ -5,6 +5,7 @@ package cmptypes
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
@@ -42,6 +43,46 @@ const (
 	//
 )
 
+func (f Field) String() string {
+	switch f {
+	case Blockhash:
+		return "blockhash"
+	case Coinbase:
+		return "coinbase"
+	case Timestamp:
+		return "timestamp"
+	case Number:
+		return "number"
+	case Difficulty:
+		return "difficulty"
+	case GasLimit:
+		return "gasLimit"
+	case PreBlockHash:
+		return "preBlockHash"
+	case Balance:
+		return "balance"
+	case Nonce:
+		return "nonce"
+	case CodeHash:
+		return "codeHash"
+	case Exist:
+		return "exist"
+	case Empty:
+		return "empty"
+	case Code:
+		return "code"
+	case Storage:
+		return "storage"
+	case CommittedStorage:
+		return "committedStorage"
+	case Dependence:
+		return "dependence"
+	case Suicided:
+		return "suicided"
+	}
+	return ""
+}
+
 func IsChainField(field Field) bool {
 	return field < Balance
 }
@@ -55,6 +96,8 @@ type ReuseStatus struct {
 	HitType      HitType
 	MissType     MissType
 	MixHitStatus *MixHitStatus
+	MissNode     *PreplayResTrieNode
+	MissValue    interface{}
 }
 
 type MixHitStatus struct {
@@ -266,6 +309,25 @@ type AddrLocation struct {
 	Address common.Address `json:"address"`
 	Field   Field          `json:"field"`
 	Loc     interface{}    `json:"loc"` // hash / number
+}
+
+func (a AddrLocation) String() string {
+	switch {
+	case IsChainField(a.Field):
+		switch a.Field {
+		case Blockhash:
+			return fmt.Sprintf("At %v.%d", a.Field, a.Loc.(uint64))
+		default:
+			return fmt.Sprintf("At %v", a.Field)
+		}
+	default:
+		switch a.Field {
+		case Storage, CommittedStorage:
+			return fmt.Sprintf("At %s.%s.%s", a.Address.Hex(), a.Field, a.Loc.(common.Hash).TerminalString())
+		default:
+			return fmt.Sprintf("At %s.%s", a.Address.Hex(), a.Field)
+		}
+	}
 }
 
 func (a AddrLocation) Copy() AddrLocation {

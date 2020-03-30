@@ -53,28 +53,29 @@ type Preplayer struct {
 	// Cache
 	globalCache *cache.GlobalCache
 
-	taskBuilder *TaskBuilder
-	routinePool *grpool.Pool
+	taskBuilder  *TaskBuilder
+	missReporter *MissReporter
+	routinePool  *grpool.Pool
 }
 
 func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *Preplayer {
 	taskBuilder := NewTaskBuilder(config, engine, eth, gasFloor, gasCeil, listener)
 	trigger := &Trigger{
-		Name:                      "TxsBlock1P1",
-		ExecutorNum:               10,
-		IsBlockCntDrive:           true,
-		PreplayedBlockNumberLimit: 1,
+		Name:        "TxsBlock1P1",
+		ExecutorNum: 10,
 	}
 	preplayer := &Preplayer{
-		config:      config,
-		engine:      engine,
-		eth:         eth,
-		chain:       eth.BlockChain(),
-		exitCh:      make(chan struct{}),
-		trigger:     trigger,
-		taskBuilder: taskBuilder,
-		routinePool: grpool.NewPool(trigger.ExecutorNum, trigger.ExecutorNum),
+		config:       config,
+		engine:       engine,
+		eth:          eth,
+		chain:        eth.BlockChain(),
+		exitCh:       make(chan struct{}),
+		trigger:      trigger,
+		taskBuilder:  taskBuilder,
+		missReporter: NewMissReporter(),
+		routinePool:  grpool.NewPool(trigger.ExecutorNum, trigger.ExecutorNum),
 	}
+	preplayer.missReporter.preplayer = preplayer
 
 	go taskBuilder.mainLoop()
 	//taskBuilder.startCh <- struct{}{}
@@ -100,6 +101,7 @@ func (p *Preplayer) mainLoop() {
 					p.taskBuilder.preplayLog.reportGroupPreplay(task)
 					task.preplayCount++
 					task.priority = task.preplayCount * task.txnCount
+					task.preplayHistory = append(task.preplayHistory, txnOrder)
 					if task.preplayCount < 1 {
 						//if task.txnCount > 1 || task.isChainDep() {
 						taskQueue.pushTask(task)

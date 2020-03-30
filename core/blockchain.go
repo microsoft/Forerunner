@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"io"
 	"math/big"
 	mrand "math/rand"
@@ -183,11 +184,12 @@ type BlockChain struct {
 	terminateInsert func(common.Hash, uint64) bool // Testing hook used to terminate ancient receipt chain insertion.
 
 	// MSRA
-	Cmpreuse     TransactionApplier
-	MSRACache    *cache.GlobalCache
-	Warmuper     *Warmuper
-	execTimeList ExecTimeList
-	asyncWriteWg sync.WaitGroup
+	Cmpreuse        TransactionApplier
+	MSRACache       *cache.GlobalCache
+	Warmuper        *Warmuper
+	execTimeList    ExecTimeList
+	ReportReuseMiss MissReporter
+	asyncWriteWg    sync.WaitGroup
 
 	InsertChainRecorder InsertChainRecorder
 
@@ -1858,6 +1860,29 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		bc.MSRACache.Continue()
 		if !bc.vmConfig.MSRAVMSettings.Silent {
 			bc.MSRACache.InfoPrint(block, bc.vmConfig, bc.MSRACache.Synced())
+			var (
+				nodes  = make([]*cmptypes.PreplayResTrieNode, 0)
+				values = make([]interface{}, 0)
+				txns   types.Transactions
+			)
+			for index, txn := range block.Transactions() {
+				if cache.ReuseResult[index].BaseStatus == cmptypes.Miss {
+					if node := cache.ReuseResult[index].MissNode; node != nil {
+						nodes = append(nodes, node)
+						values = append(values, cache.ReuseResult[index].MissValue)
+						txns = append(txns, txn)
+					} else {
+						panic("Detect miss with nil node")
+					}
+				}
+			}
+			if len(txns) > 0 {
+				bc.ReportReuseMiss.SetBlock(block)
+				for i, txn := range txns {
+					bc.ReportReuseMiss.SetMissTxn(txn, nodes[i], values[i])
+				}
+			}
+			bc.ReportReuseMiss.ReportMiss()
 		}
 
 		if err != nil {

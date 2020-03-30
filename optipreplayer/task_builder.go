@@ -62,11 +62,12 @@ type TaskBuilder struct {
 	txnDeadline uint64
 
 	// Transaction distributor
-	nowHeader  Header
-	nowGroups  map[common.Hash]*TxnGroup
-	pastGroups map[common.Hash]*TxnGroup
-	parent     *types.Block
-	rwrecord   map[common.Hash]*RWRecord
+	nowHeader    Header
+	nowGroups    map[common.Hash]*TxnGroup
+	pastGroups   map[common.Hash]*TxnGroup
+	pastGroupsMu sync.RWMutex
+	parent       *types.Block
+	rwrecord     map[common.Hash]*RWRecord
 
 	// Task queue
 	taskQueue *TaskQueue
@@ -79,10 +80,8 @@ func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Bac
 	chain := eth.BlockChain()
 	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
 	trigger := &Trigger{
-		Name:                      "TxsBlock1P1",
-		ExecutorNum:               1,
-		IsBlockCntDrive:           true,
-		PreplayedBlockNumberLimit: 1,
+		Name:        "TxsBlock1P1",
+		ExecutorNum: 1,
 	}
 	builder := &TaskBuilder{
 		config:       config,
@@ -316,14 +315,26 @@ func (b *TaskBuilder) updateTxnGroup() {
 	}
 
 	for groupHash, group := range b.nowGroups {
+		b.pastGroupsMu.RLock()
 		if _, ok := b.pastGroups[groupHash]; ok {
+			b.pastGroupsMu.RUnlock()
 			continue
 		}
+		b.pastGroupsMu.RUnlock()
+		b.pastGroupsMu.Lock()
 		b.pastGroups[groupHash] = group
+		b.pastGroupsMu.Unlock()
 		b.preplayLog.reportNewGroup(group)
 		group.setValid()
 		group.parent = b.parent
 		group.header = b.nowHeader
+		group.chainFactor = 1
+		if group.isCoinbaseDep() {
+			group.chainFactor *= len(b.minerList.top5Active)
+		}
+		if group.isTimestampDep() {
+			group.chainFactor *= len(timeShift)
+		}
 		group.nextOrder = make(chan TxnOrder)
 
 		for _, txns := range group.txns {
@@ -364,10 +375,14 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 		gasLimit: b.gasLimit,
 	}
 	b.nowGroups = make(map[common.Hash]*TxnGroup)
+	b.pastGroupsMu.RLock()
 	for _, group := range b.pastGroups {
 		group.setInvalid()
 	}
+	b.pastGroupsMu.RUnlock()
+	b.pastGroupsMu.Lock()
 	b.pastGroups = make(map[common.Hash]*TxnGroup)
+	b.pastGroupsMu.Unlock()
 	b.parent = block
 }
 
@@ -460,9 +475,8 @@ func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
 			txnHash := txn.Hash()
 			txPreplay := b.globalCache.GetTxPreplay(txnHash)
 			if txPreplay != nil {
-				if res, ok := txPreplay.PreplayResults.Rounds.Peek(roundID); ok {
-					rwrecord := res.(*cache.PreplayResult).RWrecord
-					b.rwrecord[txnHash] = NewRWRecord(rwrecord)
+				if round, ok := txPreplay.PeekRound(roundID); ok {
+					b.rwrecord[txnHash] = NewRWRecord(round.RWrecord)
 					continue
 				}
 			}

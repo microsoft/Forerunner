@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"github.com/ethereum/go-ethereum/params"
+	"math"
 	"math/big"
 	"sort"
 	"sync"
@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
 )
 
@@ -67,7 +68,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 // CreateRound create new round preplay for tx;
 func (t *TxPreplay) CreateOrGetRound(roundID uint64) (*PreplayResult, bool) {
 	round, ok := t.PreplayResults.Rounds.Get(roundID)
-	if ok == true {
+	if ok {
 		return round.(*PreplayResult), false // false means this roundId already exists
 	}
 
@@ -102,9 +103,9 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds       *lru.Cache `json:"-"`
+	Rounds *lru.Cache `json:"-"`
 	// deprecated
-	RWrecords    *lru.Cache `json:"-"`
+	RWrecords *lru.Cache `json:"-"`
 	// deprecated
 	ReadDeps     *lru.Cache `json:"-"`
 	RWRecordTrie *cmptypes.PreplayResTrie
@@ -613,7 +614,7 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 }
 
 // SetMainResult set the result for a tx
-func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord,	wobjects state.ObjectMap,
+func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap,
 	readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
 
 	if receipt == nil || rwRecord == nil {
@@ -772,7 +773,11 @@ func (r *GlobalCache) CommitTxResult(roundID uint64, currentState *CurrentState,
 func (r *GlobalCache) NewRoundID() uint64 {
 	r.PreplayRoundIDMu.Lock()
 	defer r.PreplayRoundIDMu.Unlock()
-	r.PreplayRoundID++
+	if r.PreplayRoundID == math.MaxUint64 {
+		r.PreplayRoundID = 1
+	} else {
+		r.PreplayRoundID++
+	}
 	return r.PreplayRoundID
 }
 

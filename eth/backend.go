@@ -217,6 +217,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if vmConfig.MSRAVMSettings.CmpReuse || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
 		cmpr.MSRACache = msracache
+		eth.blockchain.Warmuper.GlobalCache = msracache
 	}
 
 	eth.blockchain.Cmpreuse = cmpr
@@ -250,6 +251,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if config.MSRAVMSettings.EnablePreplay {
 		eth.frame = optipreplayer.NewFrame(eth, eth.blockchain.Config(), eth.EventMux(), eth.engine, config.Miner.GasFloor, config.Miner.GasCeil)
 		eth.frame.SetExtra(makeExtraData(config.Miner.ExtraData))
+		eth.blockchain.ReportReuseMiss = eth.frame.GetMissReporter()
 	}
 
 	eth.APIBackend = &EthAPIBackend{ctx.ExtRPCEnabled(), eth, nil}

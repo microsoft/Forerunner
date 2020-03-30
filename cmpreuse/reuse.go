@@ -234,12 +234,13 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
-	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool) (*cache.PreplayResult, *cmptypes.MixHitStatus, bool, bool) {
+	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool) (*cache.PreplayResult,
+	*cmptypes.MixHitStatus, *cmptypes.PreplayResTrieNode, interface{}, bool, bool) {
 	//txPreplay.Mu.Lock()
 	//defer txPreplay.Mu.Unlock()
 
 	trie := txPreplay.PreplayResults.MixTree
-	res, mixHitStatus, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false)
+	res, mixHitStatus, missNode, missValue, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false, isBlockProcess)
 	if ok {
 		//res := trieNode.Round.(*cache.PreplayResult)
 
@@ -247,7 +248,7 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			if isBlockProcess {
 				log.Warn("mixhit fail caused by BLOCKPRE", "txhash", txPreplay.TxHash.Hex())
 			}
-			return nil, mixHitStatus, isAbort, false
+			return nil, mixHitStatus, missNode, missValue, isAbort, false
 		}
 		//if !CheckRChain(res.RWrecord, bc, header) {
 		//	if isBlockProcess { // TODO: debug code
@@ -303,9 +304,9 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			mixHitStatus.DepUnmatchedInHead = headUmatched
 		}
 
-		return res, mixHitStatus, isAbort, true
+		return res, mixHitStatus, missNode, missValue, isAbort, true
 	} else {
-		return nil, mixHitStatus, isAbort, false
+		return nil, mixHitStatus, missNode, missValue, isAbort, false
 	}
 }
 
@@ -528,6 +529,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 
 	var ok, isAbort bool
 	var mixStatus *cmptypes.MixHitStatus
+	var missNode *cmptypes.PreplayResTrieNode
+	var missValue interface{}
 
 	t0 := time.Now()
 	txPreplay := reuse.MSRACache.GetTxPreplay(tx.Hash())
@@ -537,7 +540,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 	txPreplay.Mu.Lock()
 
-	round, mixStatus, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
+	round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
 	if ok {
 		d0 = time.Since(t0)
 		cmpCnt = 1
@@ -557,7 +560,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				mixbs, _ := json.Marshal(mixStatus)
 				roundbs, _ := json.Marshal(round)
 				log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
-				SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true)
+				SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true, isBlockProcess)
 				log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
 				SearchTree(txPreplay.PreplayResults.ReadDepTree, statedb, bc, header, func() bool { return false }, true)
 				panic("unsupposed match by dep hit")
@@ -580,7 +583,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					mixbs, _ := json.Marshal(mixStatus)
 					roundbs, _ := json.Marshal(round)
 					log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
-					SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true)
+					SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true, isBlockProcess)
 					log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
 					SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, func() bool { return false }, true)
 					formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
@@ -657,7 +660,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 
 					log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++", "depmatch", depMatch)
 
-
 					//panic("unsupposed match by trie hit")
 				}
 			} else if isAbort {
@@ -702,7 +704,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				//}
 				d0 = time.Since(t0)
 				cmpCnt = 1
-				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss}
+				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss,
+					MissNode: missNode, MissValue: missValue}
 				txPreplay.Mu.Unlock()
 				return
 			}
@@ -719,7 +722,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail} // fail for gas limit reach, quit compete
 		return
 	}
-	
+
 	t1 := time.Now()
 	reuse.setStateDB(bc, author, statedb, header, tx, round, status, abort)
 	d1 = time.Since(t1)

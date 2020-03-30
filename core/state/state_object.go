@@ -71,7 +71,9 @@ func newDeltaObject() *deltaObject {
 
 type ObjectList []*stateObject
 type ObjectMap map[common.Address]*stateObject
+type ObjectPointerMap map[*stateObject]struct{}
 type ObjectListMap map[common.Address][]*stateObject
+type ObjectMapMap map[common.Address]map[*stateObject]struct{}
 
 // stateObject represents an Ethereum account which is being modified.
 //

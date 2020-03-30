@@ -374,7 +374,7 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
 		childNode, ok := currentNode.Children[value]
 		if debug {
-			albs,_:= json.Marshal(&cmptypes.AddrLocValue{nodeType, value})
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
 			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
 				"loc", nodeType.Loc, "value", value, "alv", string(albs))
 		}
@@ -387,29 +387,33 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 	return currentNode, false, true
 }
 
-func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, debug bool) (
-	round *cache.PreplayResult, mixStatus *cmptypes.MixHitStatus, isAbort bool, ok bool) {
+func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool,
+	debug bool, isBlockProcess bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixHitStatus,
+	missNode *cmptypes.PreplayResTrieNode, missValue interface{}, isAbort bool, ok bool) {
 	currentNode := trie.Root
 
 	if currentNode.NodeType == nil {
-		return nil, nil, false, false
+		return nil, nil, copyNode(currentNode), nil, false, false
 	}
 
-	var matchedDeps []common.Address
-	depMatchedMap := make(map[common.Address]bool)
-	allDepMatched := true
-	allDetailMatched := true
+	var (
+		matchedDeps   []common.Address
+		depMatchedMap = make(map[common.Address]bool)
+
+		allDepMatched    = true
+		allDetailMatched = true
+	)
 
 	for ; !currentNode.IsLeaf; {
 		if abort() {
-			return nil, nil, true, false
+			return nil, nil, nil, nil, true, false
 		}
 		nodeType := currentNode.NodeType
 		value := getCurrentValue(nodeType, db, bc, header)
 		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
 		childNode, ok := currentNode.Children[value]
 		if debug {
-			albs,_:= json.Marshal(&cmptypes.AddrLocValue{nodeType, value})
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
 			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
 				"loc", nodeType.Loc, "value", value, "alv", string(albs))
 		}
@@ -430,7 +434,11 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 						"loc", nodeType.Loc, "value", value)
 				}
 			} else {
-				return nil, nil, false, false
+				if isBlockProcess {
+					return nil, nil, copyNode(currentNode), value, false, false
+				} else {
+					return nil, nil, nil, nil, false, false
+				}
 			}
 		}
 	}
@@ -442,7 +450,24 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	}
 
 	mixStatus = &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
-	return currentNode.Round.(*cache.PreplayResult), mixStatus, false, true
+	return currentNode.Round.(*cache.PreplayResult), mixStatus, nil, nil, false, true
+}
+
+func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
+	nodeCpy := &cmptypes.PreplayResTrieNode{
+		Children: make(map[interface{}]*cmptypes.PreplayResTrieNode, len(node.Children)),
+	}
+	if node.NodeType != nil {
+		nodeCpy.NodeType = &cmptypes.AddrLocation{
+			Address: node.NodeType.Address,
+			Field:   node.NodeType.Field,
+			Loc:     node.NodeType.Loc,
+		}
+	}
+	for child := range node.Children {
+		nodeCpy.Children[child] = nil
+	}
+	return nodeCpy
 }
 
 func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc core.ChainContext, header *types.Header) interface{} {
