@@ -9,10 +9,78 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"math/big"
 )
 
-func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
+func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
+	if blockNumber > trie.LatestBN {
+		trie.LatestBN = blockNumber
+	}
+	if trie.LeafCount > 0 {
+		// each tx only have one kind of result now.
+		return
+	}
+	currentNode := trie.Root
 	record := round.RWrecord
+	seqRecord := record.ReadDetail.ReadDetailSeq
+	// assert seqRecord len
+	if len(seqRecord) != 5 {
+		return
+	} else {
+		//assert to is a common user
+		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
+			return
+		} else {
+			value := seqRecord[4].Value.(common.Hash)
+			if value != nilCodeHash && value != emptyCodeHash {
+				return
+			}
+		}
+	}
+	var sender common.Address
+	isSender := true
+	for _, addrFieldValue := range seqRecord {
+		if addrFieldValue.AddLoc.Field == cmptypes.Balance {
+			if isSender {
+				sender = addrFieldValue.AddLoc.Address
+				isSender = false
+				minB := new(big.Int).Add(tx.Value(), new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasPrice()))
+				adv := &cmptypes.AddrLocValue{
+					AddLoc: &cmptypes.AddrLocation{
+						Address: addrFieldValue.AddLoc.Address,
+						Field:   cmptypes.MinBalance,
+						Loc:     minB,
+					},
+					Value: true,
+				}
+				currentNode = insertNode(currentNode, adv)
+			}
+		} else {
+			currentNode = insertNode(currentNode, addrFieldValue)
+		}
+	}
+	if currentNode.IsLeaf {
+	} else {
+		currentNode.IsLeaf = true
+
+		// set delta
+		record.WStateDelta = make(map[common.Address]*cache.WStateDelta)
+
+		senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
+		record.WStateDelta[sender] = &cache.WStateDelta{senderBalanceDelta}
+		if tx.To() != nil {
+			if _, ok := record.WState[*tx.To()]; ok {
+				toBalanceDelta := new(big.Int).Sub(record.WState[*tx.To()].Balance, record.RState[*tx.To()].Balance)
+				record.WStateDelta[*tx.To()] = &cache.WStateDelta{toBalanceDelta}
+			}
+		}
+		currentNode.RWRecord = record
+		trie.LeafCount += 1
+	}
+	trie.RoundIds[round.RoundID] = true
+}
+
+func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
 
 	if blockNumber > trie.LatestBN {
 		trie.LatestBN = blockNumber
@@ -22,6 +90,7 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	}
 
 	currentNode := trie.Root
+	record := round.RWrecord
 	seqRecord := record.ReadDetail.ReadDetailSeq
 	for _, addrFieldValue := range seqRecord {
 		currentNode = insertNode(currentNode, addrFieldValue)
@@ -138,25 +207,16 @@ func SearchAccDep(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Chai
 const FixedDepCheckCount = 4
 
 func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
-	//if len(round.ReadDeps) > 10 {
-	//	return
-	//}
+
 	if trie.LeafCount > 1000 {
 		trie.Clear()
 	}
 	//trie.ClearOld(3)
 	trie.LatestBN = blockNumber
 
-	//var topseq []*cmptypes.AddrLocValue
-	//topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.Number}, Value: blockNumber})
-	//topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.PreBlockHash}, Value: *preBlockHash})
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 
 	currentNode := trie.Root
-
-	//for _, blockDep := range topseq {
-	//	currentNode = insertNode(currentNode, blockDep)
-	//}
 
 	hitDep := make(map[interface{}]bool)
 	depCheckedAddr := make(map[common.Address]bool)
@@ -164,21 +224,6 @@ func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, bl
 	leafCount := new(int)
 
 	insertDep2MixTree(currentNode, 0, round.ReadDeps, 0, detailSeq, hitDep, depCheckedAddr, checkedButNoHit, round, leafCount)
-
-	//// TODO: clear top layer' DetailChild
-	//topDetail := &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode)}
-	//topNode := trie.Root
-	//if !round.RWrecord.ReadDetail.IsBlockNumberSensitive {
-	//	topNode.DetailChild = topDetail
-	//} else {
-	//	topNode = topNode.Children[blockNumber]
-	//	topNode.DetailChild = topDetail
-	//}
-	//for _, detailAlv := range detailSeq {
-	//	topDetail = insertNode(topDetail, detailAlv)
-	//}
-	//topDetail.IsLeaf = true
-	//topDetail.Round = round
 
 	trie.LeafCount += 1
 	trie.RoundIds[round.RoundID] = true
@@ -402,7 +447,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 
 	var (
 		matchedDeps   []common.Address
-		depMatchedMap = make(map[common.Address]bool)
+		depMatchedMap = make(map[common.Address]interface{})
 
 		allDepMatched    = true
 		allDetailMatched = true
@@ -426,7 +471,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 			if nodeType.Field == cmptypes.Dependence {
 				allDetailMatched = false
 				matchedDeps = append(matchedDeps, nodeType.Address)
-				depMatchedMap[nodeType.Address] = true
+				depMatchedMap[nodeType.Address] = value
 			}
 		} else {
 			if currentNode.DetailChild != nil {
@@ -438,10 +483,12 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 						"loc", nodeType.Loc, "value", value)
 				}
 			} else {
+				mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
+
 				if isBlockProcess {
-					return nil, nil, copyNode(currentNode), value, false, false
+					return nil, mixStatus, copyNode(currentNode), value, false, false
 				} else {
-					return nil, nil, nil, nil, false, false
+					return nil, mixStatus, nil, nil, false, false
 				}
 			}
 		}
@@ -527,6 +574,8 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 			value = *statedb.GetAccountSnap(addr)
 		}
 		return value
+	case cmptypes.MinBalance:
+		return statedb.GetBalance(addr).Cmp(addrLoc.Loc.(*big.Int)) > 0
 	default:
 		log.Error("wrong field", "field ", addrLoc.Field)
 	}

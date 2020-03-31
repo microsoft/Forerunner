@@ -5,6 +5,7 @@ package cmptypes
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -40,7 +41,8 @@ const (
 	DirtyStorage
 	Suicided
 
-	//
+	//DeltaInfo
+	MinBalance
 )
 
 func (f Field) String() string {
@@ -103,7 +105,7 @@ type ReuseStatus struct {
 type MixHitStatus struct {
 	MixHitType         MixHitType
 	DepHitAddr         []common.Address
-	DepHitAddrMap      map[common.Address]bool
+	DepHitAddrMap      map[common.Address]interface{}
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
 }
 
@@ -164,6 +166,7 @@ const (
 	TrieHit
 	DepHit
 	MixHit
+	DeltaHit
 )
 
 type MixHitType int
@@ -172,6 +175,7 @@ const (
 	AllDepHit MixHitType = iota
 	AllDetailHit
 	PartialHit
+	NotMixHit
 )
 
 type MissType int
@@ -222,13 +226,13 @@ func (a AccountSnap) String() string {
 }
 
 func (a AccountSnap) MarshalJSON() ([]byte, error) {
-	return []byte(a.String()), nil
+	return json.Marshal(fmt.Sprintf("0x%s", a.String()))
 }
 
 func BytesToAccountSnap(bs []byte) *AccountSnap {
 	if len(bs) > AccountSnapLen {
 		bs = bs[len(bs)-AccountSnapLen:]
-		//fixme:
+		//
 		panic("too long bytes " + "" + string(len(bs)))
 	}
 	var as AccountSnap

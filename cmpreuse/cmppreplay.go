@@ -58,14 +58,11 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		if !ok {
 			return
 		}
-		needInsert := reuse.setReadDepTree(txPreplay, round, curBlockNumber, &preBlockHash)
-		if needInsert {
-			reuse.setMixTree(txPreplay, round, curBlockNumber, &preBlockHash)
-		} else {
-			log.Warn("set readdep tree is unnecessary")
-		}
+		reuse.setMixTree(txPreplay, round, curBlockNumber, &preBlockHash)
+
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+			reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
 		}
 	}
 	if time.Since(start) > 30*time.Second {
@@ -85,6 +82,10 @@ func (reuse *Cmpreuse) setReadDepTree(txPreplay *cache.TxPreplay, round *cache.P
 
 func (reuse *Cmpreuse) setMixTree(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
 	InsertMixTree(txPreplay.PreplayResults.MixTree, round, curBlockNumber, preBlockHash)
+}
+
+func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
+	InsertDelta(tx, txPreplay.PreplayResults.DeltaTree, round, curBlockNumber)
 }
 
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
@@ -197,6 +198,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				wobjects = reuseRound.WObjects
 				statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), reuseRound.RoundID, nil)
 			} else {
+				// all detail hit or delta hit
 				readDeps = updateNewReadDep(statedb, reuseRound.ReadDeps)
 				wobjects = statedb.RWRecorder().WObjectDump()
 				statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)

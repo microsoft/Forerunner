@@ -55,6 +55,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
 	preplayResults.ReadDepTree = cmptypes.NewPreplayResTrie()
 	preplayResults.MixTree = cmptypes.NewPreplayResTrie()
+	preplayResults.DeltaTree = cmptypes.NewPreplayResTrie()
 
 	return &TxPreplay{
 		PreplayResults: preplayResults,
@@ -111,6 +112,7 @@ type PreplayResults struct {
 	RWRecordTrie *cmptypes.PreplayResTrie
 	ReadDepTree  *cmptypes.PreplayResTrie
 	MixTree      *cmptypes.PreplayResTrie
+	DeltaTree    *cmptypes.PreplayResTrie
 }
 
 // PreplayResult record one round result
@@ -143,16 +145,21 @@ type PreplayResult struct {
 	Filled int64
 }
 
+type WStateDelta struct {
+	Balance *big.Int
+}
+
 // RWRecord for record
 type RWRecord struct {
 	RWHash common.Hash
 	IterMu sync.Mutex
 	// HashOrder [][]byte
 
-	RState     map[common.Address]*state.ReadState
-	ReadDetail *cmptypes.ReadDetail
-	RChain     state.ReadChain
-	WState     map[common.Address]*state.WriteState
+	RState      map[common.Address]*state.ReadState
+	ReadDetail  *cmptypes.ReadDetail
+	RChain      state.ReadChain
+	WState      map[common.Address]*state.WriteState
+	WStateDelta map[common.Address]*WStateDelta
 
 	Failed bool
 	Hashed bool

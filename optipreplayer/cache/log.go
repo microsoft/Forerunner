@@ -34,7 +34,7 @@ type LogBlockInfo struct {
 	Hit             int           `json:"H"`
 	Miss            int           `json:"M"`
 	Unknown         int           `json:"U"`
-	IteraHit        int           `json:"IH"`
+	DeltaHit        int           `json:"EH"`
 	TrieHit         int           `json:"TH"`
 	DepHit          int           `json:"DH"`
 	MixHit          int           `json:"MH"`
@@ -284,10 +284,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			case cmptypes.Hit:
 				infoResult.Hit++
 				switch ReuseResult[index].HitType {
-				case cmptypes.IteraHit:
-					infoResult.IteraHit++
 				case cmptypes.TrieHit:
 					infoResult.TrieHit++
+				case cmptypes.DeltaHit:
+					infoResult.DeltaHit++
 				case cmptypes.MixHit:
 					infoResult.MixHit++
 					switch ReuseResult[index].MixHitStatus.MixHitType {
@@ -438,7 +438,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, iteraHitRate, trieHitRate, depHitRate, mixHitRate float64
+		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, trieHitRate, depHitRate, mixHitRate, deltaHitRate float64
 		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
@@ -447,8 +447,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			hitRate = float64(infoResult.Hit) / float64(infoResult.TxnCount)
 			missRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
-			iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
+			//iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
+			deltaHitRate = float64(infoResult.DeltaHit) / float64(infoResult.TxnCount)
 			depHitRate = float64(infoResult.DepHit) / float64(infoResult.TxnCount)
 			mixHitRate = float64(infoResult.MixHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
@@ -459,12 +460,11 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
 			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-			"IH-TH-DH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				infoResult.IteraHit, iteraHitRate, infoResult.TrieHit, trieHitRate, infoResult.DepHit, depHitRate),
+			"EH-TH-DH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate, infoResult.DepHit, depHitRate),
 			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d]", infoResult.MixHit, mixHitRate,
 				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit),
 			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
-
 		}
 		if infoResult.Miss > 0 {
 			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))

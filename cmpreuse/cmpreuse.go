@@ -212,14 +212,14 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre, cfg); round != nil {
 		waitReuse := time.Since(reuseStart)
 
-		var roundId uint64
+		//var roundId uint64
 
-		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.DepHit && msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
-			roundId = round.RoundID
-		} else {
-			roundId = 0 // roundId = 0 means this res count not be matched
-		}
-		reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
+		//if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.DepHit && msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
+		//	roundId = round.RoundID
+		//} else {
+		//	roundId = 0 // roundId = 0 means this res dep not be matched
+		//}
+		//reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
 
 		t0 := time.Now()
 		receipt := reuse.finalise(config, reuseDB, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
