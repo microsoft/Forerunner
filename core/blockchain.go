@@ -1849,6 +1849,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		// Process block using the parent state as reference point
 		cache.ResetLogVar(len(block.Transactions()))
 		bc.MSRACache.Pause()
+		bc.Warmuper.Pause()
 		substart := time.Now()
 		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
 			bp := types.NewParallelBloomProcessor()
@@ -1857,33 +1858,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
 		cache.Process = time.Since(substart)
-		bc.MSRACache.Continue()
-		if !bc.vmConfig.MSRAVMSettings.Silent {
-			bc.MSRACache.InfoPrint(block, bc.vmConfig, bc.MSRACache.Synced())
-			var (
-				nodes  = make([]*cmptypes.PreplayResTrieNode, 0)
-				values = make([]interface{}, 0)
-				txns   types.Transactions
-			)
-			for index, txn := range block.Transactions() {
-				if cache.ReuseResult[index].BaseStatus == cmptypes.Miss {
-					if node := cache.ReuseResult[index].MissNode; node != nil {
-						nodes = append(nodes, node)
-						values = append(values, cache.ReuseResult[index].MissValue)
-						txns = append(txns, txn)
-					} else {
-						panic("Detect miss with nil node")
-					}
-				}
-			}
-			if len(txns) > 0 {
-				bc.ReportReuseMiss.SetBlock(block)
-				for i, txn := range txns {
-					bc.ReportReuseMiss.SetMissTxn(txn, nodes[i], values[i])
-				}
-			}
-			bc.ReportReuseMiss.ReportMiss()
-		}
 
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -1925,6 +1899,35 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			return it.index, err
 		}
 		atomic.StoreUint32(&followupInterrupt, 1)
+
+		bc.MSRACache.Continue()
+		bc.Warmuper.Continue()
+		if !bc.vmConfig.MSRAVMSettings.Silent {
+			bc.MSRACache.InfoPrint(block, bc.vmConfig, bc.MSRACache.Synced())
+			var (
+				nodes  = make([]*cmptypes.PreplayResTrieNode, 0)
+				values = make([]interface{}, 0)
+				txns   types.Transactions
+			)
+			for index, txn := range block.Transactions() {
+				if cache.ReuseResult[index].BaseStatus == cmptypes.Miss {
+					if node := cache.ReuseResult[index].MissNode; node != nil {
+						nodes = append(nodes, node)
+						values = append(values, cache.ReuseResult[index].MissValue)
+						txns = append(txns, txn)
+					} else {
+						log.Error("Detect miss with nil node")
+					}
+				}
+			}
+			if len(txns) > 0 {
+				bc.ReportReuseMiss.SetBlock(block)
+				for i, txn := range txns {
+					bc.ReportReuseMiss.SetMissTxn(txn, nodes[i], values[i])
+				}
+			}
+			bc.ReportReuseMiss.ReportMiss()
+		}
 
 		// Update the metrics touched during block commit
 		accountCommitTimer.Update(statedb.AccountCommits) // Account commits are complete, we can mark them

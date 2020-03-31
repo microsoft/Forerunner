@@ -393,7 +393,11 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	currentNode := trie.Root
 
 	if currentNode.NodeType == nil {
-		return nil, nil, copyNode(currentNode), nil, false, false
+		if isBlockProcess {
+			return nil, nil, copyNode(currentNode), nil, false, false
+		} else {
+			return nil, nil, nil, nil, false, false
+		}
 	}
 
 	var (

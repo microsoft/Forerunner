@@ -335,7 +335,7 @@ func (c *Collector) printerLoop() {
 			return
 
 		default:
-			if time.Now().Second() == 0 {
+			if time.Now().Second() == 0 && c.globalCache != nil {
 				c.globalCache.BucketPrint(last)
 				last = c.globalCache.RoundTimeToMinute((uint64)(time.Now().Unix()))
 				time.Sleep(time.Second * 59)

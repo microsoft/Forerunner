@@ -9,6 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	lru "github.com/hashicorp/golang-lru"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -108,6 +110,12 @@ type Warmuper struct {
 	chainHeadSub event.Subscription
 	exitCh       chan struct{}
 
+	// Pause and continue
+	pause      int32
+	pauseCh    chan struct{}
+	pauseWg    sync.WaitGroup
+	continueWg sync.WaitGroup
+
 	// Cache
 	GlobalCache *cache.GlobalCache
 
@@ -117,7 +125,6 @@ type Warmuper struct {
 	minerList       *lru.Cache
 
 	objWarmupChList [objSubgroupSize]chan *ObjWarmupTask
-	objWarmupExitCh chan struct{}
 }
 
 func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
@@ -128,9 +135,9 @@ func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
 		coldQueue:       make(chan *ColdTask, coldQueueSize),
 		chainHeadCh:     chainHeadCh,
 		chainHeadSub:    chain.SubscribeChainHeadEvent(chainHeadCh),
-		exitCh:          make(chan struct{}),
+		exitCh:          make(chan struct{}, 1+objSubgroupSize),
+		pauseCh:         make(chan struct{}, objSubgroupSize),
 		objWarmupChList: [objSubgroupSize]chan *ObjWarmupTask{},
-		objWarmupExitCh: make(chan struct{}, objSubgroupSize),
 	}
 	warmuper.statedbBoxCache, _ = lru.New(dbCacheSize)
 	go warmuper.mainLoop()
@@ -178,23 +185,42 @@ func (w *Warmuper) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
 			if w.root != task.root {
 				continue
 			}
-			w.GlobalCache.PauseForProcess()
 			for _, wobject := range task.objects {
 				db := wobject.GetDatabase()
 				for key := range task.storage {
 					wobject.GetCommittedState(db, key)
 				}
 			}
+		case <-w.pauseCh:
+			w.pauseWg.Done()
+			for atomic.LoadInt32(&w.pause) == 1 {
+				time.Sleep(2 * time.Millisecond)
+			}
+			w.continueWg.Done()
 		case <-w.exitCh:
 			return
 		}
 	}
 }
 
-func (w *Warmuper) exit() {
-	w.exitCh <- struct{}{}
+func (w *Warmuper) Pause() {
+	w.pauseWg.Add(int(objSubgroupSize))
+	atomic.StoreInt32(&w.pause, 1)
 	for i := byte(0); i < objSubgroupSize; i++ {
-		w.objWarmupExitCh <- struct{}{}
+		w.pauseCh <- struct{}{}
+	}
+	w.pauseWg.Wait()
+}
+
+func (w *Warmuper) Continue() {
+	w.continueWg.Add(int(objSubgroupSize))
+	atomic.StoreInt32(&w.pause, 0)
+	w.continueWg.Wait()
+}
+
+func (w *Warmuper) exit() {
+	for i := byte(0); i < 1+objSubgroupSize; i++ {
+		w.exitCh <- struct{}{}
 	}
 }
 
