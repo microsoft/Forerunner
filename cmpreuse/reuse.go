@@ -890,7 +890,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 			//The delta reuse should be banned when preplaying, because:
 			//	1. Reusing delta would reduce variety of dep relations and reduce the hit rate of dep match
 			//	2. Delta reuse will be still helpful for blockprocessing
-			if isBlockProcess  {
+			if isBlockProcess {
 				round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
 				if ok {
 					d0 = time.Since(t0)
@@ -909,7 +909,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				} else {
 					d0 = time.Since(t0)
 					cmpCnt = 1
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss}
+					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss,
+						MissNode: missNode, MissValue: missValue}
 					txPreplay.Mu.Unlock()
 					return
 				}
