@@ -322,10 +322,7 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.
 			wobject[addr] = nil
 		} else {
 			wstate, ok := rw.WState[addr]
-			if !ok {
-				panic(fmt.Sprintf("Write object miss, addr = %s", addr.Hex()))
-			}
-			if ApplyWState(statedb, addr, wstate) {
+			if ok && ApplyWState(statedb, addr, wstate) {
 				suicideAddr = append(suicideAddr, addr)
 			}
 		}
