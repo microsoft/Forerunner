@@ -13,6 +13,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type TransactionPool map[common.Address]types.Transactions
@@ -134,8 +135,8 @@ type MinerList struct {
 	top5Active []common.Address
 }
 
-func NewMinerList(chain *core.BlockChain) MinerList {
-	minerList := MinerList{
+func NewMinerList(chain *core.BlockChain) *MinerList {
+	minerList := &MinerList{
 		list:       [minerRecallSize]common.Address{},
 		count:      make(map[common.Address]int),
 		top5Active: make([]common.Address, 5),
@@ -183,6 +184,89 @@ func (l *MinerList) getWhiteList() map[common.Address]struct{} {
 		}
 	}
 	return whiteList
+}
+
+const goLeftLimit = 2
+
+type DeadlineWalker struct {
+	baseline uint64
+	deadline uint64
+
+	nowLeft   uint64
+	nowRight  uint64
+	lastLeft  uint64
+	lastRight uint64
+
+	goLeftCnt int
+}
+
+func (w *DeadlineWalker) updateBaseline(baseline uint64) {
+	w.baseline = baseline
+	w.deadline = baseline
+	w.nowLeft = baseline
+	w.lastLeft = baseline
+	w.lastRight = baseline
+	w.goLeftCnt = 0
+}
+
+func (w *DeadlineWalker) walk() uint64 {
+	now := uint64(time.Now().Unix())
+	if w.baseline == 0 {
+		return now
+	}
+	saveDdl := w.deadline
+	if w.deadline < w.baseline {
+		if w.deadline+1 < w.lastLeft {
+			w.deadline++
+		} else {
+			w.deadline = w.lastRight
+		}
+	} else {
+		if w.goLeftCnt >= goLeftLimit {
+			if w.deadline < now {
+				w.deadline++
+			}
+		} else {
+			if w.deadline >= now {
+				w.lastLeft = w.nowLeft
+				w.lastRight = now
+				w.nowLeft = w.lastLeft - leftwardsStep
+				w.deadline = w.nowLeft
+				w.goLeftCnt++
+			} else {
+				w.deadline++
+			}
+		}
+	}
+	return saveDdl
+}
+
+type Trigger struct {
+	Name        string
+	ExecutorNum int
+
+	IsTxsInDetector bool
+
+	IsChainHeadDrive bool
+
+	IsTxsNumDrive        bool
+	PreplayedTxsNumLimit uint64
+
+	IsTxsRatioDrive        bool
+	PreplayedTxsRatioLimit float64
+
+	IsBlockCntDrive           bool
+	PreplayedBlockNumberLimit uint64
+
+	IsPriceRankDrive        bool
+	PreplayedPriceRankLimit uint64
+}
+
+func NewTrigger(name string, executorNum int) *Trigger {
+	return &Trigger{
+		Name:        name,
+		ExecutorNum: executorNum,
+	}
 }
 
 const (
@@ -445,6 +529,11 @@ func (o TxnOrder) String() string {
 	return retStr
 }
 
+type OrderAndHeader struct {
+	order  TxnOrder
+	header Header
+}
+
 type TxnGroup struct {
 	hash common.Hash
 	txns TransactionPool
@@ -452,21 +541,23 @@ type TxnGroup struct {
 
 	valid int32
 
-	preplayCount int
-	priority     int
+	preplayCount    int
+	preplayCountMap map[common.Hash]int
+	priority        int
 
-	parent      *types.Block
-	header      Header
+	parent *types.Block
+
+	txnCount    int
 	chainFactor int
+	orderCount  *big.Int
 
-	txnCount   int
-	orderCount *big.Int
+	startList          []int
+	subpoolList        []TransactionPool
+	nextInList         []map[common.Address]int
+	nextOrderAndHeader chan OrderAndHeader // order and header read from this channel is read-only
 
-	startList      []int
-	subpoolList    []TransactionPool
-	nextInList     []map[common.Address]int
-	nextOrder      chan TxnOrder // order read from this channel is read-only
 	preplayHistory []TxnOrder
+	timeHistory    []uint64
 }
 
 func (g *TxnGroup) setInvalid() {
@@ -490,81 +581,6 @@ func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
 		}
 	}
 	return true
-}
-
-func (g *TxnGroup) divideTransactionPool() {
-	g.txnCount = g.txns.size()
-	g.orderCount = new(big.Int).SetUint64(uint64(g.chainFactor))
-	var (
-		inPoolList int
-		poolCpy    = g.txns.copy()
-	)
-	for inPoolList < g.txnCount {
-		var (
-			maxPriceFrom = make([]common.Address, 0)
-			maxPrice     = new(big.Int)
-		)
-		for from, txns := range poolCpy {
-			if len(txns) == 0 {
-				continue
-			}
-			headTxn := txns[0]
-			headGasPrice := headTxn.GasPrice()
-			cmp := headGasPrice.Cmp(maxPrice)
-			switch {
-			case cmp > 0:
-				maxPrice = headGasPrice
-				maxPriceFrom = []common.Address{from}
-			case cmp == 0:
-				maxPriceFrom = append(maxPriceFrom, from)
-			}
-		}
-		var (
-			maxPriceTotal  int64
-			maxPriceCounts []int64
-			subPool        = make(TransactionPool)
-		)
-		for _, from := range maxPriceFrom {
-			var (
-				index         int
-				txns          = poolCpy[from]
-				txnsSize      = len(txns)
-				maxPriceCount int64
-			)
-			for ; index < txnsSize; index++ {
-				cmp := txns[index].GasPrice().Cmp(maxPrice)
-				switch {
-				case cmp == 0:
-					maxPriceCount++
-				case cmp < 0:
-					break
-				}
-			}
-			maxPriceTotal += maxPriceCount
-			maxPriceCounts = append(maxPriceCounts, maxPriceCount)
-			if index == txnsSize {
-				subPool[from] = poolCpy[from]
-				delete(poolCpy, from)
-			} else {
-				subPool[from] = txns[:index]
-				poolCpy[from] = txns[index:]
-			}
-		}
-		factor := getFactorial(maxPriceTotal)
-		for _, count := range maxPriceCounts {
-			factor.Div(factor, getFactorial(count))
-		}
-		g.orderCount.Mul(g.orderCount, factor)
-		g.startList = append(g.startList, inPoolList)
-		g.subpoolList = append(g.subpoolList, subPool)
-		nextIn := make(map[common.Address]int)
-		for from := range subPool {
-			nextIn[from] = 0
-		}
-		g.nextInList = append(g.nextInList, nextIn)
-
-		inPoolList += subPool.size()
-	}
 }
 
 func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, bool) {
@@ -609,28 +625,6 @@ func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, boo
 	}
 	return true, false
 }
-
-var getFactorial = func() func(n int64) *big.Int {
-	factorCache := map[int64]*big.Int{
-		0: new(big.Int).SetUint64(1),
-		1: new(big.Int).SetUint64(1),
-		2: new(big.Int).SetUint64(2),
-		3: new(big.Int).SetUint64(6),
-	}
-	return func(n int64) *big.Int {
-		if factor, ok := factorCache[n]; ok {
-			return new(big.Int).Set(factor)
-		}
-		var factor = new(big.Int).SetInt64(1)
-		for mul := n; mul >= 1; mul-- {
-			if cache, ok := factorCache[mul]; ok {
-				return factor.Mul(factor, cache)
-			}
-			factor.Mul(factor, new(big.Int).SetInt64(mul))
-		}
-		return factor
-	}
-}()
 
 type TaskQueue struct {
 	sync.RWMutex
@@ -688,54 +682,74 @@ func (q *TaskQueue) popTask() *TxnGroup {
 }
 
 type PreplayLog struct {
-	packageCnt  uint64
-	buildCnt    uint64
-	deadlineCnt uint64
-	sync.RWMutex
-	groupLog     map[common.Hash]struct{}
-	groupEnd     map[common.Hash]struct{}
+	mu         sync.RWMutex
+	lastUpdate time.Time
+
+	packageCnt       int
+	simplePackageCnt int
+	taskBuildCnt     int
+
+	deadlineLog map[uint64]struct{}
+	groupLog    map[common.Hash]*TxnGroup
+	groupEnd    map[common.Hash]struct{}
+	txnLog      map[common.Hash]struct{}
+
 	groupExecCnt uint64
-	txnLog       map[common.Hash]struct{}
 	txnExecCnt   uint64
 }
 
 func NewPreplayLog() *PreplayLog {
 	return &PreplayLog{
-		groupLog: make(map[common.Hash]struct{}),
-		groupEnd: make(map[common.Hash]struct{}),
-		txnLog:   make(map[common.Hash]struct{}),
+		lastUpdate:  time.Now(),
+		deadlineLog: make(map[uint64]struct{}),
+		groupLog:    make(map[common.Hash]*TxnGroup),
+		groupEnd:    make(map[common.Hash]struct{}),
+		txnLog:      make(map[common.Hash]struct{}),
 	}
 }
 
-func (l *PreplayLog) reportNewPackage() {
+func (l *PreplayLog) reportNewPackage(simple bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	l.packageCnt++
+	if simple {
+		l.simplePackageCnt++
+	}
 }
 
-func (l *PreplayLog) reportNewBuild() {
-	l.buildCnt++
+func (l *PreplayLog) reportNewTaskBuild() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.taskBuildCnt++
 }
 
-func (l *PreplayLog) reportNewDeadline() {
-	l.deadlineCnt++
+func (l *PreplayLog) reportNewDeadline(deadline uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.deadlineLog[deadline] = struct{}{}
 }
 
-func (l *PreplayLog) reportNewGroup(group *TxnGroup) {
-	l.Lock()
-	defer l.Unlock()
+func (l *PreplayLog) reportNewGroup(group *TxnGroup) (exist bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	if _, ok := l.groupLog[group.hash]; !ok {
-		l.groupLog[group.hash] = struct{}{}
+	if _, exist = l.groupLog[group.hash]; !exist {
+		l.groupLog[group.hash] = group
 		for _, txns := range group.txns {
 			for _, txn := range txns {
 				l.txnLog[txn.Hash()] = struct{}{}
 			}
 		}
 	}
+	return
 }
 
 func (l *PreplayLog) reportGroupEnd(group *TxnGroup) {
-	l.Lock()
-	defer l.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	if _, ok := l.groupLog[group.hash]; ok {
 		l.groupEnd[group.hash] = struct{}{}
@@ -743,29 +757,67 @@ func (l *PreplayLog) reportGroupEnd(group *TxnGroup) {
 }
 
 func (l *PreplayLog) reportGroupPreplay(group *TxnGroup) {
-	l.Lock()
-	defer l.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	l.groupExecCnt++
 	l.txnExecCnt += uint64(group.txnCount)
 }
 
+func (l *PreplayLog) searchGroupHitGroup(currentTxn *types.Transaction, sender common.Address) map[common.Hash]*TxnGroup {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	groupHitGroup := make(map[common.Hash]*TxnGroup)
+	for groupHash, group := range l.groupLog {
+		for _, txn := range group.txns[sender] {
+			if txn.Hash() == currentTxn.Hash() {
+				groupHitGroup[groupHash] = group
+				break
+			}
+		}
+	}
+	return groupHitGroup
+}
+
+func (l *PreplayLog) getDeadlineHistory() []uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	history := make([]uint64, 0, len(l.deadlineLog))
+	for ddl := range l.deadlineLog {
+		history = append(history, ddl)
+	}
+	sort.Slice(history, func(i, j int) bool {
+		return history[i] < history[j]
+	})
+	return history
+}
+
 func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
-	l.RLock()
-	log.Info("In last block", "number", block,
-		"package(build)", fmt.Sprintf("%d(%d)", l.packageCnt, l.buildCnt), "deadline", l.deadlineCnt,
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	context := []interface{}{"number", block, "package", fmt.Sprintf("%d(%d)", l.packageCnt, l.simplePackageCnt)}
+	if l.packageCnt > 0 {
+		context = append(context, "avgPackage", common.PrettyDuration(int64(time.Since(l.lastUpdate))/int64(l.packageCnt)))
+	}
+	context = append(
+		context, "build", l.taskBuildCnt, "deadline", len(l.deadlineLog),
 		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), l.groupExecCnt),
 		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt), "remain", remain,
 	)
-	l.RUnlock()
+	log.Info("In last block", context...)
 
-	l.Lock()
-	defer l.Unlock()
-
+	l.lastUpdate = time.Now()
 	l.packageCnt = 0
-	l.buildCnt = 0
-	l.deadlineCnt = 0
-	l.groupLog = make(map[common.Hash]struct{})
+	l.simplePackageCnt = 0
+	l.taskBuildCnt = 0
+	l.deadlineLog = make(map[uint64]struct{})
+	for _, group := range l.groupLog {
+		group.setInvalid()
+	}
+	l.groupLog = make(map[common.Hash]*TxnGroup)
 	l.groupEnd = make(map[common.Hash]struct{})
 	l.groupExecCnt = 0
 	l.txnLog = make(map[common.Hash]struct{})

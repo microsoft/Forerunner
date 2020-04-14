@@ -789,13 +789,13 @@ func (r *GlobalCache) NewRoundID() uint64 {
 }
 
 // GetTimeStamp return Timestamp for calculate dependency directly
-func (r *GlobalCache) GetTimeStamp() int64 {
+func (r *GlobalCache) GetTimeStamp() uint64 {
 	r.TimestampMu.RLock()
 	defer r.TimestampMu.RUnlock()
 	return r.PreplayTimestamp
 }
 
-// NewTimeStamp return New timestamp for preplay
+// Deprecated: NewTimeStamp return New timestamp for preplay
 func (r *GlobalCache) NewTimeStamp() int64 {
 	r.TimestampMu.Lock()
 	defer r.TimestampMu.Unlock()
@@ -803,5 +803,5 @@ func (r *GlobalCache) NewTimeStamp() int64 {
 	if r.TimestampField > 2 {
 		r.TimestampField = -2
 	}
-	return r.PreplayTimestamp + r.TimestampField
+	return int64(r.PreplayTimestamp) + r.TimestampField
 }

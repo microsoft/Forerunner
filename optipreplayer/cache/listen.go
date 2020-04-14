@@ -51,7 +51,7 @@ func (r *GlobalCache) PeekBlockPre(hash common.Hash) *BlockPre {
 func (r *GlobalCache) CommitBlockPre(b *BlockPre) {
 
 	r.BlockPreCache.Add(b.BlockHash, b)
-	r.PreplayTimestamp = int64(b.ListenTime)
+	r.PreplayTimestamp = b.ListenTime
 
 	return
 }

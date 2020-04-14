@@ -114,17 +114,15 @@ func (s ReuseStatus) String() string {
 	switch s.BaseStatus {
 	case Hit:
 		switch s.HitType {
-		case IteraHit:
-			statusStr += ":IteraHit"
+		case MixHit:
+			statusStr += ":MixHit"
 		case TrieHit:
 			statusStr += ":TrieHit"
-		case DepHit:
-			statusStr += ":DepHit"
+		case DeltaHit:
+			statusStr += ":DeltaHit"
 		}
 	case Miss:
 		switch s.MissType {
-		case NoInMiss:
-			statusStr += ":NoInMiss"
 		case NoMatchMiss:
 			statusStr += ":NoMatchMiss"
 		}

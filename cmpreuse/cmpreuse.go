@@ -46,14 +46,13 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
 	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
-	status, round, cmpCnt, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true, cfg)
+	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true, cfg)
 
 	if status.BaseStatus == cmptypes.Hit && c.TryFinish() {
 		c.StopEvm()
 		cache.GetRW = append(cache.GetRW, d0)
 		cache.SetDB = append(cache.SetDB, d1)
 		cache.ReuseGasCount += round.Receipt.GasUsed
-		cache.RWCmpCnt = append(cache.RWCmpCnt, cmpCnt)
 		return status, round // reuse finish and win compete
 	} else {
 		return status, nil // reuse finish but lost compete

@@ -55,12 +55,15 @@ type Executor struct {
 	currentState  *cache.CurrentState
 	resultCh      chan *cache.ExtraResult
 
-	RoundID   uint64
-	enableAgg bool
+	RoundID uint64
+
+	enableAgg   bool
+	enablePause bool
 }
 
 func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
-	rawPending map[common.Address]types.Transactions, pendingList types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult, enableAgg bool) *Executor {
+	rawPending map[common.Address]types.Transactions, pendingList types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
+	enableAgg bool, enablePause bool) *Executor {
 	executor := &Executor{
 		id:             id,
 		config:         config,
@@ -76,6 +79,7 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		currentState:   currentState,
 		resultCh:       resultCh,
 		enableAgg:      enableAgg,
+		enablePause:    enablePause,
 	}
 
 	for _, tx := range pendingList {
@@ -518,7 +522,9 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 
 	// 2. Preplay
 	for {
-		e.chain.MSRACache.PauseForProcess()
+		if e.enablePause {
+			e.chain.MSRACache.PauseForProcess()
+		}
 
 		// 2.0 Detector no need to preplay
 		if e.trigger.IsTxsInDetector {

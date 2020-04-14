@@ -14,26 +14,10 @@ import (
 	"time"
 )
 
-type Trigger struct {
-	Name        string
-	ExecutorNum int
-
-	IsTxsInDetector bool
-
-	IsChainHeadDrive bool
-
-	IsTxsNumDrive        bool
-	PreplayedTxsNumLimit uint64
-
-	IsTxsRatioDrive        bool
-	PreplayedTxsRatioLimit float64
-
-	IsBlockCntDrive           bool
-	PreplayedBlockNumberLimit uint64
-
-	IsPriceRankDrive        bool
-	PreplayedPriceRankLimit uint64
-}
+const (
+	// chainHeadChanSize is the size of channel listening to ChainHeadEvent.
+	chainHeadChanSize = 10
+)
 
 type Preplayer struct {
 	nodeID string
@@ -42,7 +26,12 @@ type Preplayer struct {
 	eth    Backend
 	chain  *core.BlockChain
 
-	exitCh chan struct{}
+	gasFloor uint64
+	gasCeil  uint64
+
+	builder0Finish chan struct{}
+	builder1Finish chan struct{}
+	exitCh         chan struct{}
 
 	mu    sync.RWMutex // The lock used to protect the coinbase and extra fields
 	extra []byte
@@ -50,35 +39,70 @@ type Preplayer struct {
 	running int32 // The indicator whether the consensus engine is running or not.
 	trigger *Trigger
 
+	// The lock used to protect two task builders
+	builderMu *sync.RWMutex
+
 	// Cache
 	globalCache *cache.GlobalCache
 
-	taskBuilder  *TaskBuilder
+	// Listener
+	listener *Listener
+
+	minerList    *MinerList
+	nowHeader    *Header
+	taskQueue    *TaskQueue
+	preplayLog   *PreplayLog
+	taskBuilder0 *TaskBuilder
+	taskBuilder1 *TaskBuilder
 	missReporter *MissReporter
 	routinePool  *grpool.Pool
 }
 
 func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *Preplayer {
-	taskBuilder := NewTaskBuilder(config, engine, eth, gasFloor, gasCeil, listener)
-	trigger := &Trigger{
-		Name:        "TxsBlock1P1",
-		ExecutorNum: 10,
-	}
+	builder0Finish := make(chan struct{})
+	builder1Finish := make(chan struct{})
+	mu := new(sync.RWMutex)
+	minerList := NewMinerList(eth.BlockChain())
+	nowHeader := new(Header)
+	taskQueue := NewTaskQueue()
+	preplayLog := NewPreplayLog()
+	taskBuilder0 := NewTaskBuilder(config, engine, eth, builder0Finish, mu, listener, true, minerList, nowHeader,
+		taskQueue, preplayLog)
+	taskBuilder1 := NewTaskBuilder(config, engine, eth, builder1Finish, mu, listener, false, minerList, nowHeader,
+		taskQueue, preplayLog)
+	trigger := NewTrigger("TxsBlock1P1", 10)
 	preplayer := &Preplayer{
-		config:       config,
-		engine:       engine,
-		eth:          eth,
-		chain:        eth.BlockChain(),
-		exitCh:       make(chan struct{}),
-		trigger:      trigger,
-		taskBuilder:  taskBuilder,
-		missReporter: NewMissReporter(),
-		routinePool:  grpool.NewPool(trigger.ExecutorNum, trigger.ExecutorNum),
+		config:         config,
+		engine:         engine,
+		eth:            eth,
+		chain:          eth.BlockChain(),
+		gasFloor:       gasFloor,
+		gasCeil:        gasCeil,
+		builder0Finish: builder0Finish,
+		builder1Finish: builder1Finish,
+		exitCh:         make(chan struct{}),
+		trigger:        trigger,
+		builderMu:      mu,
+		listener:       listener,
+		minerList:      minerList,
+		nowHeader:      nowHeader,
+		taskQueue:      taskQueue,
+		preplayLog:     preplayLog,
+		taskBuilder0:   taskBuilder0,
+		taskBuilder1:   taskBuilder1,
+		missReporter:   NewMissReporter(config),
+		routinePool:    grpool.NewPool(trigger.ExecutorNum, trigger.ExecutorNum),
 	}
 	preplayer.missReporter.preplayer = preplayer
 
-	go taskBuilder.mainLoop()
-	//taskBuilder.startCh <- struct{}{}
+	go taskBuilder0.mainLoop()
+	go taskBuilder1.mainLoop()
+
+	go preplayer.listenLoop()
+	go func() {
+		preplayer.builder0Finish <- struct{}{}
+		preplayer.builder1Finish <- struct{}{}
+	}()
 
 	for i := 0; i < trigger.ExecutorNum; i++ {
 		preplayer.routinePool.JobQueue <- func() {
@@ -89,29 +113,64 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 	return preplayer
 }
 
-func (p *Preplayer) mainLoop() {
-	taskQueue := p.taskBuilder.taskQueue
+func (p *Preplayer) listenLoop() {
+	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
+	chainHeadSub := p.chain.SubscribeChainHeadEvent(chainHeadCh)
+	defer chainHeadSub.Unsubscribe()
+
 	for {
-		if task := taskQueue.popTask(); task == nil {
+		select {
+		case <-p.builder0Finish:
+			p.listener.waitForNewTx()
+			p.taskBuilder0.startCh <- struct{}{}
+		case <-p.builder1Finish:
+			if !p.taskBuilder1.reachLast {
+				p.taskBuilder1.startCh <- struct{}{}
+			}
+		case chainHeadEvent := <-chainHeadCh:
+			p.builderMu.Lock()
+			if p.taskBuilder1.reachLast {
+				p.taskBuilder1.reachLast = false
+				p.taskBuilder1.startCh <- struct{}{}
+			}
+
+			currentBlock := chainHeadEvent.Block
+			p.minerList.addMiner(currentBlock.Coinbase())
+			p.nowHeader.coinbase = p.minerList.top5Active[0]
+			p.nowHeader.time = p.globalCache.GetTimeStamp()
+			p.nowHeader.gasLimit = core.CalcGasLimit(currentBlock, p.gasFloor, p.gasCeil)
+			p.taskBuilder0.chainHeadUpdate(currentBlock)
+			p.taskBuilder1.chainHeadUpdate(currentBlock)
+			p.preplayLog.printAndClearLog(currentBlock.NumberU64(), p.taskQueue.countTask())
+			p.builderMu.Unlock()
+		case <-p.exitCh:
+			return
+		}
+	}
+}
+
+func (p *Preplayer) mainLoop() {
+	for {
+		if task := p.taskQueue.popTask(); task == nil {
 			p.wait()
 		} else {
 			if task.isValid() {
-				if txnOrder, ok := <-task.nextOrder; ok {
-					p.commitNewWork(task, txnOrder)
-					p.taskBuilder.preplayLog.reportGroupPreplay(task)
-					task.preplayCount++
+				if orderAndHeader, ok := <-task.nextOrderAndHeader; ok {
+					p.commitNewWork(task, orderAndHeader.order, orderAndHeader.header)
+					p.preplayLog.reportGroupPreplay(task)
 					task.priority = task.preplayCount * task.txnCount
-					task.preplayHistory = append(task.preplayHistory, txnOrder)
-					if task.preplayCount < 1 {
+					task.preplayHistory = append(task.preplayHistory, orderAndHeader.order)
+					task.timeHistory = append(task.timeHistory, orderAndHeader.header.time)
+					if task.preplayCount < 6 {
 						//if task.txnCount > 1 || task.isChainDep() {
-						taskQueue.pushTask(task)
+						p.taskQueue.pushTask(task)
 					} else {
 						task.setInvalid()
-						<-task.nextOrder
+						<-task.nextOrderAndHeader
 					}
 				}
 			} else {
-				<-task.nextOrder
+				<-task.nextOrderAndHeader
 			}
 		}
 	}
@@ -119,7 +178,8 @@ func (p *Preplayer) mainLoop() {
 
 // setExtra sets the content used to initialize the block extra field.
 func (p *Preplayer) setExtra(extra []byte) {
-	p.taskBuilder.setExtra(extra)
+	p.taskBuilder0.setExtra(extra)
+	p.taskBuilder1.setExtra(extra)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.extra = extra
@@ -132,7 +192,8 @@ func (p *Preplayer) setNodeID(nodeID string) {
 }
 
 func (p *Preplayer) setGlobalCache(globalCache *cache.GlobalCache) {
-	p.taskBuilder.setGlobalCache(globalCache)
+	p.taskBuilder0.setGlobalCache(globalCache)
+	p.taskBuilder1.setGlobalCache(globalCache)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.globalCache = globalCache
@@ -156,7 +217,8 @@ func (p *Preplayer) isRunning() bool {
 // close terminates all background threads maintained by the preplayers.
 // Note the preplayers does not support being closed multiple times.
 func (p *Preplayer) close() {
-	p.taskBuilder.close()
+	p.taskBuilder0.close()
+	p.taskBuilder1.close()
 	p.routinePool.Release()
 	close(p.exitCh)
 }
@@ -165,7 +227,7 @@ func (p *Preplayer) wait() {
 	time.Sleep(200 * time.Millisecond)
 }
 
-func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
+func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHeader Header) {
 	if p.nodeID == "" || p.globalCache == nil {
 		return
 	}
@@ -211,21 +273,21 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
 	header := &types.Header{
 		ParentHash: parentHash,
 		Number:     parentNumber.Add(parentNumber, common.Big1),
-		GasLimit:   task.header.gasLimit,
-		Coinbase:   task.header.coinbase,
+		GasLimit:   forecastHeader.gasLimit,
+		Coinbase:   forecastHeader.coinbase,
 		Extra:      p.extra,
-		Time:       task.header.time,
+		Time:       forecastHeader.time,
 	}
 
 	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), orderMap,
-		task.txns, pendingList, currentState, p.trigger, nil, false)
+		task.txns, pendingList, currentState, p.trigger, nil, false, true)
 
 	executor.RoundID = p.globalCache.NewRoundID()
 
 	currentState.StartTimeString = time.Now().Format("2006-01-02 15:04:05")
 
 	// Execute, use pending for preplay
-	executor.commit(task.header.coinbase, parent, header, task.txns)
+	executor.commit(header.Coinbase, parent, header, task.txns)
 
 	// Update Cache, need initialize
 	p.globalCache.CommitTxResult(executor.RoundID, currentState, task.txns, executor.resultMap)
@@ -238,6 +300,13 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder) {
 	}
 
 	p.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, parent.Root())
+
+	task.preplayCount++
+	for hash, result := range executor.resultMap {
+		if result.Status == "will in" {
+			task.preplayCountMap[hash]++
+		}
+	}
 }
 
 type Preplayers []*Preplayer

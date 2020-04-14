@@ -750,7 +750,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 
 func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
 	header *types.Header, tx *types.Transaction, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (status *cmptypes.ReuseStatus,
-	round *cache.PreplayResult, cmpCnt int64, d0 time.Duration, d1 time.Duration) {
+	round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
 
 	var ok, isAbort bool
 	var mixStatus *cmptypes.MixHitStatus
@@ -768,7 +768,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
 	if ok {
 		d0 = time.Since(t0)
-		cmpCnt = 1
 		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
 	} else if isAbort {
 		d0 = time.Since(t0)
@@ -780,8 +779,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
 		if ok {
 			d0 = time.Since(t0)
-			cmpCnt = 1
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit}
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit, MixHitStatus: mixStatus}
 
 			// why trie hit instead of mixhit:
@@ -891,7 +888,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
 				if ok {
 					d0 = time.Since(t0)
-					cmpCnt = 1
 					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DeltaHit, MixHitStatus: mixStatus}
 
 					// debug info
@@ -905,7 +901,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					return
 				} else {
 					d0 = time.Since(t0)
-					cmpCnt = 1
 					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss,
 						MissNode: missNode, MissValue: missValue}
 					txPreplay.Mu.Unlock()
@@ -913,7 +908,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				}
 			} else {
 				d0 = time.Since(t0)
-				cmpCnt = 1
 				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss,
 					MissNode: missNode, MissValue: missValue}
 				txPreplay.Mu.Unlock()

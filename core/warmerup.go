@@ -456,7 +456,15 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 				statedb.GetPair().PreAllocateObjects()
 			}
 		}
-		w.statedbBoxCache.Add(root, box)
+		var value interface{}
+		var ok bool
+		if keys := w.statedbBoxCache.Keys(); len(keys) > 0 {
+			value, ok = w.statedbBoxCache.Peek(keys[0])
+		}
+		if eviected := w.statedbBoxCache.Add(root, box); eviected && ok {
+			oldestBox := value.(*StatedbBox)
+			oldestBox.exit()
+		}
 		return box
 	}
 	box, ok := rawdbs.(*StatedbBox)

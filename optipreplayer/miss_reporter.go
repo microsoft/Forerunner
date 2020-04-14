@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/ethereum/go-ethereum/params"
 	"math"
 	"math/big"
 	"reflect"
@@ -28,10 +29,16 @@ type MissReporter struct {
 	groundGroups  map[common.Hash]*TxnGroup
 	getRWRecord   func(txn common.Hash) *RWRecord
 
+	miss    int
+	txnType [3]int
+
+	groupMissCount   int
+	execMissCount    int
 	nilNodeTypeCount int
-	rChainMissCount  [4]int
+	rChainMissTotal  int
+	rChainMissCount  [6]int
 	rStateMissCount  [2]int
-	groupMissCount   [2]int
+	txnMissCount     [2]int
 	sortMissCount    [2]int
 	chainMissCount   [2]int
 	snapMissCount    [2]int
@@ -41,11 +48,18 @@ type MissReporter struct {
 	rootMissCount    [2]int
 	bugMissCount     [2]int
 
+	signer    types.Signer
 	preplayer *Preplayer
+
+	noTimeDepCount int
+	timeMissMap    map[[2]int]int
 }
 
-func NewMissReporter() *MissReporter {
-	return new(MissReporter)
+func NewMissReporter(config *params.ChainConfig) *MissReporter {
+	r := new(MissReporter)
+	r.signer = types.NewEIP155Signer(config.ChainID)
+	r.timeMissMap = make(map[[2]int]int)
+	return r
 }
 
 func (r *MissReporter) SetBlock(block *types.Block) {
@@ -55,52 +69,132 @@ func (r *MissReporter) SetBlock(block *types.Block) {
 	r.txnsMap = make(map[common.Hash]*types.Transaction)
 	for index, txn := range block.Transactions() {
 		r.txnsIndexMap[txn.Hash()] = index
-		sender, _ := types.Sender(r.preplayer.taskBuilder.signer, txn)
+		sender, _ := types.Sender(r.signer, txn)
 		r.txnsSenderMap[txn.Hash()] = sender
 		r.txnsMap[txn.Hash()] = txn
 	}
-	r.parent, r.groundGroups, r.getRWRecord = r.preplayer.taskBuilder.getGroundGroup(block, r.txnsIndexMap, r.txnsSenderMap)
+	r.parent, r.groundGroups, r.getRWRecord = r.preplayer.getGroundGroup(block, r.txnsIndexMap, r.txnsSenderMap)
 }
 
-func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.PreplayResTrieNode, value interface{}) {
-	if node.NodeType == nil {
-		r.nilNodeTypeCount++
-		return
-	}
-	nodeType := node.NodeType
-	if cmptypes.IsChainField(nodeType.Field) {
-		switch nodeType.Field {
-		case cmptypes.Coinbase:
-			r.rChainMissCount[0]++
-		case cmptypes.Timestamp:
-			r.rChainMissCount[1]++
-		case cmptypes.GasLimit:
-			r.rChainMissCount[2]++
-		default:
-			r.rChainMissCount[3]++
+func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.PreplayResTrieNode, value interface{}, txnType int) {
+	r.miss++
+	r.txnType[txnType]++
+
+	index := r.txnsIndexMap[txn.Hash()]
+	sender := r.txnsSenderMap[txn.Hash()]
+
+	groupHitGroup := r.preplayer.preplayLog.searchGroupHitGroup(txn, sender)
+	if len(groupHitGroup) == 0 {
+		r.groupMissCount++
+		if isSample(txn) {
+			log.Info("Report reuse miss: NoGroup", "tx", txn.Hash(), "index", index)
 		}
 		return
 	}
+
+	execHitGroup := r.searchExecHitGroup(txn, groupHitGroup)
+	if len(execHitGroup) == 0 {
+		r.execMissCount++
+		if isSample(txn) {
+			log.Info("Report reuse miss: NoExec", "tx", txn.Hash(), "index", index)
+		}
+		return
+	}
+
+	if node.NodeType == nil {
+		r.nilNodeTypeCount++
+		if isSample(txn) {
+			log.Info("Report reuse miss: nodeType nil", "tx", txn.Hash(), "index", index)
+		}
+		return
+	}
+
+	nodeType := node.NodeType
+	if cmptypes.IsChainField(nodeType.Field) {
+		r.rChainMissTotal++
+		r.rChainMissCount[nodeType.Field-cmptypes.Blockhash]++
+		if nodeType.Field == cmptypes.Timestamp {
+			var haveTimeDep = make(map[common.Hash]*TxnGroup)
+			for groupHash, group := range execHitGroup {
+				if group.isTimestampDep() {
+					haveTimeDep[groupHash] = group
+				}
+			}
+			if len(haveTimeDep) == 0 {
+				r.noTimeDepCount++
+			} else {
+				var preplayMost int
+				for _, group := range haveTimeDep {
+					if preplayMost < group.preplayCount {
+						preplayMost = group.preplayCount
+					}
+				}
+				var forecastTime uint64
+				if forecastTime = r.preplayer.nowHeader.time; forecastTime != 0 {
+					if preplayMost >= 5 {
+						preplayMost = 5
+					}
+					diff := int(forecastTime - r.block.Time())
+					if diff >= 3 {
+						diff = 3
+					}
+					if diff <= -3 {
+						diff = -3
+					}
+					r.timeMissMap[[2]int{preplayMost, diff}]++
+				}
+				pickGroup := pickOneGroup(haveTimeDep)
+				nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
+				var first = true
+				for value := range node.Children {
+					if first {
+						nodeChildStr += "{"
+						first = false
+					} else {
+						nodeChildStr += ","
+					}
+					nodeChildStr += getInterfaceValue(value)
+				}
+				if len(node.Children) > 0 {
+					nodeChildStr += "}"
+				}
+				var groupTxns = "TooLarge"
+				if pickGroup.txnCount <= 20 {
+					groupTxns = pickGroup.txns.String()
+				}
+				log.Info("Report reuse miss: timestamp", "tx", txn.Hash().Hex(), "index", index,
+					"nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
+					"forecastTime", forecastTime, "block.Time", r.block.Time(),
+					"haveTimeDepGroupNum", len(haveTimeDep), "pickGroupSize", pickGroup.txnCount,
+					"isTimeDep", pickGroup.isTimestampDep(), "history", pickGroup.timeHistory,
+					"pickGroupPreplay", pickGroup.preplayCount, "group.txns", groupTxns,
+				)
+			}
+		}
+		return
+	}
+
 	isStorageMiss := nodeType.Field == cmptypes.Storage || nodeType.Field == cmptypes.CommittedStorage
 	if isStorageMiss {
 		r.rStateMissCount[1]++
 	} else {
 		r.rStateMissCount[0]++
 	}
-	index := r.txnsIndexMap[txn.Hash()]
-	sender := r.txnsSenderMap[txn.Hash()]
+
 	groundGroup, groundOrder := r.searchGroundGroup(txn, sender)
 	poolBefore, orderBefore := r.getTxnBefore(txn, groundOrder)
 
-	groupHitGroup, _ := r.searchGroupHitGroup(txn, sender, poolBefore)
-	if len(groupHitGroup) == 0 {
+	txnHitGroup := r.searchTxnHitGroup(execHitGroup, poolBefore)
+	if len(txnHitGroup) == 0 {
 		if isStorageMiss {
-			r.groupMissCount[1]++
+			r.txnMissCount[1]++
 		} else {
-			r.groupMissCount[0]++
+			r.txnMissCount[0]++
 		}
-		//log.Info("Report reuse miss: missing txns", "tx", txn.Hash(), "index", index,
-		//	"relative->hit", fmt.Sprintf("%d->0", relativeSize))
+		if isSample(txn) {
+			log.Info("Report reuse miss: missing txns", "tx", txn.Hash(), "index", index,
+				"execHit->txnHit", fmt.Sprintf("%d->0", len(execHitGroup)))
+		}
 		return
 	}
 
@@ -110,36 +204,40 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		} else {
 			r.sortMissCount[0]++
 		}
-		//log.Info("Report reuse miss: N&P violation", "tx", txn.Hash(), "index", index,
-		//	"poolBeforeSize", poolBefore.size(), "orderBeforeSize", len(orderBefore),
-		//	"poolBefore", poolBefore, "orderBefore", orderBefore)
+		if isSample(txn) {
+			log.Info("Report reuse miss: N&P violation", "tx", txn.Hash(), "index", index,
+				"poolBeforeSize", poolBefore.size(), "orderBeforeSize", len(orderBefore),
+				"poolBefore", poolBefore, "orderBefore", orderBefore)
+		}
 		return
 	}
 
-	chainHitGroup := r.searchChainHitGroup(groupHitGroup)
+	chainHitGroup := r.searchChainHitGroup(txnHitGroup)
 	if len(chainHitGroup) == 0 {
 		if isStorageMiss {
 			r.chainMissCount[1]++
 		} else {
 			r.chainMissCount[0]++
 		}
-		//pickGroup := pickOneGroup(groupHitGroup)
-		//context := []interface{}{"tx", txn.Hash(), "index", index, "groupHitGroupNum", len(groupHitGroup),
-		//	"isDep", fmt.Sprintf("%v:%v", pickGroup.isCoinbaseDep(), pickGroup.isTimestampDep())}
-		//if pickGroup.isCoinbaseDep() {
-		//	var minerStr string
-		//	for index, miner := range r.preplayer.taskBuilder.minerList.top5Active {
-		//		if index > 0 {
-		//			minerStr += ","
-		//		}
-		//		minerStr += miner.Hex()
-		//	}
-		//	context = append(context, "groundCoinbase", r.block.Header().Coinbase.Hex(), "activeMiner", minerStr)
-		//}
-		//if pickGroup.isTimestampDep() {
-		//	context = append(context, "groundTimestamp", r.block.Header().Time, "forecastTimestamp", pickGroup.header.time)
-		//}
-		//log.Info("Report reuse miss: chain miss", context...)
+		if isSample(txn) {
+			pickGroup := pickOneGroup(txnHitGroup)
+			context := []interface{}{"tx", txn.Hash(), "index", index, "txnHitGroupNum", len(txnHitGroup),
+				"isDep", fmt.Sprintf("%v:%v", pickGroup.isCoinbaseDep(), pickGroup.isTimestampDep())}
+			if pickGroup.isCoinbaseDep() {
+				var minerStr string
+				for index, miner := range r.preplayer.minerList.top5Active {
+					if index > 0 {
+						minerStr += ","
+					}
+					minerStr += miner.Hex()
+				}
+				context = append(context, "groundCoinbase", r.block.Header().Coinbase.Hex(), "activeMiner", minerStr)
+			}
+			if pickGroup.isTimestampDep() {
+				context = append(context, "groundTimestamp", r.block.Header().Time, "forecastTimestamp", r.preplayer.nowHeader.time)
+			}
+			log.Info("Report reuse miss: chain miss", context...)
+		}
 		return
 	}
 
@@ -150,10 +248,12 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		} else {
 			r.snapMissCount[0]++
 		}
-		//pickGroup := pickOneGroup(chainHitGroup)
-		//log.Info("Report reuse miss: extra txns", "tx", txn.Hash(), "index", index, "chainHitGroupNum", len(chainHitGroup),
-		//	"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-		//	"group.txns", pickGroup.txns, "groundOrder", groundOrder)
+		if isSample(txn) {
+			pickGroup := pickOneGroup(chainHitGroup)
+			log.Info("Report reuse miss: extra txns", "tx", txn.Hash(), "index", index, "chainHitGroupNum", len(chainHitGroup),
+				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
+				"group.txns", pickGroup.txns, "groundOrder", groundOrder)
+		}
 		return
 	}
 
@@ -194,10 +294,12 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 				r.orderMissCount[6]++
 			}
 		}
-		//log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash(), "index", index, "snapHitGroupNum", len(snapHitGroup),
-		//	"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-		//	"group.txns", pickGroup.txns, "groundOrder", groundOrder,
-		//	"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.preplayCount, preplayRate*100, pickGroup.orderCount.String()))
+		if isSample(txn) {
+			log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash(), "index", index, "snapHitGroupNum", len(snapHitGroup),
+				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
+				"group.txns", pickGroup.txns, "groundOrder", groundOrder,
+				"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.preplayCount, preplayRate*100, pickGroup.orderCount.String()))
+		}
 		return
 	}
 
@@ -207,8 +309,10 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		} else {
 			r.minerMissCount[0]++
 		}
-		//log.Info("Report reuse miss: miner miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
-		//	"sender", sender, "coinbase", r.block.Coinbase())
+		if isSample(txn) {
+			log.Info("Report reuse miss: miner miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
+				"sender", sender, "coinbase", r.block.Coinbase())
+		}
 		return
 	}
 
@@ -219,9 +323,11 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		} else {
 			r.rootMissCount[0]++
 		}
-		pickGroup := pickOneGroup(orderHitGroup)
-		log.Info("Report reuse miss: root miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
-			"block.parent.root", r.parent.Root(), "group.parent.root", pickGroup.parent.Root())
+		if isSample(txn) {
+			pickGroup := pickOneGroup(orderHitGroup)
+			log.Info("Report reuse miss: root miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
+				"block.parent.root", r.parent.Root(), "group.parent.root", pickGroup.parent.Root())
+		}
 		return
 	}
 
@@ -230,57 +336,70 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	} else {
 		r.bugMissCount[0]++
 	}
-	pickGroup := pickOneGroup(rootHitGroup)
-	nodeTypeStr := fmt.Sprintf("%s.%v", nodeType.Address.Hex(), nodeType.Field.String())
-	if nodeType.Field == cmptypes.CommittedStorage || nodeType.Field == cmptypes.Storage {
-		nodeTypeStr += "." + nodeType.Loc.(common.Hash).Hex()
-	}
-	nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
-	var first = true
-	for value := range node.Children {
-		if first {
-			nodeChildStr += "{"
-			first = false
-		} else {
-			nodeChildStr += ","
+	if isSample(txn) {
+		pickGroup := pickOneGroup(rootHitGroup)
+		nodeTypeStr := fmt.Sprintf("%s.%v", nodeType.Address.Hex(), nodeType.Field.String())
+		if nodeType.Field == cmptypes.CommittedStorage || nodeType.Field == cmptypes.Storage {
+			nodeTypeStr += "." + nodeType.Loc.(common.Hash).Hex()
 		}
-		nodeChildStr += getInterfaceValue(value)
-	}
-	if len(node.Children) > 0 {
-		nodeChildStr += "}"
-	}
-	var groupTxns = "TooLarge"
-	if pickGroup.txnCount <= 20 {
-		groupTxns = pickGroup.txns.String()
-	}
-	log.Info("Report reuse miss: bug", "tx", txn.Hash().Hex(), "index", index,
-		"nodeType", nodeTypeStr, "nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
-		"rootHitGroupNum", len(rootHitGroup), "pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-		"pickPreplayMost", fmt.Sprintf("%d->%s", pickGroup.preplayCount, pickGroup.orderCount.String()),
-		"preplayedOrder", pickGroup.preplayHistory[0],
-		"group.txns", groupTxns, "orderBefore", orderBefore,
-	)
-	group := r.groundGroups[groundGroup.hash]
-	log.Info("Ground group info", "hash", group.hash, "txnCount", group.txnCount,
-		"txns", group.txns, "order", groundOrder)
-	for _, txns := range group.txns {
-		for _, txn := range txns {
-			log.Info("Transaction info", "tx", txn.Hash().Hex(), "index", r.txnsIndexMap[txn.Hash()],
-				"sender", r.txnsSenderMap[txn.Hash()], "rwrecord", r.getRWRecord(txn.Hash()).String())
+		nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
+		var first = true
+		for value := range node.Children {
+			if first {
+				nodeChildStr += "{"
+				first = false
+			} else {
+				nodeChildStr += ","
+			}
+			nodeChildStr += getInterfaceValue(value)
+		}
+		if len(node.Children) > 0 {
+			nodeChildStr += "}"
+		}
+		var groupTxns = "TooLarge"
+		if pickGroup.txnCount <= 20 {
+			groupTxns = pickGroup.txns.String()
+		}
+		log.Info("Report reuse miss: bug", "tx", txn.Hash().Hex(), "index", index,
+			"nodeType", nodeTypeStr, "nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
+			"rootHitGroupNum", len(rootHitGroup), "pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
+			"pickPreplayMost", fmt.Sprintf("%d->%s", pickGroup.preplayCount, pickGroup.orderCount.String()),
+			"preplayedOrder", pickGroup.preplayHistory[0],
+			"group.txns", groupTxns, "orderBefore", orderBefore,
+		)
+		group := r.groundGroups[groundGroup.hash]
+		log.Info("Ground group info", "hash", group.hash, "txnCount", group.txnCount,
+			"txns", group.txns, "order", groundOrder)
+		for _, txns := range group.txns {
+			for _, txn := range txns {
+				log.Info("Transaction info", "tx", txn.Hash().Hex(), "index", r.txnsIndexMap[txn.Hash()],
+					"sender", r.txnsSenderMap[txn.Hash()], "rwrecord", r.getRWRecord(txn.Hash()).String())
+			}
 		}
 	}
 }
 
-func (r *MissReporter) ReportMiss() {
-	context := []interface{}{
-		"nilNodeType", r.nilNodeTypeCount,
-		"rChainMiss", fmt.Sprintf("%d(%d:%d:%d:%d)", r.rChainMissCount[0]+r.rChainMissCount[1]+r.rChainMissCount[2]+r.rChainMissCount[3],
-			r.rChainMissCount[0], r.rChainMissCount[1], r.rChainMissCount[2], r.rChainMissCount[3]),
-		"rStateMiss", fmt.Sprintf("%d(%d:%d)", r.rStateMissCount[0]+r.rStateMissCount[1], r.rStateMissCount[0], r.rStateMissCount[1]),
+func (r *MissReporter) ReportMiss(noListen, noPackage, noPreplay uint64) {
+	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoPreplay", noPreplay,
+		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2])}
+	if r.groupMissCount > 0 {
+		context = append(context, "NoGroup", r.groupMissCount)
 	}
-	groupMissCount := r.groupMissCount[0] + r.groupMissCount[1]
-	if groupMissCount > 0 {
-		context = append(context, "missing txns", fmt.Sprintf("%d(%d:%d)", groupMissCount, r.groupMissCount[0], r.groupMissCount[1]))
+	if r.execMissCount > 0 {
+		context = append(context, "NoExec", r.execMissCount)
+	}
+	if r.nilNodeTypeCount > 0 {
+		context = append(context, "nilNodeType", r.nilNodeTypeCount)
+	}
+	context = append(context, "rChainMiss", fmt.Sprintf("%d[%d:%d:%d(%.2f):%d:%d:%d]",
+		r.rChainMissTotal, r.rChainMissCount[0], r.rChainMissCount[1],
+		r.rChainMissCount[2], float64(r.rChainMissCount[2])/float64(r.miss),
+		r.rChainMissCount[3], r.rChainMissCount[4], r.rChainMissCount[5]),
+		"rStateMiss", fmt.Sprintf("%d[%d:%d]", r.rStateMissCount[0]+r.rStateMissCount[1], r.rStateMissCount[0], r.rStateMissCount[1]),
+	)
+	txnMissCount := r.txnMissCount[0] + r.txnMissCount[1]
+	if txnMissCount > 0 {
+		context = append(context, "missing txns", fmt.Sprintf("%d(%d:%d)", txnMissCount, r.txnMissCount[0], r.txnMissCount[1]))
 	}
 	sortMissCount := r.sortMissCount[0] + r.sortMissCount[1]
 	if sortMissCount > 0 {
@@ -295,7 +414,9 @@ func (r *MissReporter) ReportMiss() {
 		context = append(context, "extra txns", fmt.Sprintf("%d(%d:%d)", snapMissCount, r.snapMissCount[0], r.snapMissCount[1]))
 	}
 	context = append(context,
-		"insufficient execution", fmt.Sprintf("%d:[1|2|6|24|120|720 >720]-%v", r.orderMissTotal, r.orderMissCount),
+		"insufficient execution", fmt.Sprintf("%d[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]",
+			r.orderMissTotal, r.orderMissCount[0], r.orderMissCount[1], r.orderMissCount[2], r.orderMissCount[3], r.orderMissCount[4],
+			r.orderMissCount[5], r.orderMissCount[6]),
 	)
 	minerMissCount := r.minerMissCount[0] + r.minerMissCount[1]
 	if minerMissCount > 0 {
@@ -309,13 +430,14 @@ func (r *MissReporter) ReportMiss() {
 	if bugMissCount > 0 {
 		context = append(context, "bugMiss", fmt.Sprintf("%d(%d:%d)", bugMissCount, r.bugMissCount[0], r.bugMissCount[1]))
 	}
+	context = append(context, "timeMissMap", r.timeMissMap, "noTimeDepCount", r.noTimeDepCount)
 	log.Info("Cumulative miss statistics", context...)
 }
 
-func (b *TaskBuilder) getGroundGroup(block *types.Block, txnsIndexMap map[common.Hash]int, txnsSenderMap map[common.Hash]common.Address) (*types.Block,
+func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.Hash]int, txnsSenderMap map[common.Hash]common.Address) (*types.Block,
 	map[common.Hash]*TxnGroup, func(txn common.Hash) *RWRecord) {
 	parentHash := block.ParentHash()
-	parent := b.chain.GetBlockByHash(parentHash)
+	parent := p.chain.GetBlockByHash(parentHash)
 
 	pendingTxn := make(TransactionPool)
 	pendingList := types.Transactions{}
@@ -323,17 +445,14 @@ func (b *TaskBuilder) getGroundGroup(block *types.Block, txnsIndexMap map[common
 		sender := txnsSenderMap[txn.Hash()]
 		pendingTxn[sender] = append(pendingTxn[sender], txn)
 		pendingList = append(pendingList, txn)
-		if b.globalCache.GetTxPreplay(txn.Hash()) == nil {
-			b.globalCache.CommitTxPreplay(cache.NewTxPreplay(txn))
-		}
 	}
 
-	totalDifficulty := b.chain.GetTd(parentHash, parent.NumberU64())
+	totalDifficulty := p.chain.GetTd(parentHash, parent.NumberU64())
 	if totalDifficulty == nil {
 		totalDifficulty = new(big.Int)
 	}
 	currentState := &cache.CurrentState{
-		PreplayName:       b.trigger.Name,
+		PreplayName:       p.trigger.Name,
 		Number:            parent.NumberU64(),
 		Hash:              parentHash.Hex(),
 		RawHash:           parentHash,
@@ -342,10 +461,10 @@ func (b *TaskBuilder) getGroundGroup(block *types.Block, txnsIndexMap map[common
 		SnapshotTimestamp: time.Now().UnixNano() / 1000000,
 	}
 
-	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), txnsIndexMap,
-		pendingTxn, pendingList, currentState, b.trigger, nil, false)
+	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), txnsIndexMap,
+		pendingTxn, pendingList, currentState, p.trigger, nil, false, false)
 
-	executor.RoundID = b.globalCache.NewRoundID()
+	executor.RoundID = p.globalCache.NewRoundID()
 
 	// Execute, use pending for preplay
 	executor.commit(block.Coinbase(), parent, block.Header(), pendingTxn)
@@ -354,7 +473,7 @@ func (b *TaskBuilder) getGroundGroup(block *types.Block, txnsIndexMap map[common
 	for _, txns := range pendingTxn {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
-			txPreplay := b.globalCache.GetTxPreplay(txnHash)
+			txPreplay := p.globalCache.GetTxPreplay(txnHash)
 			if txPreplay != nil {
 				if round, ok := txPreplay.PeekRound(executor.RoundID); ok {
 					rwrecords[txnHash] = NewRWRecord(round.RWrecord)
@@ -362,6 +481,8 @@ func (b *TaskBuilder) getGroundGroup(block *types.Block, txnsIndexMap map[common
 				}
 			}
 			rwrecords[txnHash] = NewRWRecord(nil)
+			log.Error("Detect nil rwrecord in miss reporter", "txPreplay != nil", txPreplay != nil,
+				"result.status", executor.resultMap[txnHash].Status, "result.reason", executor.resultMap[txnHash].Reason)
 		}
 	}
 
@@ -488,29 +609,28 @@ func (r *MissReporter) getTxnBefore(currentTxn *types.Transaction, order TxnOrde
 	return beforeTxnPool, beforeTxnOrder
 }
 
-func (r *MissReporter) searchGroupHitGroup(currentTxn *types.Transaction, sender common.Address, poolBefore TransactionPool) (map[common.Hash]*TxnGroup, int) {
-	var relativeGroup = make(map[common.Hash]*TxnGroup)
-	r.preplayer.taskBuilder.pastGroupsMu.RLock()
-	for groupHash, group := range r.preplayer.taskBuilder.pastGroups {
-		for _, txn := range group.txns[sender] {
-			if txn.Hash() == currentTxn.Hash() {
-				relativeGroup[groupHash] = group
-				break
-			}
+func (r *MissReporter) searchExecHitGroup(currentTxn *types.Transaction, groupHitGroup map[common.Hash]*TxnGroup) map[common.Hash]*TxnGroup {
+	execHitGroup := make(map[common.Hash]*TxnGroup)
+	for groupHash, group := range groupHitGroup {
+		if group.preplayCountMap[currentTxn.Hash()] > 0 {
+			execHitGroup[groupHash] = group
 		}
 	}
-	r.preplayer.taskBuilder.pastGroupsMu.RUnlock()
-	hitGroup := make(map[common.Hash]*TxnGroup)
-	for groupHash, group := range relativeGroup {
+	return execHitGroup
+}
+
+func (r *MissReporter) searchTxnHitGroup(groupExecGroup map[common.Hash]*TxnGroup, poolBefore TransactionPool) map[common.Hash]*TxnGroup {
+	txnHitGroup := make(map[common.Hash]*TxnGroup)
+	for groupHash, group := range groupExecGroup {
 		if !poolBefore.isTxnsPoolLarge(group.txns) {
-			hitGroup[groupHash] = group
+			txnHitGroup[groupHash] = group
 		}
 	}
-	return hitGroup, len(relativeGroup)
+	return txnHitGroup
 }
 
 func (r *MissReporter) isSortHit(groundPool TransactionPool) bool {
-	txnHeap := types.NewTransactionsByPriceAndNonce(r.preplayer.taskBuilder.signer, groundPool, nil, true)
+	txnHeap := types.NewTransactionsByPriceAndNonce(r.signer, groundPool, nil, true)
 	var nowPrice = txnHeap.Peek().GasPrice()
 	var (
 		lastIndex = -1
@@ -541,7 +661,7 @@ func (r *MissReporter) searchChainHitGroup(hitGroup map[common.Hash]*TxnGroup) m
 	for groupHash, group := range hitGroup {
 		if group.isCoinbaseDep() {
 			miss := true
-			for _, miner := range r.preplayer.taskBuilder.minerList.top5Active {
+			for _, miner := range r.preplayer.minerList.top5Active {
 				if r.block.Header().Coinbase == miner {
 					miss = false
 					break
@@ -553,8 +673,9 @@ func (r *MissReporter) searchChainHitGroup(hitGroup map[common.Hash]*TxnGroup) m
 		}
 		if group.isTimestampDep() {
 			miss := true
+			diff := r.block.Header().Time - r.preplayer.nowHeader.time
 			for _, shift := range timeShift {
-				if r.block.Header().Time == uint64(int(group.header.time)+shift) {
+				if diff == shift {
 					miss = false
 					break
 				}
@@ -757,6 +878,10 @@ func (r *MissReporter) searchRootHitGroup(orderHitGroup map[common.Hash]*TxnGrou
 //	}
 //	return rank, overflow
 //}
+
+func isSample(txn *types.Transaction) bool {
+	return txn.Hash()[0] == 0
+}
 
 func pickOneGroup(groupMap map[common.Hash]*TxnGroup) *TxnGroup {
 	for _, group := range groupMap {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
@@ -34,21 +35,24 @@ type LogBlockInfo struct {
 	Hit             int           `json:"H"`
 	Miss            int           `json:"M"`
 	Unknown         int           `json:"U"`
-	DeltaHit        int           `json:"EH"`
-	TrieHit         int           `json:"TH"`
-	DepHit          int           `json:"DH"`
 	MixHit          int           `json:"MH"`
 	AllDepMixHit    int           `json:"DMH"`
 	AllDetailMixHit int           `json:"TMH"`
 	PartialMixHit   int           `json:"PMH"`
 	UnhitHeadCount  [10]int       `json:"UHC"`
-	NoInMiss        int           `json:"NIM"`
-	NoMatchMiss     int           `json:"NMM"`
+	TrieHit         int           `json:"TH"`
+	DeltaHit        int           `json:"EH"`
 	ReuseGas        int           `json:"reuseGas"`
 	ProcTime        int64         `json:"procTime"`
 	RunMode         string        `json:"runMode"`
 	TxnCount        int           `json:"txnCount"`
 	Header          *types.Header `json:"header"`
+}
+
+type MissReporter interface {
+	SetBlock(block *types.Block)
+	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{}, txnType int)
+	ReportMiss(noListen, noPackage, noPreplay uint64)
 }
 
 // LogBlockCache define blockCache log format
@@ -127,7 +131,6 @@ var (
 	SetDB         []time.Duration
 	RunTx         []time.Duration
 
-	RWCmpCnt      []int64
 	ReuseGasCount uint64
 
 	ReuseResult []*cmptypes.ReuseStatus
@@ -200,7 +203,6 @@ func ResetLogVar(size int) {
 	SetDB = make([]time.Duration, 0, size)
 	RunTx = make([]time.Duration, 0, size)
 
-	RWCmpCnt = make([]int64, 0, size)
 	ReuseGasCount = 0
 }
 
@@ -236,7 +238,7 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 }
 
 // InfoPrint block info to block folder
-func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) {
+func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, reporter MissReporter, statedb *state.StateDB) {
 
 	var (
 		sumApply         = SumDuration(Apply)
@@ -247,8 +249,6 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 		sumGetRW         = SumDuration(GetRW)
 		sumSetDB         = SumDuration(SetDB)
 		sumRunTx         = SumDuration(RunTx)
-
-		sumCmpCount = SumCount(RWCmpCnt)
 	)
 
 	infoResult := &LogBlockInfo{
@@ -284,10 +284,6 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			case cmptypes.Hit:
 				infoResult.Hit++
 				switch ReuseResult[index].HitType {
-				case cmptypes.TrieHit:
-					infoResult.TrieHit++
-				case cmptypes.DeltaHit:
-					infoResult.DeltaHit++
 				case cmptypes.MixHit:
 					infoResult.MixHit++
 					switch ReuseResult[index].MixHitStatus.MixHitType {
@@ -304,17 +300,13 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 							infoResult.UnhitHeadCount[9]++
 						}
 					}
-				case cmptypes.DepHit:
-					infoResult.DepHit++
+				case cmptypes.TrieHit:
+					infoResult.TrieHit++
+				case cmptypes.DeltaHit:
+					infoResult.DeltaHit++
 				}
 			case cmptypes.Miss:
 				infoResult.Miss++
-				switch ReuseResult[index].MissType {
-				case cmptypes.NoInMiss:
-					infoResult.NoInMiss++
-				case cmptypes.NoMatchMiss:
-					infoResult.NoMatchMiss++
-				}
 			case cmptypes.Unknown:
 				infoResult.Unknown++
 			}
@@ -406,7 +398,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
 		if sumWaitReuse != 0 {
 			context = append(context,
-				"getRW", fmt.Sprintf("%.2f(%d)", float64(sumGetRW)/float64(sumWaitReuse), sumCmpCount),
+				"getRW", fmt.Sprintf("%.2f", float64(sumGetRW)/float64(sumWaitReuse)),
 				"setDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
 		}
 		if sumWaitRealApply != 0 {
@@ -438,7 +430,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, trieHitRate, depHitRate, mixHitRate, deltaHitRate float64
+		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate float64
 		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
@@ -447,11 +439,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			hitRate = float64(infoResult.Hit) / float64(infoResult.TxnCount)
 			missRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
 			unknownRate = float64(infoResult.Unknown) / float64(infoResult.TxnCount)
-			//iteraHitRate = float64(infoResult.IteraHit) / float64(infoResult.TxnCount)
+			mixHitRate = float64(infoResult.MixHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
 			deltaHitRate = float64(infoResult.DeltaHit) / float64(infoResult.TxnCount)
-			depHitRate = float64(infoResult.DepHit) / float64(infoResult.TxnCount)
-			mixHitRate = float64(infoResult.MixHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -460,11 +450,13 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
 			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-			"EH-TH-DH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate, infoResult.DepHit, depHitRate),
 			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d]", infoResult.MixHit, mixHitRate,
 				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit),
 			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
+		}
+		if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 {
+			context = append(context, "TH-EH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)",
+				infoResult.TrieHit, trieHitRate, infoResult.DeltaHit, deltaHitRate))
 		}
 		if infoResult.Miss > 0 {
 			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))
@@ -490,6 +482,38 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool) 
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
 			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
 		)
+
+		var (
+			nodes  = make([]*cmptypes.PreplayResTrieNode, 0)
+			values = make([]interface{}, 0)
+			txns   types.Transactions
+		)
+		for index, txn := range block.Transactions() {
+			if ReuseResult[index].BaseStatus == cmptypes.Miss {
+				if node := ReuseResult[index].MissNode; node != nil {
+					nodes = append(nodes, node)
+					values = append(values, ReuseResult[index].MissValue)
+					txns = append(txns, txn)
+				} else {
+					log.Error("Detect miss with nil node")
+				}
+			}
+		}
+		if len(txns) > 0 {
+			reporter.SetBlock(block)
+			for i, txn := range txns {
+				var txnType int
+				if txn.To() == nil {
+					txnType = 1
+				} else {
+					if statedb.GetCodeSize(*txn.To()) != 0 {
+						txnType = 2
+					}
+				}
+				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
+			}
+		}
+		reporter.ReportMiss(txnCount-listen, listen-Package, Package-preplay)
 	}
 }
 

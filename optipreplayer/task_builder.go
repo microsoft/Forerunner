@@ -7,9 +7,9 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
+	"math"
 	"math/big"
 	"sort"
 	"sync"
@@ -17,10 +17,8 @@ import (
 )
 
 const (
-	// chainHeadChanSize is the size of channel listening to ChainHeadEvent.
-	chainHeadChanSize = 10
-	// deadlineStart is the start of deadline's shift.
-	deadlineStart = -10
+	// leftwardsStep is the step size of deadline move leftwards.
+	leftwardsStep = 10
 )
 
 type TaskBuilder struct {
@@ -29,21 +27,14 @@ type TaskBuilder struct {
 	eth    Backend
 	chain  *core.BlockChain
 
-	gasFloor uint64
-	gasCeil  uint64
-	gasLimit uint64
+	startCh      chan struct{}
+	finishOnceCh chan struct{}
+	exitCh       chan struct{}
 
-	// Subscriptions
-	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
-
-	startCh chan struct{}
-	exitCh  chan struct{}
-
-	mu    sync.RWMutex // The lock used to protect the extra fields
 	extra []byte
 
-	trigger *Trigger
+	// The lock used to protect the fields updated when new block enters
+	mu *sync.RWMutex
 
 	// Cache
 	globalCache *cache.GlobalCache
@@ -52,22 +43,26 @@ type TaskBuilder struct {
 	listener *Listener
 
 	// Package
-	packagePool TransactionPool
-	addedTxn    TransactionPool
-	removedTxn  bool
-	signer      types.Signer
-	minerList   MinerList
-	whiteList   map[common.Address]struct{}
-	txnBaseline uint64
-	txnDeadline uint64
+	followLatest bool
+	packagePool  TransactionPool
+	addedTxn     TransactionPool
+	removedTxn   bool
+	signer       types.Signer
+	minerList    *MinerList
+	whiteList    map[common.Address]struct{}
+	reachLast    bool
+	nowStart     uint64 // only valid for followLatest is false
+	lastBaseline uint64
+	txnBaseline  uint64
+	txnDeadline  uint64
 
 	// Transaction distributor
-	nowHeader    Header
-	nowGroups    map[common.Hash]*TxnGroup
-	pastGroups   map[common.Hash]*TxnGroup
-	pastGroupsMu sync.RWMutex
-	parent       *types.Block
-	rwrecord     map[common.Hash]*RWRecord
+	trigger    *Trigger
+	nowHeader  *Header
+	nowGroups  map[common.Hash]*TxnGroup
+	parent     *types.Block
+	rwrecord   map[common.Hash]*RWRecord
+	rwrecordMu sync.RWMutex
 
 	// Task queue
 	taskQueue *TaskQueue
@@ -76,81 +71,64 @@ type TaskBuilder struct {
 	preplayLog *PreplayLog
 }
 
-func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *TaskBuilder {
-	chain := eth.BlockChain()
-	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
-	trigger := &Trigger{
-		Name:        "TxsBlock1P1",
-		ExecutorNum: 1,
-	}
+func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Backend, finishOnceCh chan struct{},
+	mu *sync.RWMutex, listener *Listener, followLatest bool, minerList *MinerList, nowHeader *Header, taskQueue *TaskQueue,
+	preplayLog *PreplayLog) *TaskBuilder {
 	builder := &TaskBuilder{
 		config:       config,
 		engine:       engine,
 		eth:          eth,
-		chain:        chain,
-		gasFloor:     gasFloor,
-		gasCeil:      gasCeil,
-		chainHeadCh:  chainHeadCh,
-		chainHeadSub: chain.SubscribeChainHeadEvent(chainHeadCh),
+		chain:        eth.BlockChain(),
 		startCh:      make(chan struct{}, 1),
+		finishOnceCh: finishOnceCh,
 		exitCh:       make(chan struct{}),
-		trigger:      trigger,
-		listener:     listener,
+		mu:           mu,
+		followLatest: followLatest,
 		packagePool:  make(TransactionPool),
 		addedTxn:     make(TransactionPool),
 		signer:       types.NewEIP155Signer(config.ChainID),
-		minerList:    NewMinerList(chain),
+		minerList:    minerList,
 		whiteList:    make(map[common.Address]struct{}),
+		lastBaseline: uint64(time.Now().Unix()),
+		trigger:      NewTrigger("TxsBlock1P1", 1),
+		nowHeader:    nowHeader,
 		nowGroups:    make(map[common.Hash]*TxnGroup),
-		pastGroups:   make(map[common.Hash]*TxnGroup),
 		rwrecord:     make(map[common.Hash]*RWRecord),
-		taskQueue:    NewTaskQueue(),
-		preplayLog:   NewPreplayLog(),
+		taskQueue:    taskQueue,
+		preplayLog:   preplayLog,
+	}
+	if followLatest {
+		builder.listener = listener
 	}
 	return builder
 }
 
 func (b *TaskBuilder) mainLoop() {
-	defer b.chainHeadSub.Unsubscribe()
-
-	waitNewTxCh := make(chan struct{})
-	go func() {
-		for {
-			b.listener.waitForNewTx()
-			b.startCh <- struct{}{}
-			<-waitNewTxCh
-		}
-	}()
-
 	for {
 		select {
 		case <-b.startCh:
-			//b.listener.waitForNewTx()
-			b.resetPackagePool()
-			b.preplayLog.reportNewPackage()
-			if b.removedTxn || len(b.addedTxn) > 0 {
-				b.commitNewWork()
-				b.updateTxnGroup()
-				b.preplayLog.reportNewBuild()
+			b.mu.RLock()
+			rawPending, _ := b.eth.TxPool().Pending()
+			if b.parent != nil && b.chain.CurrentBlock().Root() == b.parent.Root() {
+				b.resetPackagePool(rawPending)
+				b.preplayLog.reportNewPackage(!b.removedTxn)
+				if b.removedTxn || len(b.addedTxn) > 0 {
+					b.commitNewWork()
+					b.updateTxnGroup()
+					b.preplayLog.reportNewTaskBuild()
+				}
 			}
-			waitNewTxCh <- struct{}{}
-			//b.startCh <- struct{}{}
-		case chainHeadEvent := <-b.chainHeadCh:
-			currentBlock := chainHeadEvent.Block
-
-			b.chainHeadUpdate(currentBlock)
-			b.preplayLog.printAndClearLog(currentBlock.NumberU64(), b.taskQueue.countTask())
+			b.mu.RUnlock()
+			b.finishOnceCh <- struct{}{}
 		case <-b.exitCh:
 			return
 		}
 	}
 }
 
-func (b *TaskBuilder) resetPackagePool() {
+func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 	originPool := b.packagePool
 	b.packagePool = make(TransactionPool)
-	var rawPending TransactionPool
-	rawPending, _ = b.eth.TxPool().Pending()
 
 	// inWhiteList the whitelist txns in advance
 	for from := range b.whiteList {
@@ -187,7 +165,7 @@ func (b *TaskBuilder) resetPackagePool() {
 
 		gasPrice := txn.GasPrice()
 		if gasPrice.Cmp(currentPrice) != 0 {
-			if cumGasUsed+params.TxGas > b.gasLimit {
+			if cumGasUsed+params.TxGas > b.nowHeader.gasLimit {
 				break
 			}
 
@@ -200,7 +178,7 @@ func (b *TaskBuilder) resetPackagePool() {
 		gasUsed := b.globalCache.GetGasUsedCache(sender, txn)
 
 		if _, senderPopped := poppedSenders[sender]; !senderPopped {
-			if cumGasUsed+txn.Gas() <= b.gasLimit {
+			if cumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
 				cumGasUsed += gasUsed
 			} else {
 				poppedSenders[sender] = struct{}{}
@@ -212,7 +190,7 @@ func (b *TaskBuilder) resetPackagePool() {
 		if !ok {
 			senderCumGasUsed = currentPriceStartingCumGasUsed
 		}
-		if senderCumGasUsed+txn.Gas() <= b.gasLimit {
+		if senderCumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
 			if b.packagePool.addTxn(sender, txn) {
 				currentPriceCumGasUsedBySender[sender] = senderCumGasUsed + gasUsed
 				if minPrice == nil {
@@ -229,12 +207,11 @@ func (b *TaskBuilder) resetPackagePool() {
 	b.addedTxn = b.packagePool.txnsPoolDiff(originPool)
 	b.removedTxn = originPool.isTxnsPoolLarge(b.packagePool)
 
-	var isShift bool
-	b.txnDeadline, isShift = b.nextTxnDeadline(b.txnDeadline)
-	if isShift {
-		b.preplayLog.reportNewDeadline()
+	b.preplayLog.reportNewDeadline(b.txnDeadline)
+	b.txnDeadline = b.nextTxnDeadline(b.txnDeadline)
+	if b.followLatest {
+		b.listener.setMinPrice(minPrice)
 	}
-	b.listener.setMinPrice(minPrice)
 
 	nowTime := time.Now()
 	for _, txn := range b.packagePool {
@@ -245,9 +222,6 @@ func (b *TaskBuilder) resetPackagePool() {
 }
 
 func (b *TaskBuilder) commitNewWork() {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	parent := b.parent
 	parentHash := parent.Hash()
 	parentNumber := parent.Number()
@@ -260,9 +234,6 @@ func (b *TaskBuilder) commitNewWork() {
 		pendingList = append(pendingList, txns...)
 		for _, txn := range txns {
 			gasLimit += txn.Gas()
-			if b.globalCache.GetTxPreplay(txn.Hash()) == nil {
-				b.globalCache.CommitTxPreplay(cache.NewTxPreplay(txn))
-			}
 		}
 	}
 
@@ -290,7 +261,7 @@ func (b *TaskBuilder) commitNewWork() {
 	}
 
 	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), nil,
-		pendingTxn, pendingList, currentState, b.trigger, nil, false)
+		pendingTxn, pendingList, currentState, b.trigger, nil, false, true)
 
 	executor.RoundID = b.globalCache.NewRoundID()
 
@@ -314,20 +285,18 @@ func (b *TaskBuilder) updateTxnGroup() {
 		b.groupTxns(b.addedTxn)
 	}
 
-	for groupHash, group := range b.nowGroups {
-		b.pastGroupsMu.RLock()
-		if _, ok := b.pastGroups[groupHash]; ok {
-			b.pastGroupsMu.RUnlock()
+	for _, group := range b.nowGroups {
+		if exist := b.preplayLog.reportNewGroup(group); exist {
 			continue
 		}
-		b.pastGroupsMu.RUnlock()
-		b.pastGroupsMu.Lock()
-		b.pastGroups[groupHash] = group
-		b.pastGroupsMu.Unlock()
-		b.preplayLog.reportNewGroup(group)
+
+		for _, txns := range group.txns {
+			sort.Sort(types.TxByNonce(txns))
+		}
 		group.setValid()
+		group.preplayCountMap = make(map[common.Hash]int, group.txns.size())
 		group.parent = b.parent
-		group.header = b.nowHeader
+		group.txnCount = group.txns.size()
 		group.chainFactor = 1
 		if group.isCoinbaseDep() {
 			group.chainFactor *= len(b.minerList.top5Active)
@@ -335,19 +304,14 @@ func (b *TaskBuilder) updateTxnGroup() {
 		if group.isTimestampDep() {
 			group.chainFactor *= len(timeShift)
 		}
-		group.nextOrder = make(chan TxnOrder)
-
-		for _, txns := range group.txns {
-			sort.Sort(types.TxByNonce(txns))
-		}
-
-		group.divideTransactionPool()
+		group.orderCount, group.startList, group.subpoolList, group.nextInList = divideTransactionPool(group.txns, group.chainFactor)
+		group.nextOrderAndHeader = make(chan OrderAndHeader)
 
 		// start walk for new group
 		go func(group *TxnGroup) {
 			lastIndex := len(group.subpoolList) - 1
-			walkTxnsPool(lastIndex, group.startList[lastIndex], group, make(TxnOrder, group.txnCount), b.minerList.top5Active)
-			close(group.nextOrder)
+			walkTxnsPool(lastIndex, group.startList[lastIndex], group, make(TxnOrder, group.txnCount), b)
+			close(group.nextOrderAndHeader)
 			b.preplayLog.reportGroupEnd(group)
 		}(group)
 
@@ -356,54 +320,152 @@ func (b *TaskBuilder) updateTxnGroup() {
 }
 
 func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
-	b.listener.setMinPrice(new(big.Int))
-	b.gasLimit = core.CalcGasLimit(block, b.gasFloor, b.gasCeil)
-	b.minerList.addMiner(block.Coinbase())
+	if b.followLatest {
+		b.listener.setMinPrice(new(big.Int))
+	}
 	b.whiteList = b.minerList.getWhiteList()
+	b.lastBaseline = b.txnBaseline
 	if blockPre := b.globalCache.PeekBlockPre(block.Hash()); blockPre != nil {
 		b.txnBaseline = blockPre.ListenTime
 	} else {
 		b.txnBaseline = block.Time()
 	}
-	b.txnDeadline = uint64(int64(b.txnBaseline) + deadlineStart)
-	for _, txn := range block.Transactions() {
-		delete(b.rwrecord, txn.Hash())
+	if b.followLatest {
+		b.txnDeadline = b.txnBaseline
+	} else {
+		b.nowStart = b.txnBaseline - leftwardsStep
+		if b.nowStart <= b.lastBaseline {
+			b.nowStart = b.lastBaseline + 1
+		}
+		b.txnDeadline = b.nowStart
 	}
-	b.nowHeader = Header{
-		coinbase: b.minerList.top5Active[0],
-		time:     uint64(b.globalCache.GetTimeStamp()),
-		gasLimit: b.gasLimit,
+	for _, txn := range block.Transactions() {
+		b.deleteRWRecord(txn.Hash())
 	}
 	b.nowGroups = make(map[common.Hash]*TxnGroup)
-	b.pastGroupsMu.RLock()
-	for _, group := range b.pastGroups {
-		group.setInvalid()
-	}
-	b.pastGroupsMu.RUnlock()
-	b.pastGroupsMu.Lock()
-	b.pastGroups = make(map[common.Hash]*TxnGroup)
-	b.pastGroupsMu.Unlock()
 	b.parent = block
 }
 
-var timeShift = []int{0, -1, 1}
+var getFactorial = func() func(n int64) *big.Int {
+	factorCache := map[int64]*big.Int{
+		0: new(big.Int).SetUint64(1),
+		1: new(big.Int).SetUint64(1),
+		2: new(big.Int).SetUint64(2),
+		3: new(big.Int).SetUint64(6),
+	}
+	return func(n int64) *big.Int {
+		if factor, ok := factorCache[n]; ok {
+			return new(big.Int).Set(factor)
+		}
+		var factor = new(big.Int).SetInt64(1)
+		for mul := n; mul >= 1; mul-- {
+			if cache, ok := factorCache[mul]; ok {
+				factor.Mul(factor, cache)
+				factorCache[n] = new(big.Int).Set(factor)
+				return factor
+			}
+			factor.Mul(factor, new(big.Int).SetInt64(mul))
+		}
+		return factor
+	}
+}()
 
-func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, activeMiner []common.Address) {
+func divideTransactionPool(txns TransactionPool, chainFactor int) (orderCount *big.Int, startList []int,
+	subpoolList []TransactionPool, nextInList []map[common.Address]int) {
+	txnCount := txns.size()
+	orderCount = new(big.Int).SetUint64(uint64(chainFactor))
+	var (
+		inPoolList int
+		poolCpy    = txns.copy()
+	)
+	for inPoolList < txnCount {
+		var (
+			maxPriceFrom = make([]common.Address, 0)
+			maxPrice     = new(big.Int)
+		)
+		for from, txns := range poolCpy {
+			if len(txns) == 0 {
+				continue
+			}
+			headTxn := txns[0]
+			headGasPrice := headTxn.GasPrice()
+			cmp := headGasPrice.Cmp(maxPrice)
+			switch {
+			case cmp > 0:
+				maxPrice = headGasPrice
+				maxPriceFrom = []common.Address{from}
+			case cmp == 0:
+				maxPriceFrom = append(maxPriceFrom, from)
+			}
+		}
+		var (
+			maxPriceTotal  int64
+			maxPriceCounts []int64
+			subPool        = make(TransactionPool)
+		)
+		for _, from := range maxPriceFrom {
+			var (
+				index         int
+				txns          = poolCpy[from]
+				txnsSize      = len(txns)
+				maxPriceCount int64
+			)
+			for ; index < txnsSize; index++ {
+				cmp := txns[index].GasPrice().Cmp(maxPrice)
+				switch {
+				case cmp == 0:
+					maxPriceCount++
+				case cmp < 0:
+					break
+				}
+			}
+			maxPriceTotal += maxPriceCount
+			maxPriceCounts = append(maxPriceCounts, maxPriceCount)
+			if index == txnsSize {
+				subPool[from] = poolCpy[from]
+				delete(poolCpy, from)
+			} else {
+				subPool[from] = txns[:index]
+				poolCpy[from] = txns[index:]
+			}
+		}
+		factor := getFactorial(maxPriceTotal)
+		for _, count := range maxPriceCounts {
+			factor.Div(factor, getFactorial(count))
+		}
+		orderCount.Mul(orderCount, factor)
+		startList = append(startList, inPoolList)
+		subpoolList = append(subpoolList, subPool)
+		nextIn := make(map[common.Address]int, len(subPool))
+		for from := range subPool {
+			nextIn[from] = 0
+		}
+		nextInList = append(nextInList, nextIn)
+
+		inPoolList += subPool.size()
+	}
+	return
+}
+
+// timeShift denotes 0, -1, 1, -2, 2
+var timeShift = []uint64{0, math.MaxUint64, 1, math.MaxUint64 - 1, 2}
+
+func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b *TaskBuilder) {
 	// boundaries of recursion
 	if !group.isValid() {
 		return
 	}
 	if group.isSubInOrder(subpoolLoc) {
 		if subpoolLoc == 0 {
-			var finalOrder = make(TxnOrder, len(order))
-			copy(finalOrder, order)
+			orderAndHeader := OrderAndHeader{order: make(TxnOrder, len(order))}
+			copy(orderAndHeader.order, order)
 			if group.isChainDep() {
 				var (
 					coinbaseTryCount  = 1
 					timestampTryCount = 1
 				)
 				if group.isCoinbaseDep() {
-					coinbaseTryCount = len(activeMiner)
+					coinbaseTryCount = len(b.minerList.top5Active)
 				}
 				if group.isTimestampDep() {
 					timestampTryCount = len(timeShift)
@@ -411,14 +473,18 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, a
 				for i := 0; i < coinbaseTryCount; i++ {
 					for j := 0; j < timestampTryCount; j++ {
 						if group.isValid() {
-							group.header.coinbase = activeMiner[i]
-							group.header.time = uint64(int(group.header.time) + timeShift[j])
-							group.nextOrder <- finalOrder
+							orderAndHeader.header.coinbase = b.minerList.top5Active[i]
+							orderAndHeader.header.time = b.nowHeader.time + timeShift[j]
+							orderAndHeader.header.gasLimit = b.nowHeader.gasLimit
+							group.nextOrderAndHeader <- orderAndHeader
 						}
 					}
 				}
 			} else {
-				group.nextOrder <- finalOrder
+				orderAndHeader.header.coinbase = b.nowHeader.coinbase
+				orderAndHeader.header.time = b.nowHeader.time
+				orderAndHeader.header.gasLimit = b.nowHeader.gasLimit
+				group.nextOrderAndHeader <- orderAndHeader
 			}
 			return
 		} else {
@@ -456,16 +522,33 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, a
 		txn := subpool[from][nextIn[from]]
 		order[txnLoc] = txn.Hash()
 		nextIn[from]++
-		walkTxnsPool(subpoolLoc, txnLoc+1, group, order, activeMiner)
+		walkTxnsPool(subpoolLoc, txnLoc+1, group, order, b)
 		nextIn[from]--
 	}
 }
 
-func (b *TaskBuilder) nextTxnDeadline(nowValue uint64) (uint64, bool) {
-	if nowValue+1 <= uint64(time.Now().Unix()) {
-		return nowValue + 1, true
+func (b *TaskBuilder) nextTxnDeadline(nowValue uint64) uint64 {
+	if b.followLatest {
+		if nowValue+1 <= uint64(time.Now().Unix()) {
+			return nowValue + 1
+		} else {
+			return nowValue
+		}
 	} else {
-		return nowValue, false
+		if nowValue+1-b.nowStart >= leftwardsStep {
+			if b.nowStart <= b.lastBaseline+1 {
+				b.reachLast = true
+			} else {
+				b.nowStart -= leftwardsStep
+				if b.nowStart <= b.lastBaseline {
+					b.nowStart = b.lastBaseline + 1
+				}
+				nowValue = b.nowStart
+			}
+			return nowValue
+		} else {
+			return nowValue + 1
+		}
 	}
 }
 
@@ -476,11 +559,10 @@ func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
 			txPreplay := b.globalCache.GetTxPreplay(txnHash)
 			if txPreplay != nil {
 				if round, ok := txPreplay.PeekRound(roundID); ok {
-					b.rwrecord[txnHash] = NewRWRecord(round.RWrecord)
+					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))
 					continue
 				}
 			}
-			b.rwrecord[txnHash] = NewRWRecord(nil)
 		}
 	}
 }
@@ -515,7 +597,7 @@ func (b *TaskBuilder) groupTxns(pool TransactionPool) {
 		}
 		newGroup[from] = append(newGroup[from], txns...)
 		for _, txn := range txns {
-			rwrecord.merge(b.getRWRecord(txn.Hash()))
+			rwrecord.merge(b.selectRWRecord(txn.Hash()))
 			res = append(res, txn.Hash().Bytes())
 		}
 		sort.Slice(res, func(i, j int) bool {
@@ -530,21 +612,12 @@ func (b *TaskBuilder) groupTxns(pool TransactionPool) {
 	}
 }
 
-func (b TaskBuilder) isSameGroup(sender common.Address, txn common.Hash, group *TxnGroup) bool {
+func (b *TaskBuilder) isSameGroup(sender common.Address, txn common.Hash, group *TxnGroup) bool {
 	if _, ok := group.txns[sender]; ok {
 		return true
 	}
-	rwrecord := b.getRWRecord(txn)
+	rwrecord := b.selectRWRecord(txn)
 	return rwrecord.isRWOverlap(group.RWRecord) || group.isRWOverlap(rwrecord)
-}
-
-func (b TaskBuilder) getRWRecord(txn common.Hash) *RWRecord {
-	if rwrecord, ok := b.rwrecord[txn]; ok {
-		return rwrecord
-	} else {
-		b.rwrecord[txn] = NewRWRecord(nil)
-		return b.rwrecord[txn]
-	}
 }
 
 // setExtra sets the content used to initialize the block extra field.
@@ -556,6 +629,31 @@ func (b *TaskBuilder) setExtra(extra []byte) {
 
 func (b *TaskBuilder) setGlobalCache(globalCache *cache.GlobalCache) {
 	b.globalCache = globalCache
+}
+
+func (b *TaskBuilder) insertRWRecord(txnHash common.Hash, rwrecord *RWRecord) {
+	b.rwrecordMu.Lock()
+	defer b.rwrecordMu.Unlock()
+
+	b.rwrecord[txnHash] = rwrecord
+}
+
+func (b *TaskBuilder) deleteRWRecord(txnHash common.Hash) {
+	b.rwrecordMu.Lock()
+	defer b.rwrecordMu.Unlock()
+
+	delete(b.rwrecord, txnHash)
+}
+
+func (b *TaskBuilder) selectRWRecord(txn common.Hash) *RWRecord {
+	b.rwrecordMu.RLock()
+	defer b.rwrecordMu.RUnlock()
+
+	if rwrecord, ok := b.rwrecord[txn]; ok {
+		return rwrecord
+	} else {
+		return NewRWRecord(nil)
+	}
 }
 
 func (b *TaskBuilder) close() {

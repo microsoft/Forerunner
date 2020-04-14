@@ -52,7 +52,7 @@ type GlobalCache struct {
 	PreplayRoundIDMu sync.RWMutex
 	PreplayCache     *lru.Cache // Result Cache
 	PreplayRoundID   uint64
-	PreplayTimestamp int64 // Last time stamp
+	PreplayTimestamp uint64 // Last time stamp
 
 	// Gas used cache
 	PrimaryGasUsedCache   *lru.Cache
@@ -98,7 +98,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 
 	g.PreplayCache, _ = lru.New(pSize)
 	g.PreplayRoundID = 1
-	g.PreplayTimestamp = time.Now().Unix()
+	g.PreplayTimestamp = uint64(time.Now().Unix())
 	g.TimestampField = -2
 
 	g.PrimaryGasUsedCache, _ = lru.New(pSize)
