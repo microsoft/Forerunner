@@ -124,22 +124,24 @@ func (p TransactionPool) isTxnsPoolLarge(p2 TransactionPool) bool {
 const (
 	// minerRecallSize is area of previous blocks when count miners.
 	minerRecallSize = 1000
+	// topActiveCount is count of top active miner for forecast when preplay.
+	topActiveCount = 5
 	// activeMinerThreshold is the threshold of active miner added in white list.
 	activeMinerThreshold = 2
 )
 
 type MinerList struct {
-	list       [minerRecallSize]common.Address
-	next       int
-	count      map[common.Address]int
-	top5Active []common.Address
+	list      [minerRecallSize]common.Address
+	next      int
+	count     map[common.Address]int
+	whiteList map[common.Address]struct{}
+	topActive [topActiveCount]common.Address
 }
 
 func NewMinerList(chain *core.BlockChain) *MinerList {
 	minerList := &MinerList{
-		list:       [minerRecallSize]common.Address{},
-		count:      make(map[common.Address]int),
-		top5Active: make([]common.Address, 5),
+		list:  [minerRecallSize]common.Address{},
+		count: make(map[common.Address]int),
 	}
 	nextBlk := chain.CurrentBlock().NumberU64() + 1
 	start := nextBlk - minerRecallSize
@@ -148,19 +150,9 @@ func NewMinerList(chain *core.BlockChain) *MinerList {
 		minerList.list[index] = coinbase
 		minerList.count[coinbase]++
 	}
-	minerList.updateTop5Active()
+	minerList.updateWhiteList()
+	minerList.updateTopActive()
 	return minerList
-}
-
-func (l *MinerList) updateTop5Active() {
-	minerList := make([]common.Address, 0, len(l.count))
-	for miner := range l.count {
-		minerList = append(minerList, miner)
-	}
-	sort.Slice(minerList, func(i, j int) bool {
-		return l.count[minerList[i]] > l.count[minerList[j]]
-	})
-	copy(l.top5Active, minerList[:5])
 }
 
 func (l *MinerList) addMiner(newMiner common.Address) {
@@ -173,72 +165,28 @@ func (l *MinerList) addMiner(newMiner common.Address) {
 	l.count[oldMiner]--
 	l.count[newMiner]++
 
-	l.updateTop5Active()
+	l.updateWhiteList()
+	l.updateTopActive()
 }
 
-func (l *MinerList) getWhiteList() map[common.Address]struct{} {
-	var whiteList = make(map[common.Address]struct{})
+func (l *MinerList) updateWhiteList() {
+	l.whiteList = make(map[common.Address]struct{})
 	for miner, count := range l.count {
 		if count >= activeMinerThreshold {
-			whiteList[miner] = struct{}{}
+			l.whiteList[miner] = struct{}{}
 		}
 	}
-	return whiteList
 }
 
-const goLeftLimit = 2
-
-type DeadlineWalker struct {
-	baseline uint64
-	deadline uint64
-
-	nowLeft   uint64
-	nowRight  uint64
-	lastLeft  uint64
-	lastRight uint64
-
-	goLeftCnt int
-}
-
-func (w *DeadlineWalker) updateBaseline(baseline uint64) {
-	w.baseline = baseline
-	w.deadline = baseline
-	w.nowLeft = baseline
-	w.lastLeft = baseline
-	w.lastRight = baseline
-	w.goLeftCnt = 0
-}
-
-func (w *DeadlineWalker) walk() uint64 {
-	now := uint64(time.Now().Unix())
-	if w.baseline == 0 {
-		return now
+func (l *MinerList) updateTopActive() {
+	minerList := make([]common.Address, 0, len(l.count))
+	for miner := range l.count {
+		minerList = append(minerList, miner)
 	}
-	saveDdl := w.deadline
-	if w.deadline < w.baseline {
-		if w.deadline+1 < w.lastLeft {
-			w.deadline++
-		} else {
-			w.deadline = w.lastRight
-		}
-	} else {
-		if w.goLeftCnt >= goLeftLimit {
-			if w.deadline < now {
-				w.deadline++
-			}
-		} else {
-			if w.deadline >= now {
-				w.lastLeft = w.nowLeft
-				w.lastRight = now
-				w.nowLeft = w.lastLeft - leftwardsStep
-				w.deadline = w.nowLeft
-				w.goLeftCnt++
-			} else {
-				w.deadline++
-			}
-		}
-	}
-	return saveDdl
+	sort.Slice(minerList, func(i, j int) bool {
+		return l.count[minerList[i]] > l.count[minerList[j]]
+	})
+	copy(l.topActive[:], minerList[:topActiveCount])
 }
 
 type Trigger struct {
@@ -732,11 +680,11 @@ func (l *PreplayLog) reportNewDeadline(deadline uint64) {
 	l.deadlineLog[deadline] = struct{}{}
 }
 
-func (l *PreplayLog) reportNewGroup(group *TxnGroup) (exist bool) {
+func (l *PreplayLog) reportNewGroup(group *TxnGroup) (originGroup *TxnGroup, exist bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if _, exist = l.groupLog[group.hash]; !exist {
+	if originGroup, exist = l.groupLog[group.hash]; !exist {
 		l.groupLog[group.hash] = group
 		for _, txns := range group.txns {
 			for _, txn := range txns {

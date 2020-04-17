@@ -3,7 +3,6 @@ package optipreplayer
 import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
 	"sync"
@@ -17,9 +16,7 @@ type Listener struct {
 	minPrice   *big.Int
 	minPriceMu sync.RWMutex
 
-	// NewTxs Subscription
-	newTxsCh  chan core.NewTxsEvent
-	newTxsSub event.Subscription
+	txPool *core.TxPool
 
 	// Cache
 	globalCache *cache.GlobalCache
@@ -28,24 +25,32 @@ type Listener struct {
 func NewListener(eth Backend) *Listener {
 	listener := &Listener{
 		minPrice: new(big.Int),
-		newTxsCh: make(chan core.NewTxsEvent, chanSize),
+		txPool:   eth.TxPool(),
 	}
-	listener.newTxsSub = eth.TxPool().SubscribeNewTxsEvent(listener.newTxsCh)
 
-	go listener.txLoop()
+	go listener.reportLoop()
+	go listener.commitLoop()
 
 	return listener
 }
 
-func (l *Listener) txLoop() {
-	defer l.newTxsSub.Unsubscribe()
+func (l *Listener) reportLoop() {
+	newTxsCh := make(chan core.NewTxsEvent, chanSize)
+	newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
+	defer newTxsSub.Unsubscribe()
 
 	for {
-		select {
-		case req := <-l.newTxsCh:
-			l.reportNewTx(req.Txs)
-			l.commitNewTxs(req.Txs)
-		}
+		l.reportNewTx((<-newTxsCh).Txs)
+	}
+}
+
+func (l *Listener) commitLoop() {
+	newTxsCh := make(chan core.NewTxsEvent, chanSize)
+	newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
+	defer newTxsSub.Unsubscribe()
+
+	for {
+		l.commitNewTxs((<-newTxsCh).Txs)
 	}
 }
 

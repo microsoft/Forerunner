@@ -57,13 +57,14 @@ type Executor struct {
 
 	RoundID uint64
 
-	enableAgg   bool
-	enablePause bool
+	enableAgg     bool
+	enablePause   bool
+	enableWObject bool
 }
 
 func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
-	rawPending map[common.Address]types.Transactions, pendingList types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
-	enableAgg bool, enablePause bool) *Executor {
+	rawPending map[common.Address]types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
+	enableAgg bool, enablePause bool, enableWObject bool) *Executor {
 	executor := &Executor{
 		id:             id,
 		config:         config,
@@ -80,10 +81,13 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		resultCh:       resultCh,
 		enableAgg:      enableAgg,
 		enablePause:    enablePause,
+		enableWObject:  enableWObject,
 	}
 
-	for _, tx := range pendingList {
-		executor.pendingTxsMap[tx.Hash()] = tx
+	for _, txs := range rawPending {
+		for _, tx := range txs {
+			executor.pendingTxsMap[tx.Hash()] = tx
+		}
 	}
 
 	return executor
@@ -112,6 +116,9 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 	statedbInstance, err := e.chain.StateAt(parent.Root())
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
 		statedb = state.NewRWStateDB(statedbInstance)
+		if !e.enableWObject {
+			statedb.DisableWObject()
+		}
 	} else {
 		statedb = statedbInstance
 	}

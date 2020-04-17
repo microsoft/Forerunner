@@ -353,9 +353,9 @@ func (h *rwRecorderImpl) UpdateRAccount(addr common.Address, field cmptypes.Fiel
 		if state.CodeHash == nil {
 			codeHash := val.(common.Hash)
 			state.CodeHash = &codeHash
-			if codeHash == emptyCode{
+			if codeHash == emptyCode {
 				value = common.Hash{}
-			}else {
+			} else {
 				value = codeHash
 			}
 		}
@@ -473,7 +473,9 @@ func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject)
 	cpy := object.deepCopy(object.db)
 	cpy.delta = newDeltaObject()
 	cpy.Code(cpy.db.db)
-	cpy.updateRoot(cpy.db.db)
+	if h.statedb.EnableWObject {
+		cpy.updateRoot(cpy.db.db)
+	}
 	cpy.shareCopy(cpy.db)
 	h.WObject[addr] = cpy
 }

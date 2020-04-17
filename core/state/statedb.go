@@ -124,6 +124,7 @@ type StateDB struct {
 
 	// MSRA fields !!! don't forget to initialize in New() and Copy()
 	EnableFeeToCoinbase bool       // default true
+	EnableWObject       bool       // default true
 	rwRecorder          RWRecorder // RWRecord mode
 
 	primary bool
@@ -262,6 +263,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:             newJournal(),
 
 		EnableFeeToCoinbase: true,
+		EnableWObject:       true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
 		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
@@ -272,6 +274,10 @@ func NewRWStateDB(state *StateDB) *StateDB {
 	state.SetRWMode(true)
 	state.EnableFeeToCoinbase = false // RWStateDB default is false
 	return state
+}
+
+func (self *StateDB) DisableWObject() {
+	self.EnableWObject = false
 }
 
 func (self *StateDB) SetRWMode(enabled bool) {
@@ -927,6 +933,7 @@ func (s *StateDB) Copy() *StateDB {
 		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
+		EnableWObject:       s.EnableWObject,
 		rwRecorder:          emptyRWRecorder{},
 		IsParallelHasher:    s.IsParallelHasher,
 	}
@@ -1002,6 +1009,7 @@ func (s *StateDB) ShareCopy() {
 		logs:                s.logs,
 		journal:             newJournal(),
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
+		EnableWObject:       s.EnableWObject,
 		rwRecorder:          emptyRWRecorder{},
 		primary:             false,
 		delta:               newDeltaDB(),

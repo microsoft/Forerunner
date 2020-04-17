@@ -46,6 +46,7 @@ type GlobalCache struct {
 	TxMu           sync.RWMutex
 	TxListenCache  *lru.Cache
 	TxPackageCache *lru.Cache
+	TxEnqueueCache *lru.Cache
 
 	// Preplay result
 	PreplayMu        sync.RWMutex
@@ -95,6 +96,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 
 	g.TxListenCache, _ = lru.New(tSize)
 	g.TxPackageCache, _ = lru.New(tSize)
+	g.TxEnqueueCache, _ = lru.New(tSize)
 
 	g.PreplayCache, _ = lru.New(pSize)
 	g.PreplayRoundID = 1
@@ -141,6 +143,7 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	if tSize != 0 {
 		r.TxListenCache, _ = lru.New(tSize)
 		r.TxPackageCache, _ = lru.New(tSize)
+		r.TxEnqueueCache, _ = lru.New(tSize)
 	}
 
 	if pSize != 0 {

@@ -179,9 +179,16 @@ func (r *GlobalCache) GetTxPackage(hash common.Hash) uint64 {
 	}
 }
 
+func (r *GlobalCache) GetTxEnqueue(hash common.Hash) uint64 {
+	if result, ok := r.TxEnqueueCache.Peek(hash); ok {
+		return result.(uint64)
+	} else {
+		return 0
+	}
+}
+
 // CommitTxListen commit tx
 func (r *GlobalCache) CommitTxListen(tx *TxListen) {
-
 	r.TxMu.Lock()
 	defer r.TxMu.Unlock()
 
@@ -198,18 +205,15 @@ func (r *GlobalCache) CommitTxListen(tx *TxListen) {
 	// 	return
 	// }
 
-	_, ok := r.TxListenCache.Peek(tx.Tx.Hash())
-	if !ok {
-		r.TxListenCache.Add(tx.Tx.Hash(), tx)
-	}
-	// return
+	r.TxListenCache.ContainsOrAdd(tx.Tx.Hash(), tx)
 }
 
-func (r *GlobalCache) CommitTxPackage(tx common.Hash, txListen uint64) {
-	_, ok := r.TxPackageCache.Peek(tx)
-	if !ok {
-		r.TxPackageCache.Add(tx, txListen)
-	}
+func (r *GlobalCache) CommitTxPackage(tx common.Hash, txPackage uint64) {
+	r.TxPackageCache.ContainsOrAdd(tx, txPackage)
+}
+
+func (r *GlobalCache) CommitTxEnqueue(tx common.Hash, txEnqueue uint64) {
+	r.TxEnqueueCache.ContainsOrAdd(tx, txEnqueue)
 }
 
 // func (r *GlobalCache) GetListenTxCnt(block *types.Block) uint64 {

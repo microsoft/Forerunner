@@ -225,7 +225,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 				"isDep", fmt.Sprintf("%v:%v", pickGroup.isCoinbaseDep(), pickGroup.isTimestampDep())}
 			if pickGroup.isCoinbaseDep() {
 				var minerStr string
-				for index, miner := range r.preplayer.minerList.top5Active {
+				for index, miner := range r.preplayer.minerList.topActive {
 					if index > 0 {
 						minerStr += ","
 					}
@@ -379,8 +379,8 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	}
 }
 
-func (r *MissReporter) ReportMiss(noListen, noPackage, noPreplay uint64) {
-	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoPreplay", noPreplay,
+func (r *MissReporter) ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64) {
+	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoEnqueue", noEnqueue, "NoPreplay", noPreplay,
 		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2])}
 	if r.groupMissCount > 0 {
 		context = append(context, "NoGroup", r.groupMissCount)
@@ -440,11 +440,9 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 	parent := p.chain.GetBlockByHash(parentHash)
 
 	pendingTxn := make(TransactionPool)
-	pendingList := types.Transactions{}
 	for _, txn := range block.Transactions() {
 		sender := txnsSenderMap[txn.Hash()]
 		pendingTxn[sender] = append(pendingTxn[sender], txn)
-		pendingList = append(pendingList, txn)
 	}
 
 	totalDifficulty := p.chain.GetTd(parentHash, parent.NumberU64())
@@ -461,8 +459,8 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 		SnapshotTimestamp: time.Now().UnixNano() / 1000000,
 	}
 
-	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), txnsIndexMap,
-		pendingTxn, pendingList, currentState, p.trigger, nil, false, false)
+	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), txnsIndexMap, pendingTxn, currentState,
+		p.trigger, nil, false, false, false)
 
 	executor.RoundID = p.globalCache.NewRoundID()
 
@@ -661,7 +659,7 @@ func (r *MissReporter) searchChainHitGroup(hitGroup map[common.Hash]*TxnGroup) m
 	for groupHash, group := range hitGroup {
 		if group.isCoinbaseDep() {
 			miss := true
-			for _, miner := range r.preplayer.minerList.top5Active {
+			for _, miner := range r.preplayer.minerList.topActive {
 				if r.block.Header().Coinbase == miner {
 					miss = false
 					break
@@ -773,14 +771,14 @@ func (r *MissReporter) searchRootHitGroup(orderHitGroup map[common.Hash]*TxnGrou
 //							timestampTryCount = 1
 //						)
 //						if group.isCoinbaseDep() {
-//							coinbaseTryCount = len(r.preplayer.taskBuilder.minerList.top5Active)
+//							coinbaseTryCount = len(r.preplayer.taskBuilder.minerList.topActive)
 //						}
 //						if group.isTimestampDep() {
 //							timestampTryCount = len(timeShift)
 //						}
 //						for i := 0; i < coinbaseTryCount; i++ {
 //							for j := 0; j < timestampTryCount; j++ {
-//								if !(group.isCoinbaseDep() && r.block.Header().Coinbase != r.preplayer.taskBuilder.minerList.top5Active[i] ||
+//								if !(group.isCoinbaseDep() && r.block.Header().Coinbase != r.preplayer.taskBuilder.minerList.topActive[i] ||
 //									group.isTimestampDep() && r.block.Header().Time != uint64(int(group.header.time)+timeShift[j])) {
 //									rank = int64(rankCount)
 //									finish = true

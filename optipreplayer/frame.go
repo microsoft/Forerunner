@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	executorNum             = 30
+	//executorNum             = 30
 	defaultBlockCacheSize   = 6 * 300
 	defaultTxCacheSize      = 3000 * 300
 	defaultPreplayCacheSize = 20000

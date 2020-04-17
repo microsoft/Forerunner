@@ -31,6 +31,7 @@ type LogBlockInfo struct {
 	RunTx           int64         `json:"runTx"`
 	NoListen        int           `json:"L"`
 	NoPackage       int           `json:"Pa"`
+	NoEnqueue       int           `json:"E"`
 	NoPreplay       int           `json:"Pr"`
 	Hit             int           `json:"H"`
 	Miss            int           `json:"M"`
@@ -52,7 +53,7 @@ type LogBlockInfo struct {
 type MissReporter interface {
 	SetBlock(block *types.Block)
 	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{}, txnType int)
-	ReportMiss(noListen, noPackage, noPreplay uint64)
+	ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64)
 }
 
 // LogBlockCache define blockCache log format
@@ -165,6 +166,7 @@ var (
 	txnCount uint64
 	listen   uint64
 	Package  uint64
+	enqueue  uint64
 	preplay  uint64
 	hit      uint64
 	unknown  uint64
@@ -270,17 +272,21 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 	processTimeNano := r.PeekBlockPre(block.Hash()).ListenTimeNano
 	if len(ReuseResult) != 0 {
 		for index, tx := range block.Transactions() {
-			txListen := r.GetTxListen(tx.Hash())
-			if txListen == nil || txListen.ListenTimeNano > processTimeNano {
-				infoResult.NoListen++
-			}
-			txPackage := r.GetTxPackage(tx.Hash())
-			if txPackage == 0 || txPackage > processTimeNano {
-				infoResult.NoPackage++
-			}
 			switch ReuseResult[index].BaseStatus {
 			case cmptypes.NoPreplay:
 				infoResult.NoPreplay++
+				txEnqueue := r.GetTxEnqueue(tx.Hash())
+				if txEnqueue == 0 || txEnqueue > processTimeNano {
+					infoResult.NoEnqueue++
+					txPackage := r.GetTxPackage(tx.Hash())
+					if txPackage == 0 || txPackage > processTimeNano {
+						infoResult.NoPackage++
+						txListen := r.GetTxListen(tx.Hash())
+						if txListen == nil || txListen.ListenTimeNano > processTimeNano {
+							infoResult.NoListen++
+						}
+					}
+				}
 			case cmptypes.Hit:
 				infoResult.Hit++
 				switch ReuseResult[index].HitType {
@@ -429,12 +435,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 	if cfg.MSRAVMSettings.EnablePreplay && cfg.MSRAVMSettings.CmpReuse {
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
+		enqueueCnt := infoResult.TxnCount - infoResult.NoEnqueue
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate float64
+		var listenRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate float64
 		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			packageRate = float64(packageCnt) / float64(infoResult.TxnCount)
+			enqueueRate = float64(enqueueCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
 			hitRate = float64(infoResult.Hit) / float64(infoResult.TxnCount)
 			missRate = float64(infoResult.Miss) / float64(infoResult.TxnCount)
@@ -448,6 +456,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"Total", fmt.Sprintf("%03d", infoResult.TxnCount),
 			"Listen", fmt.Sprintf("%03d(%.2f)", listenCnt, listenRate),
 			"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
+			"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
 			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
 			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d]", infoResult.MixHit, mixHitRate,
@@ -472,12 +481,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		txnCount += uint64(infoResult.TxnCount)
 		listen += uint64(listenCnt)
 		Package += uint64(packageCnt)
+		enqueue += uint64(enqueueCnt)
 		preplay += uint64(preplayCnt)
 		hit += uint64(infoResult.Hit)
 		unknown += uint64(infoResult.Unknown)
 		log.Info("Cumulative block reuse", "block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
+			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
 			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
@@ -513,7 +524,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
 			}
 		}
-		reporter.ReportMiss(txnCount-listen, listen-Package, Package-preplay)
+		reporter.ReportMiss(txnCount-listen, listen-Package, Package-enqueue, enqueue-preplay)
 	}
 }
 
