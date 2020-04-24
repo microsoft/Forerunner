@@ -52,6 +52,7 @@ type LogBlockInfo struct {
 
 type MissReporter interface {
 	SetBlock(block *types.Block)
+	SetNoPreplayTxn(txn *types.Transaction, enqueue uint64)
 	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{}, txnType int)
 	ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64)
 }
@@ -495,24 +496,33 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		)
 
 		var (
-			nodes  = make([]*cmptypes.PreplayResTrieNode, 0)
-			values = make([]interface{}, 0)
-			txns   types.Transactions
+			enqueues      = make([]uint64, 0)
+			noPreplayTxns types.Transactions
+			nodes         = make([]*cmptypes.PreplayResTrieNode, 0)
+			values        = make([]interface{}, 0)
+			missTxns      types.Transactions
 		)
 		for index, txn := range block.Transactions() {
+			if ReuseResult[index].BaseStatus == cmptypes.NoPreplay {
+				txEnqueue := r.GetTxEnqueue(txn.Hash())
+				if txEnqueue > 0 && txEnqueue <= processTimeNano {
+					enqueues = append(enqueues, txEnqueue)
+					noPreplayTxns = append(noPreplayTxns, txn)
+				}
+			}
 			if ReuseResult[index].BaseStatus == cmptypes.Miss {
 				if node := ReuseResult[index].MissNode; node != nil {
 					nodes = append(nodes, node)
 					values = append(values, ReuseResult[index].MissValue)
-					txns = append(txns, txn)
+					missTxns = append(missTxns, txn)
 				} else {
 					log.Error("Detect miss with nil node")
 				}
 			}
 		}
-		if len(txns) > 0 {
+		if len(noPreplayTxns) > 0 || len(missTxns) > 0 {
 			reporter.SetBlock(block)
-			for i, txn := range txns {
+			for i, txn := range missTxns {
 				var txnType int
 				if txn.To() == nil {
 					txnType = 1
@@ -522,6 +532,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 					}
 				}
 				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
+			}
+			for index, txn := range noPreplayTxns {
+				reporter.SetNoPreplayTxn(txn, enqueues[index])
 			}
 		}
 		reporter.ReportMiss(txnCount-listen, listen-Package, Package-enqueue, enqueue-preplay)

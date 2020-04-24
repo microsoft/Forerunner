@@ -1962,18 +1962,17 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				"accountRead median", common.PrettyDuration(time.Duration(accountReadTimer.Percentile(0.5))),
 				"storageRead median", common.PrettyDuration(time.Duration(storageReadTimer.Percentile(0.5))))
 		}
-		if block.NumberU64()%5 == 0 {
-			m := new(runtime.MemStats)
-			runtime.ReadMemStats(m)
-			log.Info("Read memory statistics",
-				"HeapAlloc", common.StorageSize(m.HeapAlloc),
-				"HeapSys", common.StorageSize(m.HeapSys),
-				"HeadIdle", common.StorageSize(m.HeapIdle),
-				"HeapInuse", common.StorageSize(m.HeapInuse),
-				"NextGC", common.StorageSize(m.NextGC),
-				"NnmGC", m.NumGC,
-				"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100))
-		}
+		m := new(runtime.MemStats)
+		runtime.ReadMemStats(m)
+		log.Info("Read memory statistics",
+			"HeapAlloc", common.StorageSize(m.HeapAlloc),
+			"HeapSys", common.StorageSize(m.HeapSys),
+			"HeadIdle", common.StorageSize(m.HeapIdle),
+			"HeapInuse", common.StorageSize(m.HeapInuse),
+			"NextGC", common.StorageSize(m.NextGC),
+			"NnmGC", m.NumGC,
+			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
+		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && err == consensus.ErrFutureBlock {

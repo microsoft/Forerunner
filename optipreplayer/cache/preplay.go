@@ -535,6 +535,14 @@ func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 	return nil
 }
 
+func (r *GlobalCache) GetTxPreplayLen() int {
+	return r.PreplayCache.Len()
+}
+
+func (r *GlobalCache) GetTxPreplayKeys() []interface{} {
+	return r.PreplayCache.Keys()
+}
+
 // GetGasUsedResult return the cache of gas
 func (r *GlobalCache) GetGasUsedCache(sender common.Address, txn *types.Transaction) uint64 {
 	gasLimit := txn.Gas()
@@ -745,6 +753,10 @@ func (r *GlobalCache) CommitTxPreplay(txPreplay *TxPreplay) {
 		return
 	}
 	r.PreplayCache.Add(txPreplay.TxHash, txPreplay)
+}
+
+func (r *GlobalCache) RemoveTxPreplay(txn common.Hash) {
+	r.PreplayCache.Remove(txn)
 }
 
 // CommitTxResult update after preplay

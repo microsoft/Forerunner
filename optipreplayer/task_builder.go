@@ -2,13 +2,11 @@ package optipreplayer
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"math"
@@ -112,22 +110,13 @@ func (b *TaskBuilder) mainLoop() {
 			b.mu.RLock()
 			rawPending, _ := b.eth.TxPool().Pending()
 			currentBlock := b.chain.CurrentBlock()
-			if b.parent != nil {
-				if currentBlock.Root() == b.parent.Root() {
-					b.resetPackagePool(rawPending)
-					b.preplayLog.reportNewPackage(!b.removedTxn)
-					if b.removedTxn || len(b.addedTxn) > 0 {
-						b.commitNewWork()
-						b.updateTxnGroup()
-						b.preplayLog.reportNewTaskBuild()
-					}
-				} else {
-					log.Info("Diff between chain head and parent!!!", "followLatest", b.followLatest,
-						"chain head", fmt.Sprintf("%d-%s-%s",
-							currentBlock.NumberU64(), currentBlock.Hash().TerminalString(), currentBlock.Root().TerminalString()),
-						"parent", fmt.Sprintf("%d-%s-%s",
-							b.parent.NumberU64(), b.parent.Hash().TerminalString(), b.parent.Root().TerminalString()),
-					)
+			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
+				b.resetPackagePool(rawPending)
+				b.preplayLog.reportNewPackage(!b.removedTxn)
+				if b.removedTxn || len(b.addedTxn) > 0 {
+					b.commitNewWork()
+					b.updateTxnGroup()
+					b.preplayLog.reportNewTaskBuild()
 				}
 			}
 			b.mu.RUnlock()
@@ -301,7 +290,8 @@ func (b *TaskBuilder) updateTxnGroup() {
 			sort.Sort(types.TxByNonce(txns))
 		}
 		group.setValid()
-		group.preplayCountMap = make(map[common.Hash]int, group.txns.size())
+		group.finishPreplay = make(map[common.Hash]int, group.txns.size())
+		group.failPreplay = make(map[common.Hash][]string, group.txns.size())
 		group.parent = b.parent
 		group.txnCount = group.txns.size()
 		group.chainFactor = 1

@@ -867,3 +867,13 @@ func (e *Executor) commit(coinbase common.Address, parent *types.Block, header *
 	// txs := types.NewTransactionsByPriceAndNonce(e.current.signer, rawTxsCopy)
 	e.preplay(rawTxs, coinbase)
 }
+
+func (e *Executor) extractFinished() map[common.Hash]struct{} {
+	res := make(map[common.Hash]struct{})
+	for hash, result := range e.resultMap {
+		if result.Status == "will in" {
+			res[hash] = struct{}{}
+		}
+	}
+	return res
+}

@@ -489,9 +489,11 @@ type TxnGroup struct {
 
 	valid int32
 
-	preplayCount    int
-	preplayCountMap map[common.Hash]int
-	priority        int
+	preplayCount   int
+	finishPreplay  map[common.Hash]int
+	failPreplay    map[common.Hash][]string
+	preplayCountMu sync.RWMutex
+	priority       int
 
 	parent *types.Block
 
@@ -518,6 +520,40 @@ func (g *TxnGroup) setValid() {
 
 func (g *TxnGroup) isValid() bool {
 	return atomic.LoadInt32(&g.valid) == 1
+}
+
+func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult) {
+	g.preplayCountMu.Lock()
+	defer g.preplayCountMu.Unlock()
+
+	g.preplayCount++
+	for _, txns := range g.txns {
+		for _, txn := range txns {
+			if result, ok := resultMap[txn.Hash()]; ok {
+				if result.Status == "will in" {
+					g.finishPreplay[txn.Hash()]++
+				} else {
+					g.failPreplay[txn.Hash()] = append(g.failPreplay[txn.Hash()], fmt.Sprintf("%s:%s", result.Status, result.Reason))
+				}
+			} else {
+				g.failPreplay[txn.Hash()] = append(g.failPreplay[txn.Hash()], "Nil result map in executor")
+			}
+		}
+	}
+}
+
+func (g *TxnGroup) getPreplayCount() int {
+	g.preplayCountMu.RLock()
+	defer g.preplayCountMu.RUnlock()
+
+	return g.preplayCount
+}
+
+func (g *TxnGroup) haveTxnFinished(txn common.Hash) bool {
+	g.preplayCountMu.RLock()
+	defer g.preplayCountMu.RUnlock()
+
+	return g.finishPreplay[txn] > 0
 }
 
 func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
@@ -753,7 +789,8 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	context = append(
 		context, "build", l.taskBuildCnt, "deadline", len(l.deadlineLog),
 		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), l.groupExecCnt),
-		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt), "remain", remain,
+		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt),
+		"remain", remain, "duration", common.PrettyDuration(time.Since(l.lastUpdate)),
 	)
 	log.Info("In last block", context...)
 

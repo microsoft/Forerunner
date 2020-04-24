@@ -29,6 +29,10 @@ type MissReporter struct {
 	groundGroups  map[common.Hash]*TxnGroup
 	getRWRecord   func(txn common.Hash) *RWRecord
 
+	noPreplay      int
+	noGroupPreplay int
+	noExecPreplay  int
+
 	miss    int
 	txnType [3]int
 
@@ -76,6 +80,31 @@ func (r *MissReporter) SetBlock(block *types.Block) {
 	r.parent, r.groundGroups, r.getRWRecord = r.preplayer.getGroundGroup(block, r.txnsIndexMap, r.txnsSenderMap)
 }
 
+func (r *MissReporter) SetNoPreplayTxn(txn *types.Transaction, enqueue uint64) {
+	index := r.txnsIndexMap[txn.Hash()]
+	sender := r.txnsSenderMap[txn.Hash()]
+	enqueueTime := time.Unix(int64(enqueue), 0)
+	enqueueStr := enqueueTime.Format("2006-01-02 15:04:05")
+	duration := time.Since(enqueueTime)
+	groupHitGroup := r.preplayer.preplayLog.searchGroupHitGroup(txn, sender)
+	if len(groupHitGroup) == 0 {
+		r.noGroupPreplay++
+		log.Info("Report reuse no preplay: NoGroup", "tx", txn.Hash(), "index", index,
+			"enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+		return
+	}
+	execHitGroup := r.searchExecHitGroup(txn, groupHitGroup)
+	if len(execHitGroup) == 0 {
+		r.noExecPreplay++
+		pickGroup := pickOneGroup(groupHitGroup)
+		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash(), "index", index,
+			"reason", pickGroup.failPreplay[txn.Hash()], "enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+		return
+	}
+	log.Info("Report reuse no preplay: bug", "tx", txn.Hash(), "index", index,
+		"enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+}
+
 func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.PreplayResTrieNode, value interface{}, txnType int) {
 	r.miss++
 	r.txnType[txnType]++
@@ -113,64 +142,64 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	if cmptypes.IsChainField(nodeType.Field) {
 		r.rChainMissTotal++
 		r.rChainMissCount[nodeType.Field-cmptypes.Blockhash]++
-		if nodeType.Field == cmptypes.Timestamp {
-			var haveTimeDep = make(map[common.Hash]*TxnGroup)
-			for groupHash, group := range execHitGroup {
-				if group.isTimestampDep() {
-					haveTimeDep[groupHash] = group
-				}
-			}
-			if len(haveTimeDep) == 0 {
-				r.noTimeDepCount++
-			} else {
-				var preplayMost int
-				for _, group := range haveTimeDep {
-					if preplayMost < group.preplayCount {
-						preplayMost = group.preplayCount
-					}
-				}
-				var forecastTime uint64
-				if forecastTime = r.preplayer.nowHeader.time; forecastTime != 0 {
-					if preplayMost >= 5 {
-						preplayMost = 5
-					}
-					diff := int(forecastTime - r.block.Time())
-					if diff >= 3 {
-						diff = 3
-					}
-					if diff <= -3 {
-						diff = -3
-					}
-					r.timeMissMap[[2]int{preplayMost, diff}]++
-				}
-				pickGroup := pickOneGroup(haveTimeDep)
-				nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
-				var first = true
-				for value := range node.Children {
-					if first {
-						nodeChildStr += "{"
-						first = false
-					} else {
-						nodeChildStr += ","
-					}
-					nodeChildStr += getInterfaceValue(value)
-				}
-				if len(node.Children) > 0 {
-					nodeChildStr += "}"
-				}
-				var groupTxns = "TooLarge"
-				if pickGroup.txnCount <= 20 {
-					groupTxns = pickGroup.txns.String()
-				}
-				log.Info("Report reuse miss: timestamp", "tx", txn.Hash().Hex(), "index", index,
-					"nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
-					"forecastTime", forecastTime, "block.Time", r.block.Time(),
-					"haveTimeDepGroupNum", len(haveTimeDep), "pickGroupSize", pickGroup.txnCount,
-					"isTimeDep", pickGroup.isTimestampDep(), "history", pickGroup.timeHistory,
-					"pickGroupPreplay", pickGroup.preplayCount, "group.txns", groupTxns,
-				)
-			}
-		}
+		//if nodeType.Field == cmptypes.Timestamp {
+		//	var haveTimeDep = make(map[common.Hash]*TxnGroup)
+		//	for groupHash, group := range execHitGroup {
+		//		if group.isTimestampDep() {
+		//			haveTimeDep[groupHash] = group
+		//		}
+		//	}
+		//	if len(haveTimeDep) == 0 {
+		//		r.noTimeDepCount++
+		//	} else {
+		//		var preplayMost int
+		//		for _, group := range haveTimeDep {
+		//			if preplayMost < group.getPreplayCount() {
+		//				preplayMost = group.getPreplayCount()
+		//			}
+		//		}
+		//		var forecastTime uint64
+		//		if forecastTime = r.preplayer.nowHeader.time; forecastTime != 0 {
+		//			if preplayMost >= 5 {
+		//				preplayMost = 5
+		//			}
+		//			diff := int(forecastTime - r.block.Time())
+		//			if diff >= 3 {
+		//				diff = 3
+		//			}
+		//			if diff <= -3 {
+		//				diff = -3
+		//			}
+		//			r.timeMissMap[[2]int{preplayMost, diff}]++
+		//		}
+		//		pickGroup := pickOneGroup(haveTimeDep)
+		//		nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
+		//		var first = true
+		//		for value := range node.Children {
+		//			if first {
+		//				nodeChildStr += "{"
+		//				first = false
+		//			} else {
+		//				nodeChildStr += ","
+		//			}
+		//			nodeChildStr += getInterfaceValue(value)
+		//		}
+		//		if len(node.Children) > 0 {
+		//			nodeChildStr += "}"
+		//		}
+		//		var groupTxns = "TooLarge"
+		//		if pickGroup.txnCount <= 20 {
+		//			groupTxns = pickGroup.txns.String()
+		//		}
+		//		log.Info("Report reuse miss: timestamp", "tx", txn.Hash().Hex(), "index", index,
+		//			"nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
+		//			"forecastTime", forecastTime, "block.Time", r.block.Time(),
+		//			"haveTimeDepGroupNum", len(haveTimeDep), "pickGroupSize", pickGroup.txnCount,
+		//			"isTimeDep", pickGroup.isTimestampDep(), "history", pickGroup.timeHistory,
+		//			"pickGroupPreplay", pickGroup.getPreplayCount(), "group.txns", groupTxns,
+		//		)
+		//	}
+		//}
 		return
 	}
 
@@ -265,7 +294,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		for _, group := range snapHitGroup {
 			var nowRate float64
 			if group.orderCount.Cmp(upperLimit) <= 0 {
-				nowRate = float64(group.preplayCount) / float64(group.orderCount.Uint64())
+				nowRate = float64(group.getPreplayCount()) / float64(group.orderCount.Uint64())
 			}
 			if nowRate > preplayRate {
 				preplayRate = nowRate
@@ -298,7 +327,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash(), "index", index, "snapHitGroupNum", len(snapHitGroup),
 				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
 				"group.txns", pickGroup.txns, "groundOrder", groundOrder,
-				"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.preplayCount, preplayRate*100, pickGroup.orderCount.String()))
+				"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.getPreplayCount(), preplayRate*100, pickGroup.orderCount.String()))
 		}
 		return
 	}
@@ -363,7 +392,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		log.Info("Report reuse miss: bug", "tx", txn.Hash().Hex(), "index", index,
 			"nodeType", nodeTypeStr, "nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
 			"rootHitGroupNum", len(rootHitGroup), "pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-			"pickPreplayMost", fmt.Sprintf("%d->%s", pickGroup.preplayCount, pickGroup.orderCount.String()),
+			"pickPreplayMost", fmt.Sprintf("%d->%s", pickGroup.getPreplayCount(), pickGroup.orderCount.String()),
 			"preplayedOrder", pickGroup.preplayHistory[0],
 			"group.txns", groupTxns, "orderBefore", orderBefore,
 		)
@@ -380,7 +409,8 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 }
 
 func (r *MissReporter) ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64) {
-	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoEnqueue", noEnqueue, "NoPreplay", noPreplay,
+	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoEnqueue", noEnqueue,
+		"NoPreplay", fmt.Sprintf("%d(%d-%d)", noPreplay, r.noGroupPreplay, r.noExecPreplay),
 		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2])}
 	if r.groupMissCount > 0 {
 		context = append(context, "NoGroup", r.groupMissCount)
@@ -430,7 +460,7 @@ func (r *MissReporter) ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint
 	if bugMissCount > 0 {
 		context = append(context, "bugMiss", fmt.Sprintf("%d(%d:%d)", bugMissCount, r.bugMissCount[0], r.bugMissCount[1]))
 	}
-	context = append(context, "timeMissMap", r.timeMissMap, "noTimeDepCount", r.noTimeDepCount)
+	//context = append(context, "timeMissMap", r.timeMissMap, "noTimeDepCount", r.noTimeDepCount)
 	log.Info("Cumulative miss statistics", context...)
 }
 
@@ -610,7 +640,7 @@ func (r *MissReporter) getTxnBefore(currentTxn *types.Transaction, order TxnOrde
 func (r *MissReporter) searchExecHitGroup(currentTxn *types.Transaction, groupHitGroup map[common.Hash]*TxnGroup) map[common.Hash]*TxnGroup {
 	execHitGroup := make(map[common.Hash]*TxnGroup)
 	for groupHash, group := range groupHitGroup {
-		if group.preplayCountMap[currentTxn.Hash()] > 0 {
+		if group.haveTxnFinished(currentTxn.Hash()) {
 			execHitGroup[groupHash] = group
 		}
 	}

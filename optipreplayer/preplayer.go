@@ -156,11 +156,10 @@ func (p *Preplayer) mainLoop() {
 				if orderAndHeader, ok := <-task.nextOrderAndHeader; ok {
 					p.commitNewWork(task, orderAndHeader.order, orderAndHeader.header)
 					p.preplayLog.reportGroupPreplay(task)
-					task.priority = task.preplayCount * task.txnCount
+					task.priority = task.getPreplayCount() * task.txnCount
 					task.preplayHistory = append(task.preplayHistory, orderAndHeader.order)
 					task.timeHistory = append(task.timeHistory, orderAndHeader.header.time)
-					if task.preplayCount < 6 {
-						//if task.txnCount > 1 || task.isChainDep() {
+					if task.getPreplayCount() < 6 {
 						p.taskQueue.pushTask(task)
 					} else {
 						task.setInvalid()
@@ -288,12 +287,7 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 
 	p.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, parent.Root())
 
-	task.preplayCount++
-	for hash, result := range executor.resultMap {
-		if result.Status == "will in" {
-			task.preplayCountMap[hash]++
-		}
-	}
+	task.updateByPreplay(executor.resultMap)
 }
 
 type Preplayers []*Preplayer

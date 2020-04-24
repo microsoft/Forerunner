@@ -35,8 +35,6 @@ type ObjWarmupTask struct {
 }
 
 type StatedbBox struct {
-	sync.Mutex
-
 	usableDb       int
 	statedbList    [dbListSize]*state.StateDB
 	processedForDb map[common.Address]map[common.Hash]struct{}
@@ -47,12 +45,15 @@ type StatedbBox struct {
 	prepareForObj   map[common.Address]map[common.Hash]struct{}
 	processedForObj map[common.Address]map[common.Hash]struct{}
 
-	valid  bool
+	valid   bool
+	validMu sync.RWMutex
+
 	exitCh chan struct{}
 	wg     sync.WaitGroup
 }
 
 func (b *StatedbBox) warmupDbLoop() {
+	b.wg.Add(1)
 	for {
 		select {
 		case task := <-b.dbWarmupCh:
@@ -89,14 +90,15 @@ func (b *StatedbBox) warmupDbLoop() {
 }
 
 func (b *StatedbBox) exit() {
+	b.validMu.Lock()
 	if !b.valid {
+		b.validMu.Unlock()
 		return
 	}
 	b.valid = false
+	b.validMu.Unlock()
 
-	b.Lock()
 	b.exitCh <- struct{}{}
-	b.Unlock()
 }
 
 type Warmuper struct {
@@ -316,7 +318,13 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 
 func (w *Warmuper) commitNewWork(task *ColdTask) {
 	box := w.getOrNewStatedbBox(task.root)
-	if box == nil || !box.valid {
+	if box == nil {
+		return
+	}
+	box.validMu.Lock()
+	defer box.validMu.Unlock()
+
+	if !box.valid {
 		return
 	}
 
@@ -334,15 +342,11 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 				}
 
 				groupId := address[0] % objSubgroupSize
-				box.Lock()
-				if box.valid {
-					w.objWarmupChList[groupId] <- &ObjWarmupTask{
-						root:    task.root,
-						objects: box.wobjectListMap[address][:],
-						storage: deltaStorage,
-					}
+				w.objWarmupChList[groupId] <- &ObjWarmupTask{
+					root:    task.root,
+					objects: box.wobjectListMap[address][:],
+					storage: deltaStorage,
 				}
-				box.Unlock()
 			} else {
 				if _, ok := box.prepareForObj[address]; !ok {
 					box.prepareForObj[address] = make(map[common.Hash]struct{})
@@ -393,20 +397,16 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 			baseStorageCpy[key] = struct{}{}
 		}
 
-		box.Lock()
-		if box.valid {
-			w.objWarmupChList[groupId] <- &ObjWarmupTask{
-				root:    task.root,
-				objects: box.wobjectListMap[address][:],
-				storage: deltaStorage,
-			}
-			w.objWarmupChList[groupId] <- &ObjWarmupTask{
-				root:    task.root,
-				objects: newObjectList,
-				storage: baseStorageCpy,
-			}
+		w.objWarmupChList[groupId] <- &ObjWarmupTask{
+			root:    task.root,
+			objects: box.wobjectListMap[address][:],
+			storage: deltaStorage,
 		}
-		box.Unlock()
+		w.objWarmupChList[groupId] <- &ObjWarmupTask{
+			root:    task.root,
+			objects: newObjectList,
+			storage: baseStorageCpy,
+		}
 
 		box.wobjectListMap[address] = append(box.wobjectListMap[address], newObjectList...)
 		if _, ok := box.wobjectMapMap[address]; !ok {
@@ -447,7 +447,6 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 		}
 
 		go box.warmupDbLoop()
-		box.wg.Add(1)
 
 		if w.cfg.MSRAVMSettings.CmpReuse {
 			for _, statedb := range box.statedbList {

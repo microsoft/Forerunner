@@ -1,10 +1,12 @@
 package optipreplayer
 
 import (
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +18,9 @@ type Listener struct {
 	minPrice   *big.Int
 	minPriceMu sync.RWMutex
 
+	lastTxPreplaySize int
+
+	chain  *core.BlockChain
 	txPool *core.TxPool
 
 	// Cache
@@ -25,13 +30,48 @@ type Listener struct {
 func NewListener(eth Backend) *Listener {
 	listener := &Listener{
 		minPrice: new(big.Int),
+		chain:    eth.BlockChain(),
 		txPool:   eth.TxPool(),
 	}
+
+	go listener.blockLoop()
 
 	go listener.reportLoop()
 	go listener.commitLoop()
 
 	return listener
+}
+
+func (l *Listener) blockLoop() {
+	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
+	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
+	defer chainHeadSub.Unsubscribe()
+
+	for {
+		currentBlock := (<-chainHeadCh).Block
+
+		confirmBlock := l.chain.GetBlockByNumber(currentBlock.NumberU64() - 6)
+		for _, txn := range confirmBlock.Transactions() {
+			l.globalCache.RemoveTxPreplay(txn.Hash())
+		}
+
+		m := new(runtime.MemStats)
+		runtime.ReadMemStats(m)
+		if m.GCCPUFraction > 0.015 {
+			saveSize := 2000
+			nowTxPreplaySize := l.globalCache.GetTxPreplayLen()
+			if newTxPreplaySize := nowTxPreplaySize - l.lastTxPreplaySize; newTxPreplaySize > saveSize {
+				saveSize = newTxPreplaySize
+			}
+			if removeSize := (nowTxPreplaySize - saveSize) / 4; removeSize > 0 {
+				for _, rawKey := range l.globalCache.GetTxPreplayKeys()[:removeSize] {
+					l.globalCache.RemoveTxPreplay(rawKey.(common.Hash))
+				}
+			}
+		}
+
+		l.lastTxPreplaySize = l.globalCache.GetTxPreplayLen()
+	}
 }
 
 func (l *Listener) reportLoop() {
