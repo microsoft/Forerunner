@@ -555,10 +555,12 @@ monitoring:
 		case <-monitorTicker.C:
 			srv.log.Debug("start monitor the web config")
 			newCfg := ConfigWapper{}
-			loadWebConfig(srv.ANConfigUrl, &newCfg)
-			for _, newAlliedNode := range newCfg.Node.P2P.AlliedNodes {
-				srv.log.Info("allied nodes", "node", newAlliedNode.String())
-				srv.addallied <- newAlliedNode
+			err := loadWebConfig(srv.ANConfigUrl, &newCfg)
+			if err == nil {
+				for _, newAlliedNode := range newCfg.Node.P2P.AlliedNodes {
+					srv.log.Info("allied nodes", "node", newAlliedNode.String())
+					srv.addallied <- newAlliedNode
+				}
 			}
 		case <-srv.quit:
 			monitorTicker.Stop()

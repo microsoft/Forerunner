@@ -345,7 +345,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		toScreen = true
 	}
 
-	if !toScreen {
+	if !cfg.MSRAVMSettings.IsEmulateMode && !toScreen {
 		return
 	}
 

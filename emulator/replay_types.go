@@ -71,8 +71,9 @@ type ReplayTxPool interface {
 }
 
 type replayMsgConsumer struct {
-	BlockChain ReplayBlockChain
-	TxPool     ReplayTxPool
+	BlockChain      ReplayBlockChain
+	TxPool          ReplayTxPool
+	LastBlockNumber uint64
 
 	txPoolLoaded    bool
 	afterFirstBlock bool
@@ -86,7 +87,9 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 
 			for i := range blocks {
 				num := blocks[i].NumberU64()
-
+				if num > c.LastBlockNumber {
+					c.LastBlockNumber = num
+				}
 				emulateStart := rawdb.GlobalEmulateHook.EmulateFrom()
 				if num <= emulateStart+1 {
 					c.afterFirstBlock = true
@@ -101,23 +104,37 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 			pending, queued := c.TxPool.(*core.TxPool).Stats()
 
 			var lag time.Duration
-			if broker, ok := GlobalGethReplayer.broker.(*RealtimeBroker); ok {
+			if GlobalGethReplayer.IsRealtimeMode() {
+				broker, ok := GlobalGethReplayer.broker.(*RealtimeBroker)
+				if !ok {
+					panic("GlobalGethReplayer.broker should be realtime broker when GlobalGethReplayer is realtime mode")
+				}
 				metrics := broker.Metrics
 				if metrics.count > 0 {
 					lag = time.Duration(int64(metrics.totalLag) / metrics.count)
 				}
 			}
 
-			log.Info("Blocks loading", "executable", pending, "queued", queued, "lag", lag)
-			c.callInsertChain(msg.(*insertChainData))
+			blocks := msg.(*insertChainData).Blocks
+			if len(blocks) == 0 {
+				panic("empty block msg")
+			}
+			lastBlockNumber := blocks[len(blocks)-1].NumberU64()
 
-			GlobalGethReplayer.SetRealtimeMode()
+			c.callInsertChain(msg.(*insertChainData))
+			//GlobalGethReplayer.SetRealtimeMode()
+			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued, "lag", lag)
+			c.LastBlockNumber = lastBlockNumber
+			if lastBlockNumber >= rawdb.GlobalEmulateHook.EmulateFrom()-1 { // might be - 100
+				GlobalGethReplayer.SetRealtimeMode()
+			}
 		} else {
 			blocks := msg.(*insertChainData).Blocks
 			emulateStart := rawdb.GlobalEmulateHook.EmulateFrom()
 
 			for i := range blocks {
 				num := blocks[i].NumberU64()
+				c.LastBlockNumber = num
 				if num <= emulateStart {
 					log.Info("Block skipped", "block", num)
 				} else {
@@ -132,7 +149,11 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 			c.callAddRemotes(msg.(*addRemotesData))
 		}
 	case *txPoolSnapshotData:
-		if !c.txPoolLoaded {
+		// recover txPool snapshot from the nearest block number DUE TO snapshot is recorded every 1000 block
+		// ref: core/tx_pool.go Line 604
+		recoverBn := rawdb.GlobalEmulateHook.EmulateFrom() / 1000 * 1000
+
+		if c.LastBlockNumber >= recoverBn && !c.txPoolLoaded {
 			log.Info("TxPool Loading")
 			c.loadTxPoolSnapshot(msg.(*txPoolSnapshotData))
 			c.txPoolLoaded = true

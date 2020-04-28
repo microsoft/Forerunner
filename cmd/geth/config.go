@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+
 	"math/big"
 	"net/http"
 	"os"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/params"
 	whisper "github.com/ethereum/go-ethereum/whisper/whisperv6"
@@ -53,7 +55,7 @@ var (
 	}
 
 	alliedNodeFileFlag = cli.StringFlag{
-		Name: "anconfigurl",
+		Name:  "anconfigurl",
 		Usage: "TOML file from web to config allied nodes",
 	}
 )
@@ -101,7 +103,7 @@ func loadConfig(file string, cfg *gethConfig) error {
 	return err
 }
 
-func loadWebConfig(url string, cfg *gethConfig) error{
+func loadWebConfig(url string, cfg *gethConfig) error {
 	client := &http.Client{}
 	response, err := client.Get(url)
 	if err != nil {
@@ -142,10 +144,10 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 	// load allied nodes config from the set web url, by zx
 	if anurl := ctx.GlobalString(alliedNodeFileFlag.Name); anurl != "" {
 		if err := loadWebConfig(anurl, &cfg); err != nil {
-			utils.Fatalf("%v", err)
-		}else {
-			cfg.Node.P2P.ANConfigUrl = anurl
+			//utils.Fatalf("%v", err)
+			log.Warn("Load allied Node error", "err", err.Error())
 		}
+		cfg.Node.P2P.ANConfigUrl = anurl
 	}
 	// Done
 

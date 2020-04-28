@@ -20,22 +20,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit // 6
+	GasLimit  // 6
 
-	PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
+	PreBlockHash  // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance //8
+	Balance  //8
 	Nonce
 	CodeHash
 	Exist
 	Empty
 	Code
 	Storage
-	CommittedStorage //15
+	CommittedStorage  //15
 
 	// Dep info
-	Dependence //16
+	Dependence  //16
 
 	// Write State
 	DirtyStorage
@@ -370,9 +370,8 @@ type PreplayResTrieNode struct {
 //}
 
 type PreplayResTrie struct {
-	Root     *PreplayResTrieNode
-	LatestBN uint64
-	// deprecated
+	Root      *PreplayResTrieNode
+	LatestBN  uint64
 	LeafCount uint64 // rwset cound for detail trie. round count for dep tree and mix tree
 	RoundIds  map[uint64]bool
 	IsCleared bool

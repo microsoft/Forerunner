@@ -12,6 +12,10 @@ import (
 	"math/big"
 )
 
+const (
+	TreeCleanThreshold = 800
+	MaxTreeCleanThreshold = 5000
+)
 func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
 	if blockNumber > trie.LatestBN {
 		trie.LatestBN = blockNumber
@@ -84,8 +88,12 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 
 	if blockNumber > trie.LatestBN {
 		trie.LatestBN = blockNumber
+		if trie.LeafCount > TreeCleanThreshold {
+			trie.Clear()
+		}
 	}
-	if trie.LeafCount > 1000 {
+
+	if trie.LeafCount > MaxTreeCleanThreshold {
 		trie.Clear()
 	}
 
@@ -116,15 +124,16 @@ func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.
 // return true is this round is inserted. false for this round is a repeated round
 func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) bool {
 
-	if trie.LeafCount > 1000 {
+	if blockNumber > trie.LatestBN {
+		trie.LatestBN = blockNumber
+		if trie.LeafCount > TreeCleanThreshold {
+			trie.Clear()
+		}
+	}
+
+	if trie.LeafCount > MaxTreeCleanThreshold {
 		trie.Clear()
 	}
-	//trie.ClearOld(3)
-	trie.LatestBN = blockNumber
-
-	//var topseq []*cmptypes.AddrLocValue
-	//topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.Number}, Value: blockNumber})
-	//topseq = append(topseq, &cmptypes.AddrLocValue{AddLoc: &cmptypes.AddrLocation{Field: cmptypes.PreBlockHash}, Value: *preBlockHash})
 
 	currentNode := trie.Root
 
@@ -208,11 +217,16 @@ const FixedDepCheckCount = 4
 
 func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
 
-	if trie.LeafCount > 1000 {
+	if blockNumber > trie.LatestBN {
+		trie.LatestBN = blockNumber
+		if trie.LeafCount > TreeCleanThreshold {
+			trie.Clear()
+		}
+	}
+
+	if trie.LeafCount > MaxTreeCleanThreshold {
 		trie.Clear()
 	}
-	//trie.ClearOld(3)
-	trie.LatestBN = blockNumber
 
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 

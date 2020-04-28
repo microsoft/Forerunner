@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"runtime/debug"
 )
 
 type EmulateHook interface {
@@ -278,6 +279,7 @@ func (ec *emulateHookImpl) PutExecutedBlock(hash common.Hash, number uint64) {
 		ec.executedBlocks[hash] = struct{}{}
 	} else {
 		log.Warn("PutExecutedBlock called outside of emulate range", "hash=", hash, "number=", number)
+		debug.PrintStack()
 	}
 }
 
