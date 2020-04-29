@@ -57,6 +57,8 @@ type Executor struct {
 
 	RoundID uint64
 
+	EnableReuseTracer bool
+
 	enableAgg     bool
 	enablePause   bool
 	enableWObject bool
@@ -173,7 +175,11 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 	var receipt *types.Receipt
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
 		// snapshot-revert will be done in PreplayTransaction if it's necessary
-		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, *e.chain.GetVMConfig(), e.RoundID, nil, 0)
+		vmconfig := *e.chain.GetVMConfig()
+		if e.EnableReuseTracer {
+			vmconfig.MSRAVMSettings.EnableReuseTracer = true
+		}
+		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil, 0)
 	} else {
 		snap := e.current.state.Snapshot()
 		receipt, err = core.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vm.Config{})
@@ -184,6 +190,7 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 	if err != nil {
 		return nil, err
 	}
+
 	e.current.Txs = append(e.current.Txs, tx)
 	e.current.Receipts = append(e.current.Receipts, receipt)
 

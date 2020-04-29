@@ -10,6 +10,7 @@ type Controller struct {
 	evm    *vm.EVM
 	evmMu  sync.Mutex
 	finish int32
+	ReuseDone sync.WaitGroup
 }
 
 const Continue = 0
@@ -24,11 +25,11 @@ func (c *Controller) Reset() {
 	c.finish = Continue
 }
 
-func (c *Controller) IsFinish() bool {
+func (c *Controller) IsAborted() bool {
 	return atomic.LoadInt32(&c.finish) == abort
 }
 
-func (c *Controller) TryFinish() bool {
+func (c *Controller) TryAbortCounterpart() bool {
 	return atomic.CompareAndSwapInt32(&c.finish, Continue, abort)
 }
 

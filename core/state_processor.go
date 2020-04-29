@@ -65,10 +65,10 @@ type TransactionApplier interface {
 //
 // StateProcessor implements Processor.
 type StateProcessor struct {
-	config         *params.ChainConfig                       // Chain configuration options
-	bc             *BlockChain                               // Canonical block chain
-	engine         consensus.Engine                          // Consensus engine used for block rewards
-	asyncProcessor *types.SingleThreadSpinningAsyncProcessor // global processor
+	config            *params.ChainConfig                       // Chain configuration options
+	bc                *BlockChain                               // Canonical block chain
+	engine            consensus.Engine                          // Consensus engine used for block rewards
+	asyncProcessor    *types.SingleThreadSpinningAsyncProcessor // global processor
 }
 
 // NewStateProcessor initialises a new StateProcessor.
@@ -81,12 +81,61 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 	}
 }
 
-func CmpStateDB(groundStatedb, statedb *state.StateDB, tx *types.Transaction, i int, reuseStatus *cmptypes.ReuseStatus) bool {
-	groundStateObjects := groundStatedb.GetStateObject()
-	stateObjects := statedb.GetStateObject()
+type NoError struct {
+}
+
+func (*NoError) Error() string {
+	return "NoError"
+}
+
+var noError = &NoError{}
+
+func CmpStateDB(groundStatedb, statedb *state.StateDB, groundReceipt *types.Receipt, receipt *types.Receipt, groundErr error, err error,
+	tx *types.Transaction, i int, reuseStatus *cmptypes.ReuseStatus) bool {
+
+	groundStateObjects := groundStatedb.GetPendingStateObject()
+	stateObjects := statedb.GetPendingStateObject()
 	var diff bool
+
+	if groundErr != err {
+		if groundErr == nil {
+			groundErr = noError
+		}
+		if err == nil {
+			err = noError
+		}
+		log.Info("Err diff", "index", i, "tx", tx.Hash().Hex(),
+			"status", fmt.Sprintf("%v", reuseStatus), "ground", groundErr, "our err", err)
+		diff = true
+	}
+
+	if groundReceipt != nil && receipt != nil {
+		if groundReceipt.Status != receipt.Status {
+			log.Info("Status diff", "index", i, "tx", tx.Hash().Hex(),
+				"status", fmt.Sprintf("%v", reuseStatus), "ground", groundReceipt.Status, "our status", receipt.Status)
+			diff = true
+		}
+		if groundReceipt.GasUsed != receipt.GasUsed {
+			log.Info("Gasused diff", "index", i, "tx", tx.Hash().Hex(),
+				"status", fmt.Sprintf("%v", reuseStatus), "ground", groundReceipt.GasUsed, "our gasused", receipt.GasUsed)
+			diff = true
+		}
+	}
+
 	for address, groundObject := range groundStateObjects {
 		if stateObject, ok := stateObjects[address]; ok {
+			// we do not use groundStatedb.HasSuicided(address) because that after finalise,
+			// a suicided object will be marked as deleted, which make make HasSuicided return false
+			if groundStatedb.Exist(address) != statedb.Exist(address) {
+				log.Info("Exist diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%v", reuseStatus),
+					"ground", groundStatedb.Exist(address), "our exist", statedb.Exist(address))
+				diff = true
+			}
+			if !groundStatedb.Exist(address) {
+				continue // do not check the details of suicided account
+			}
+
 			if groundStatedb.Exist(address) != statedb.Exist(address) {
 				log.Info("Exist diff", "addr", address, "index", i, "tx", tx.Hash().Hex(),
 					"status", fmt.Sprintf("%v", reuseStatus),
@@ -133,9 +182,14 @@ func CmpStateDB(groundStatedb, statedb *state.StateDB, tx *types.Transaction, i 
 				}
 			}
 		} else {
+			// we do not use groundStatedb.HasSuicided(address) because that after finalise,
+			// a suicided object will be marked as deleted, which make make HasSuicided return false
+			if !groundStatedb.Exist(address) {
+				continue // if the suicided contract is created within the tx, the state object will not be created by reuse
+			}
 			log.Info("Miss object in our state object", "addr", address, "index", i,
 				"status", fmt.Sprintf("%v", reuseStatus),
-				"ground db size", len(groundStateObjects), "our db size", len(stateObjects))
+				"ground db size", len(groundStateObjects), "our db size", len(stateObjects), "tx", tx.Hash().Hex())
 			diff = true
 		}
 	}
@@ -176,10 +230,19 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	// Record ground truth
 	var groundStatedb *state.StateDB
 	if cfg.MSRAVMSettings.GroundRecord {
-		groundStatedb = state.NewRWStateDB(statedb.Copy())
+		var err error
+		groundStatedb, err = state.New(p.bc.GetBlockByHash(block.ParentHash()).Root(), p.bc.stateCache)
+		if err != nil {
+			panic("Failed to create groundStateDB")
+		}
+		groundStatedb.SetRWMode(true)
 	}
 	if cfg.MSRAVMSettings.CmpReuseChecking {
-		groundStatedb = statedb.Copy()
+		var err error
+		groundStatedb, err = state.New(p.bc.GetBlockByHash(block.ParentHash()).Root(), p.bc.stateCache)
+		if err != nil {
+			panic("Failed to create groundStateDB")
+		}
 	}
 
 	// Add Block
@@ -246,12 +309,25 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
 				tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, pMsg, signer)
 			reuseResult = append(reuseResult, reuseStatus)
+			if reuseStatus.BaseStatus == cmptypes.Unknown {
+				statedb.UnknownTxs = append(statedb.UnknownTxs, tx)
+				statedb.UnknownTxReceipts = append(statedb.UnknownTxReceipts, receipt)
+			}
 
 			if cfg.MSRAVMSettings.CmpReuseChecking {
-				ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg)
+				groundReceipt, groundErr := ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg)
 				if printCmp {
-					diff := CmpStateDB(groundStatedb, statedb, tx, i, reuseStatus)
-					printCmp = !diff
+					//groundRoot := groundStatedb.IntermediateRoot(true)
+					//ourRoot := statedb.IntermediateRoot(true)
+					//if groundRoot != ourRoot {
+					//log.Info("Root diff", "index", i, "tx", tx.Hash().Hex(),
+					//	"status", fmt.Sprintf("%v", reuseStatus), "ground", groundRoot, "our root", ourRoot)
+					diff := CmpStateDB(groundStatedb, statedb, groundReceipt, receipt, err, groundErr, tx, i, reuseStatus)
+					//printCmp = false
+					if diff {
+						panic("Reuse state diff!")
+					}
+					//}
 				}
 			}
 

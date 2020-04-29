@@ -147,6 +147,8 @@ func (p *Preplayer) listenLoop() {
 	}
 }
 
+var TXN_PREPLAY_ROUND_LIMIT = 30
+
 func (p *Preplayer) mainLoop() {
 	for {
 		if task := p.taskQueue.popTask(); task == nil {
@@ -159,7 +161,8 @@ func (p *Preplayer) mainLoop() {
 					task.priority = task.getPreplayCount() * task.txnCount
 					task.preplayHistory = append(task.preplayHistory, orderAndHeader.order)
 					task.timeHistory = append(task.timeHistory, orderAndHeader.header.time)
-					if task.getPreplayCount() < 6 {
+					if task.preplayCount < TXN_PREPLAY_ROUND_LIMIT {
+						//if task.txnCount > 1 || task.isChainDep() {
 						p.taskQueue.pushTask(task)
 					} else {
 						task.setInvalid()
@@ -267,6 +270,8 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 
 	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), orderMap, task.txns, currentState,
 		p.trigger, nil, false, true, true)
+
+	executor.EnableReuseTracer = true
 
 	executor.RoundID = p.globalCache.NewRoundID()
 

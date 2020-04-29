@@ -75,6 +75,11 @@ type Message interface {
 	Data() []byte
 }
 
+type HashMessage interface {
+	Message
+	Hash() common.Hash
+}
+
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
 func IntrinsicGas(data []byte, contractCreation, isHomestead bool, isEIP2028 bool) (uint64, error) {
 	// Set the starting gas for the raw transaction
@@ -185,9 +190,19 @@ func (st *StateTransition) preCheck() error {
 // returning the result including the used gas. It returns an error if failed.
 // An error indicates a consensus issue.
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
+	rt := st.evm.RTracer
+	needRT := vm.NeedRT(rt)
+	if needRT {
+		msg := st.msg
+		rt.InitTx(msg.(HashMessage).Hash(), msg.From(), msg.To(), msg.GasPrice(), msg.Value(), msg.Gas(), msg.Nonce(), msg.Data())
+		// trace preCheck
+		rt.TracePreCheck()
+	}
+
 	if err = st.preCheck(); err != nil {
 		return
 	}
+
 	msg := st.msg
 	sender := vm.AccountRef(msg.From())
 	homestead := st.evm.ChainConfig().IsHomestead(st.evm.BlockNumber)
@@ -211,9 +226,15 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		vmerr error
 	)
 	if contractCreation {
+		if needRT {
+			rt.MarkNotExternalTransfer()
+		}
 		ret, _, st.gas, vmerr = evm.Create(sender, st.data, st.gas, st.value)
 	} else {
 		// Increment the nonce for the next transaction
+		if needRT {
+			rt.TraceIncCallerNonce()
+		}
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		ret, st.gas, vmerr = evm.Call(sender, st.to(), st.data, st.gas, st.value)
 	}
@@ -233,6 +254,10 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		st.state.AddBalance(st.evm.Coinbase, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice))
 	}
 
+	if needRT {
+		rt.MarkCompletedTrace(failed)
+	}
+
 	return ret, st.gasUsed(), vmerr != nil, err
 }
 
@@ -244,8 +269,14 @@ func (st *StateTransition) refundGas() {
 	}
 	st.gas += refund
 
+	rt := st.evm.RTracer
+	needRT := vm.NeedRT(rt)
+
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
+	if needRT {
+		rt.TraceRefund(remaining, st.gasUsed())
+	}
 	st.state.AddBalance(st.msg.From(), remaining)
 
 	// Also return remaining gas to the block gas counter so it is

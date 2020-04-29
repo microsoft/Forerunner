@@ -223,6 +223,7 @@ var (
 		utils.EmulateFileFlag,
 		utils.GenerateEmulatorLogFromFlag,
 		utils.GenerateEmulatorLogToFlag,
+		utils.ResueTracerCheckFlag,
 		alliedNodeFileFlag,
 	}
 )

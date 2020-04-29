@@ -127,6 +127,8 @@ type StateDB struct {
 	EnableWObject       bool       // default true
 	rwRecorder          RWRecorder // RWRecord mode
 
+	ReuseTracer cmptypes.IReuseTracer
+
 	primary bool
 	pair    *StateDB
 	delta   *deltaDB
@@ -158,13 +160,23 @@ type StateDB struct {
 	KeyWarmupMiss      int
 	KeyNoWarmup        int
 	KeyWarmupHelpless  int
+
+	UnknownTxs        []*types.Transaction
+	UnknownTxReceipts []*types.Receipt
 }
 
-func (self *StateDB) GetStateObject() map[common.Address]*stateObject {
+func (self *StateDB) GetPendingStateObject() map[common.Address]*stateObject {
+	objects := self.stateObjects
 	if self.IsShared() {
-		return self.delta.stateObjects
+		objects = self.delta.stateObjects
 	}
-	return self.stateObjects
+	ret := make(map[common.Address]*stateObject)
+	for addr, obj := range objects {
+		if _, ok := self.stateObjectsPending[addr]; ok {
+			ret[addr] = obj
+		}
+	}
+	return ret
 }
 
 var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
@@ -417,6 +429,12 @@ func (s *StateDB) Exist(addr common.Address) bool {
 	return ret
 }
 
+func (s *StateDB) OriginalExist(addr common.Address) bool {
+	so := s.getStateObject(addr)
+	ret := so != nil
+	return ret
+}
+
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (s *StateDB) Empty(addr common.Address) bool {
@@ -424,6 +442,12 @@ func (s *StateDB) Empty(addr common.Address) bool {
 	ret := so == nil || so.empty()
 	defer func() { s.rwRecorder._Empty(addr, so, ret) }()
 	return so == nil || so.empty()
+}
+
+func (s *StateDB) OriginalEmpty(addr common.Address) bool {
+	so := s.getStateObject(addr)
+	ret := so == nil || so.empty()
+	return ret
 }
 
 // Retrieve the balance from the given address or 0 if object not found
@@ -436,9 +460,25 @@ func (s *StateDB) GetBalance(addr common.Address) (ret *big.Int) {
 	return common.Big0
 }
 
+func (s *StateDB) OriginalGetBalance(addr common.Address) (ret *big.Int) {
+	stateObject := s.getStateObject(addr)
+	if stateObject != nil {
+		return stateObject.Balance()
+	}
+	return common.Big0
+}
+
 func (s *StateDB) GetNonce(addr common.Address) (ret uint64) {
 	stateObject := s.getStateObject(addr)
 	defer func() { s.rwRecorder._GetNonce(addr, stateObject, ret) }()
+	if stateObject != nil {
+		return stateObject.Nonce()
+	}
+	return 0
+}
+
+func (s *StateDB) OriginalGetNonce(addr common.Address) (ret uint64) {
+	stateObject := s.getStateObject(addr)
 	if stateObject != nil {
 		return stateObject.Nonce()
 	}
@@ -480,9 +520,32 @@ func (s *StateDB) GetCodeSize(addr common.Address) (ret int) {
 	return size
 }
 
+func (s *StateDB) OriginalGetCodeSize(addr common.Address) (ret int) {
+	stateObject := s.getStateObject(addr)
+	if stateObject == nil {
+		return 0
+	}
+	if stateObject.code != nil {
+		return len(stateObject.code)
+	}
+	size, err := s.db.ContractCodeSize(stateObject.addrHash, common.BytesToHash(stateObject.CodeHash()))
+	if err != nil {
+		s.setError(err)
+	}
+	return size
+}
+
 func (s *StateDB) GetCodeHash(addr common.Address) (ret common.Hash) {
 	stateObject := s.getStateObject(addr)
 	defer func() { s.rwRecorder._GetCodeHash(addr, stateObject, ret) }()
+	if stateObject == nil {
+		return common.Hash{}
+	}
+	return common.BytesToHash(stateObject.CodeHash())
+}
+
+func (s *StateDB) OriginalGetCodeHash(addr common.Address) (ret common.Hash) {
+	stateObject := s.getStateObject(addr)
 	if stateObject == nil {
 		return common.Hash{}
 	}
@@ -636,7 +699,9 @@ func (s *StateDB) HasSuicided(addr common.Address) bool {
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		s.rwRecorder._AddBalance(addr, stateObject)
+		if amount.Sign() != 0 {
+			s.rwRecorder._AddBalance(addr, stateObject)
+		}
 		stateObject.AddBalance(amount)
 	}
 }
@@ -645,7 +710,9 @@ func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 func (s *StateDB) SubBalance(addr common.Address, amount *big.Int) {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		s.rwRecorder._SubBalance(addr, stateObject)
+		if amount.Sign() != 0 {
+			s.rwRecorder._SubBalance(addr, stateObject)
+		}
 		stateObject.SubBalance(amount)
 	}
 }
@@ -1252,6 +1319,9 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		toUpdateRoot := make([]*stateObject, 0, len(s.stateObjectsPending))
 		for addr := range s.stateObjectsPending {
 			obj := s.stateObjects[addr]
+			if obj == nil && s.IsShared() {
+				obj = s.delta.stateObjects[addr]
+			}
 			if obj.deleted {
 				toDelete = append(toDelete, obj)
 			} else {

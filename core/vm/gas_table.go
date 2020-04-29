@@ -69,6 +69,13 @@ func memoryCopierGas(stackpos int) gasFunc {
 		if err != nil {
 			return 0, err
 		}
+
+		rt := evm.RTracer
+		needRT := NeedRT(rt)
+		if needRT {
+			rt.TraceAssertStackValueSelf(stackpos)
+		}
+
 		// And gas for copying data, charged per word at param.CopyGas
 		words, overflow := bigUint64(stack.Back(stackpos))
 		if overflow {
@@ -98,6 +105,13 @@ func gasSStore(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySi
 		y, x    = stack.Back(1), stack.Back(0)
 		current = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
 	)
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasSStore()
+	}
+
 	// The legacy gas metering only takes into consideration the current state
 	// Legacy rules should be applied if we are in Petersburg (removal of EIP-1283)
 	// OR Constantinople is not active
@@ -116,6 +130,10 @@ func gasSStore(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySi
 		default: // non 0 => non 0 (or 0 => 0)
 			return params.SstoreResetGas, nil
 		}
+	}
+
+	if needRT {
+		rt.MarkUnimplementedOp()
 	}
 	// The new gas metering is based on net gas costs (EIP-1283):
 	//
@@ -187,6 +205,12 @@ func gasSStoreEIP2200(evm *EVM, contract *Contract, stack *Stack, mem *Memory, m
 	)
 	value := common.BigToHash(y)
 
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasSStoreEIP2200()
+	}
+
 	if current == value { // noop (1)
 		return params.SstoreNoopGasEIP2200, nil
 	}
@@ -219,6 +243,11 @@ func gasSStoreEIP2200(evm *EVM, contract *Contract, stack *Stack, mem *Memory, m
 
 func makeGasLog(n uint64) gasFunc {
 	return func(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+		rt := stack.RTracer
+		needRT := NeedRT(rt)
+		if needRT {
+			rt.TraceAssertStackValueSelf(1)
+		}
 		requestedSize, overflow := bigUint64(stack.Back(1))
 		if overflow {
 			return 0, errGasUintOverflow
@@ -252,6 +281,13 @@ func gasSha3(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize
 	if err != nil {
 		return 0, err
 	}
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceAssertStackValueSelf(1)
+	}
+
 	wordGas, overflow := bigUint64(stack.Back(1))
 	if overflow {
 		return 0, errGasUintOverflow
@@ -286,6 +322,13 @@ func gasCreate2(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memoryS
 	if err != nil {
 		return 0, err
 	}
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceAssertStackValueSelf(2)
+	}
+
 	wordGas, overflow := bigUint64(stack.Back(2))
 	if overflow {
 		return 0, errGasUintOverflow
@@ -300,6 +343,11 @@ func gasCreate2(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memoryS
 }
 
 func gasExpFrontier(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceAssertExpByteLen()
+	}
 	expByteLen := uint64((stack.data[stack.len()-2].BitLen() + 7) / 8)
 
 	var (
@@ -313,6 +361,12 @@ func gasExpFrontier(evm *EVM, contract *Contract, stack *Stack, mem *Memory, mem
 }
 
 func gasExpEIP158(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceAssertExpByteLen()
+	}
+
 	expByteLen := uint64((stack.data[stack.len()-2].BitLen() + 7) / 8)
 
 	var (
@@ -326,6 +380,12 @@ func gasExpEIP158(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memor
 }
 
 func gasCall(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasCall()
+	}
+
 	var (
 		gas            uint64
 		transfersValue = stack.Back(2).Sign() != 0
@@ -365,6 +425,13 @@ func gasCallCode(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memory
 	if err != nil {
 		return 0, err
 	}
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasCallCode()
+	}
+
 	var (
 		gas      uint64
 		overflow bool
@@ -390,6 +457,13 @@ func gasDelegateCall(evm *EVM, contract *Contract, stack *Stack, mem *Memory, me
 	if err != nil {
 		return 0, err
 	}
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasDelegateOrStaticCall()
+	}
+
 	evm.callGasTemp, err = callGas(evm.chainRules.IsEIP150, contract.Gas, gas, stack.Back(0))
 	if err != nil {
 		return 0, err
@@ -406,6 +480,13 @@ func gasStaticCall(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memo
 	if err != nil {
 		return 0, err
 	}
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasDelegateOrStaticCall()
+	}
+
 	evm.callGasTemp, err = callGas(evm.chainRules.IsEIP150, contract.Gas, gas, stack.Back(0))
 	if err != nil {
 		return 0, err
@@ -418,6 +499,13 @@ func gasStaticCall(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memo
 }
 
 func gasSelfdestruct(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+
+	rt := stack.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGasSelfdestruct()
+	}
+
 	var gas uint64
 	// EIP150 homestead gas reprice fork:
 	if evm.chainRules.IsEIP150 {

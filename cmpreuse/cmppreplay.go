@@ -1,7 +1,7 @@
 package cmpreuse
 
 import (
-	"encoding/json"
+	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -11,6 +11,11 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
+	lru "github.com/hashicorp/golang-lru"
+	"math/rand"
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,7 +34,8 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 }
 
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
-	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash) {
+	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash,
+	trace *STrace) {
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -44,6 +50,9 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	start := time.Now()
 
 	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
+	if ok {
+		round.Trace = trace
+	}
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
 	// To set results more effectively, we should
 	// Generate new round for all scenarios //* Generate new round for scenario 1 and 3 (which have new read deps, that means this preplay result does not exist before )
@@ -63,11 +72,19 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
 			reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+			if trace != nil {
+				traceTrieStart := time.Now()
+				reuse.setTraceTrie(tx, txPreplay, round, trace)
+				cost := time.Since(traceTrieStart)
+				if cost > 14*time.Second {
+					log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
+						"traceLen", len(trace.Stats), "traceRLCount", len(trace.RLNodeSet), "traceJSPCount", len(trace.JSPSet))
+				}
+			}
 		}
 	}
 	if time.Since(start) > 30*time.Second {
-		roundbs, _ := json.Marshal(round)
-		log.Warn("Slow setMainResult", "roundInfo", string(roundbs))
+		log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
 	}
 }
 
@@ -86,6 +103,17 @@ func (reuse *Cmpreuse) setMixTree(txPreplay *cache.TxPreplay, round *cache.Prepl
 
 func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
 	InsertDelta(tx, txPreplay.PreplayResults.DeltaTree, round, curBlockNumber)
+}
+
+func (reuse *Cmpreuse) setTraceTrie(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, trace *STrace) {
+	var traceTrie *TraceTrie
+	if txPreplay.PreplayResults.TraceTrie != nil {
+		traceTrie = txPreplay.PreplayResults.TraceTrie.(*TraceTrie)
+	} else {
+		traceTrie = NewTraceTrie(tx)
+		txPreplay.PreplayResults.TraceTrie = traceTrie
+	}
+	traceTrie.InsertTrace(trace, round)
 }
 
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
@@ -111,6 +139,9 @@ func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
 	reuse.MSRACache.CommitTxPreplay(txPreplay)
 	return txPreplay
 }
+
+var txTraceTries, _ = lru.New(3000) // make(map[common.Hash] *TraceTrie)
+var traceMutex sync.Mutex
 
 // PreplayTransaction attempts to preplay a transaction to the given state
 // database and uses the input parameters for its environment. It returns
@@ -151,15 +182,19 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		reuseStatus *cmptypes.ReuseStatus
 		reuseRound  *cache.PreplayResult
 		readDeps    []*cmptypes.AddrLocValue
+		trace       *STrace
 	)
-	reuseStatus, reuseRound, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false, &cfg)
+	chainRules := config.Rules(header.Number)
+	reuseStatus, reuseRound, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, AlwaysFalse, false, &cfg)
 	if reuseStatus.BaseStatus == cmptypes.Hit {
+		MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
 		rwrecord = reuseRound.RWrecord
+		trace = reuseRound.Trace.(*STrace)
 
 	} else {
-		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, core.NewController(), msg)
+		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, core.NewController(), msg, tx)
 
 		defer statedb.RWRecorder().RWClear() // Write set got
 		if err == nil {
@@ -169,6 +204,72 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			readDeps = readDetail.ReadAddressAndBlockSeq
 			rwrecord = cache.NewRWRecord(rstate, rchain, wstate, readDetail, failed)
 			wobjects = statedb.RWRecorder().WObjectDump()
+
+			// test reuse tracer
+			if statedb.ReuseTracer != nil {
+				rt := statedb.ReuseTracer.(*ReuseTracer)
+				statedb.ReuseTracer = nil
+				stats := rt.Statements
+
+				defer func() {
+					if e := recover(); e != nil {
+						txHex := tx.Hash().Hex()
+						fmt.Printf("Tx %s Tracer Error\n  %s :%s", txHex, e, debug.Stack())
+						rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
+						//rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace.txt"))
+						panic(e)
+					}
+				}()
+
+				debugOut := func(fmtStr string, args ...interface{}) {
+					//fmt.Printf(fmtStr, args...)
+					rt.DebugOut(fmtStr, args...)
+				}
+
+				if !rt.DebugFlag {
+					debugOut = nil
+				}
+
+				if debugOut != nil {
+					tmsg := fmt.Sprintf("Tx%d: %s Unimplemented %v, Completed %v, External %v, Size %v", ReuseTracerTracedTxCount,
+						tx.Hash().Hex(), rt.EncounterUnimplementedCode, rt.IsCompleteTrace, rt.IsExternalTransfer, len(stats))
+					debugOut(tmsg + "\n")
+				}
+
+				if !rt.IsCompleteTrace || rt.EncounterUnimplementedCode {
+					panic("Tracer Error:InComplete Trace or Unimplemeted Code reached!")
+				}
+
+				trace = NewSTrace(stats, debugOut)
+
+				//writeDoubleOut := func(fmtStr string, args ...interface{}) {
+				//	//fmt.Printf(fmtStr, args...)
+				//	debugOut(fmtStr, args...)
+				//}
+				CrossCheck(trace.CrosscheckStats, readDetail, wstate, receipt.Logs, debugOut)
+
+				registerMapping, highestIndex := trace.RAlloc, trace.RegisterFileSize
+				loadCount, readCount, storeCount, logCount := GetLRSL(trace.Stats)
+				if debugOut != nil {
+					summary := fmt.Sprintf("Crosscheck %v Passed for tx %v, with %v non-const variables which requires %v registers. %v loads, %v reads, %v stores, %v logs",
+						atomic.LoadUint64(&ReuseTracerTracedTxCount), tx.Hash().Hex(), len(registerMapping), highestIndex, loadCount, readCount, storeCount, logCount)
+					debugOut(summary + "\n")
+				}
+				//log.Info(summary)
+				//_trie, ok := txTraceTries.Get(tx.Hash())
+				//if !ok {
+				//	_trie = NewTraceTrie(tx, nil)
+				//	txTraceTries.Add(tx.Hash(), _trie)
+				//}
+				//trie := _trie.(*TraceTrie)
+				//
+				//trie.WriteOut = debugOut
+				//trie.InsertTrace(trace)
+
+				// sample tx trace for monitoring purpose
+			}
+			atomic.AddUint64(&ReuseTracerTracedTxCount, 1)
+
 		} else {
 			return nil, err
 		}
@@ -207,7 +308,20 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)
 		}
 
-		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash)
+		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash, trace)
+
+		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
+		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)
+		//	trace.Stats[0].inputs[0].tracer.DumpDebugBuffer(fn)
+		//} else
+		if trace != nil && len(trace.Stats) > 5000 && rand.Intn(100) < 1 {
+			traceMutex.Lock()
+			trace.Stats[0].inputs[0].tracer.DumpDebugBuffer("/tmp/sampleTxTrace.txt")
+			traceMutex.Unlock()
+		}
+		if trace != nil {
+			trace.Stats[0].inputs[0].tracer.ClearDebugBuffer()
+		}
 
 	} else {
 		reuse.commitGround(tx, receipt, rwrecord, groundFlag)

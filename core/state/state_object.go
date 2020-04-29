@@ -119,6 +119,8 @@ type stateObject struct {
 	pair  *stateObject
 
 	snap *cmptypes.AccountSnap
+
+	isNewlyCreated bool
 }
 
 // empty returns whether the account is considered empty.
@@ -149,8 +151,10 @@ func newObject(db *StateDB, address common.Address, data Account) *stateObject {
 	if data.Balance == nil {
 		data.Balance = new(big.Int)
 	}
+	newlyCreated := false
 	if data.CodeHash == nil {
 		data.CodeHash = emptyCodeHash
+		newlyCreated = true
 	}
 	if data.Root == (common.Hash{}) {
 		data.Root = emptyRoot
@@ -164,6 +168,7 @@ func newObject(db *StateDB, address common.Address, data Account) *stateObject {
 		pendingStorage:    make(Storage),
 		dirtyStorage:      make(Storage),
 		dirtyStorageCount: make(map[common.Hash]uint),
+		isNewlyCreated:    newlyCreated,
 	}
 }
 
@@ -359,6 +364,7 @@ func (s *stateObject) finalise() {
 	if len(s.dirtyStorage) > 0 {
 		s.dirtyStorage = make(Storage)
 	}
+	s.isNewlyCreated = false
 }
 
 // updateTrie writes cached storage modifications into the object's storage trie.
@@ -499,6 +505,9 @@ func (s *stateObject) deepCopy(db *StateDB) *stateObject {
 		stateSnap := *s.snap
 		stateObject.snap = &stateSnap
 	}
+
+	stateObject.isNewlyCreated = s.isNewlyCreated
+
 	return stateObject
 }
 
@@ -517,6 +526,7 @@ func (s *stateObject) shareCopy(db *StateDB) {
 		deleted:           s.deleted,
 		dirtyStorageCount: make(map[common.Hash]uint),
 		delta:             s.db.GetNewDeltaObject(),
+		isNewlyCreated:    s.isNewlyCreated,
 	}
 	if s.trie != nil {
 		obj.trie = db.db.CopyTrie(s.trie)
@@ -686,6 +696,13 @@ func (s *stateObject) hasDirtyWrite() bool {
 		if v > 0 {
 			return true
 		}
+	}
+	return false
+}
+
+func (s *stateObject) hasDirtyAccountWrite() bool {
+	if s.dirtyBalanceCount > 0 || s.dirtyNonceCount > 0 || s.dirtyCodeCount > 0 {
+		return true
 	}
 	return false
 }

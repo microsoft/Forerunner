@@ -262,6 +262,8 @@ func (b *TaskBuilder) commitNewWork() {
 	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), nil, pendingTxn, currentState,
 		b.trigger, nil, false, true, false)
 
+	//executor.EnableReuseTracer = true
+
 	executor.RoundID = b.globalCache.NewRoundID()
 
 	// Execute, use pending for preplay

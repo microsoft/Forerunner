@@ -1865,6 +1865,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			bc.Warmuper.Continue()
 			return it.index, err
 		}
+
+		if len(statedb.UnknownTxs) > 0 {
+			for i, tx := range statedb.UnknownTxs {
+				receipt := statedb.UnknownTxReceipts[i]
+				log.Info("Unknown Status Tx", "hash", tx.Hash().Hex(), "gasused", receipt.GasUsed, "status", receipt.Status)
+			}
+		}
 		// Update the metrics touched during block processing
 		accountReadTimer.Update(statedb.AccountReads)     // Account reads are complete, we can mark them
 		storageReadTimer.Update(statedb.StorageReads)     // Storage reads are complete, we can mark them

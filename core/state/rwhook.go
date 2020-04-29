@@ -26,11 +26,11 @@ type ReadChain struct {
 }
 
 type WriteState struct {
-	Balance      *big.Int
-	Nonce        *uint64
-	Code         *Code
-	DirtyStorage Storage
-	Suicided     *bool
+	Balance      *big.Int `json:",omitempty"`
+	Nonce        *uint64 `json:",omitempty"`
+	Code         *Code `json:",omitempty"`
+	DirtyStorage Storage `json:",omitempty"`
+	Suicided     *bool `json:",omitempty"`
 }
 
 type ReadStates map[common.Address]*ReadState
@@ -147,7 +147,7 @@ func (h *rwRecorderImpl) _Exist(addr common.Address, so *stateObject, ret bool) 
 }
 
 func (h *rwRecorderImpl) _Empty(addr common.Address, so *stateObject, ret bool) {
-	if so == nil || !so.hasDirtyWrite() {
+	if so == nil || !so.hasDirtyAccountWrite() {
 		h.UpdateRAccount(addr, cmptypes.Empty, ret)
 	}
 }
@@ -165,19 +165,19 @@ func (h *rwRecorderImpl) _GetNonce(addr common.Address, so *stateObject, ret uin
 }
 
 func (h *rwRecorderImpl) _GetCode(addr common.Address, so *stateObject, ret []byte) {
-	if so == nil || so.dirtyCodeCount == 0 {
+	if so == nil || (so.dirtyCodeCount == 0 && !so.isNewlyCreated) {
 		h.UpdateRCodeXXX(so, addr)
 	}
 }
 
 func (h *rwRecorderImpl) _GetCodeSize(addr common.Address, so *stateObject, ret int) {
-	if so == nil || so.dirtyCodeCount == 0 {
+	if so == nil || (so.dirtyCodeCount == 0 && !so.isNewlyCreated) {
 		h.UpdateRCodeXXX(so, addr)
 	}
 }
 
 func (h *rwRecorderImpl) _GetCodeHash(addr common.Address, so *stateObject, ret common.Hash) {
-	if so == nil || so.dirtyCodeCount == 0 {
+	if so == nil || (so.dirtyCodeCount == 0 && !so.isNewlyCreated) {
 		h.UpdateRAccount(addr, cmptypes.CodeHash, ret)
 	}
 }

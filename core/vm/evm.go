@@ -17,6 +17,7 @@
 package vm
 
 import (
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -42,6 +43,12 @@ type (
 
 // run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter.
 func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, error) {
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceGuardIsCodeAddressPrecompiled()
+	}
+
 	if contract.CodeAddr != nil {
 		precompiles := PrecompiledContractsHomestead
 		if evm.chainRules.IsByzantium {
@@ -51,9 +58,20 @@ func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, err
 			precompiles = PrecompiledContractsIstanbul
 		}
 		if p := precompiles[*contract.CodeAddr]; p != nil {
-			return RunPrecompiledContract(p, input, contract)
+			if needRT {
+				rt.MarkNotExternalTransfer()
+				TracePrecompileGas(p, rt)
+			}
+			ret, err := RunPrecompiledContract(p, input, contract)
+			if needRT {
+				if err != ErrOutOfGas {
+					rt.TraceRunPrecompiled(p)
+				}
+			}
+			return ret, err
 		}
 	}
+
 	for _, interpreter := range evm.interpreters {
 		if interpreter.CanRun(contract.Code) {
 			if evm.interpreter != interpreter {
@@ -93,6 +111,15 @@ type Context struct {
 	Difficulty  *big.Int       // Provides information for DIFFICULTY
 }
 
+
+func NeedRT(rt cmptypes.IReuseTracer) bool {
+	return rt != nil && rt.NeedRT()
+}
+
+func TraceOpByName(rt cmptypes.IReuseTracer, opName string, pc uint64, gas uint64) {
+	rt.TraceOpByName(opName, pc, gas)
+}
+
 // EVM is the Ethereum Virtual Machine base object and provides
 // the necessary tools to run a contract on the given state with
 // the provided context. It should be noted that any error
@@ -128,6 +155,8 @@ type EVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+
+	RTracer cmptypes.IReuseTracer
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
@@ -195,6 +224,13 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
+
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceCanTransfer()
+	}
+
 	// Fail if we're trying to transfer more than the available balance
 	if !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
@@ -204,6 +240,13 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		to       = AccountRef(addr)
 		snapshot = evm.StateDB.Snapshot()
 	)
+
+	var rtSnapshot uint
+	if needRT {
+		rt.TraceAssertCodeAddrExistence()
+		rtSnapshot = rt.Snapshot()
+	}
+
 	if !evm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
 		if evm.chainRules.IsByzantium {
@@ -212,6 +255,12 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		if evm.chainRules.IsIstanbul {
 			precompiles = PrecompiledContractsIstanbul
 		}
+
+		if needRT {
+			rt.TraceGuardIsCodeAddressPrecompiled()
+			rt.TraceAssertValueZeroness()
+		}
+
 		if precompiles[addr] == nil && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.vmConfig.Debug && evm.depth == 0 {
@@ -220,7 +269,17 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			}
 			return nil, gas, nil
 		}
+
+		if needRT {
+			rt.TraceCreateContractAccount()
+		}
+
 		evm.StateDB.CreateAccount(addr)
+	}
+
+	if needRT {
+		rt.TraceTransfer()
+		rt.TraceLoadCodeAndGuardHash()
 	}
 	evm.Transfer(evm.StateDB, caller.Address(), to.Address(), value)
 	// Initialise a new contract and set the code that is to be used by the EVM.
@@ -245,6 +304,10 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
 	if err != nil {
+		if needRT {
+			rt.RevertToSnapshot(rtSnapshot)
+		}
+
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -269,6 +332,13 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
+
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceCanTransfer()
+	}
+
 	// Fail if we're trying to transfer more than the available balance
 	if !evm.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
@@ -278,6 +348,13 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 		snapshot = evm.StateDB.Snapshot()
 		to       = AccountRef(caller.Address())
 	)
+
+	var rtSnapshot uint
+	if needRT {
+		rtSnapshot = rt.Snapshot()
+		rt.TraceLoadCodeAndGuardHash()
+	}
+
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, to, value, gas)
@@ -285,6 +362,10 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 
 	ret, err = run(evm, contract, input, false)
 	if err != nil {
+		if needRT {
+			rt.RevertToSnapshot(rtSnapshot)
+		}
+
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -312,12 +393,24 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 		to       = AccountRef(caller.Address())
 	)
 
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	var rtSnapshot uint
+	if needRT {
+		rtSnapshot = rt.Snapshot()
+		rt.TraceLoadCodeAndGuardHash()
+	}
+
 	// Initialise a new contract and make initialise the delegate values
 	contract := NewContract(caller, to, nil, gas).AsDelegate()
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
 	ret, err = run(evm, contract, input, false)
 	if err != nil {
+		if needRT {
+			rt.RevertToSnapshot(rtSnapshot)
+		}
+
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -343,6 +436,15 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 		to       = AccountRef(addr)
 		snapshot = evm.StateDB.Snapshot()
 	)
+
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	var rtSnapshot uint
+	if needRT {
+		rtSnapshot = rt.Snapshot()
+		rt.TraceLoadCodeAndGuardHash()
+	}
+
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, to, new(big.Int), gas)
@@ -359,6 +461,10 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	// when we're in Homestead this also counts for code storage gas errors.
 	ret, err = run(evm, contract, input, true)
 	if err != nil {
+		if needRT {
+			rt.RevertToSnapshot(rtSnapshot)
+		}
+
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -386,23 +492,52 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, common.Address{}, gas, ErrDepth
 	}
+
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceCanTransfer()
+	}
+
 	if !evm.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, common.Address{}, gas, ErrInsufficientBalance
+	}
+
+	if needRT {
+		rt.TraceIncCallerNonce()
 	}
 	nonce := evm.StateDB.GetNonce(caller.Address())
 	evm.StateDB.SetNonce(caller.Address(), nonce+1)
 
+	if needRT {
+		rt.TraceAssertNoExistingContract()
+	}
 	// Ensure there's no existing contract already at the designated address
 	contractHash := evm.StateDB.GetCodeHash(address)
 	if evm.StateDB.GetNonce(address) != 0 || (contractHash != (common.Hash{}) && contractHash != emptyCodeHash) {
 		return nil, common.Address{}, 0, ErrContractAddressCollision
 	}
+
+	var rSnapshot uint
+	if needRT {
+		rSnapshot = rt.Snapshot()
+		rt.TraceCreateContractAccount()
+	}
+
 	// Create a new account on the state
 	snapshot := evm.StateDB.Snapshot()
 	evm.StateDB.CreateAccount(address)
 	if evm.chainRules.IsEIP158 {
+		if needRT {
+			rt.TraceSetNonceForCreatedContract()
+		}
 		evm.StateDB.SetNonce(address, 1)
 	}
+
+	if needRT {
+		rt.TraceTransfer()
+	}
+
 	evm.Transfer(evm.StateDB, caller.Address(), address, value)
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
@@ -421,6 +556,10 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 	ret, err := run(evm, contract, nil, false)
 
+	if needRT {
+		rt.TraceAssertNewCodeLen()
+	}
+
 	// check whether the max code size has been exceeded
 	maxCodeSizeExceeded := evm.chainRules.IsEIP158 && len(ret) > params.MaxCodeSize
 	// if the contract creation ran successfully and no errors were returned
@@ -430,6 +569,9 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	if err == nil && !maxCodeSizeExceeded {
 		createDataGas := uint64(len(ret)) * params.CreateDataGas
 		if contract.UseGas(createDataGas) {
+			if needRT {
+				rt.TraceStoreNewCode()
+			}
 			evm.StateDB.SetCode(address, ret)
 		} else {
 			err = ErrCodeStoreOutOfGas
@@ -440,6 +582,9 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
 	if maxCodeSizeExceeded || (err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas)) {
+		if needRT {
+			rt.RevertToSnapshot(rSnapshot)
+		}
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -458,6 +603,11 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 // Create creates a new contract using code as deployment code.
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
+	rt := evm.RTracer
+	needRT := NeedRT(rt)
+	if needRT {
+		rt.TraceCreateAddressAndSetupCode()
+	}
 	contractAddr = crypto.CreateAddress(caller.Address(), evm.StateDB.GetNonce(caller.Address()))
 	return evm.create(caller, &codeAndHash{code: code}, gas, value, contractAddr)
 }

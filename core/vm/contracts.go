@@ -20,7 +20,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
+	"reflect"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -75,6 +78,48 @@ var PrecompiledContractsIstanbul = map[common.Address]PrecompiledContract{
 	common.BytesToAddress([]byte{7}): &bn256ScalarMulIstanbul{},
 	common.BytesToAddress([]byte{8}): &bn256PairingIstanbul{},
 	common.BytesToAddress([]byte{9}): &blake2F{},
+}
+
+func GetPrecompiledMapping(chainRules *params.Rules) map[common.Address]PrecompiledContract {
+	precompiles := PrecompiledContractsHomestead
+	if chainRules.IsByzantium {
+		precompiles = PrecompiledContractsByzantium
+	}
+	if chainRules.IsIstanbul {
+		precompiles = PrecompiledContractsIstanbul
+	}
+	return precompiles
+}
+
+func TracePrecompileGas(p PrecompiledContract, rt cmptypes.IReuseTracer) {
+	switch pTyped := p.(type) {
+	case *ecrecover:
+		// const gas
+	case *sha256hash:
+		rt.TraceAssertInputLen()
+	case *ripemd160hash:
+		rt.TraceAssertInputLen()
+	case *dataCopy:
+		rt.TraceAssertInputLen()
+	case *bigModExp:
+		rt.TraceGasBigModExp()
+	case *bn256AddIstanbul:
+		// const gas
+	case *bn256AddByzantium:
+		// const gas
+	case *bn256ScalarMulIstanbul:
+		// const gas
+	case *bn256ScalarMulByzantium:
+		// const gas
+	case *bn256PairingIstanbul:
+		rt.TraceAssertInputLen()
+	case *bn256PairingByzantium:
+		rt.TraceAssertInputLen()
+	case *blake2F:
+		rt.TraceAssertInputLen()
+	default:
+		panic(fmt.Sprintf("unknowd precompiled contract %v", reflect.TypeOf(pTyped).String()))
+	}
 }
 
 // RunPrecompiledContract runs and evaluates the output of a precompiled contract.

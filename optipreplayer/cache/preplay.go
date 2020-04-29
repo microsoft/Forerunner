@@ -113,6 +113,7 @@ type PreplayResults struct {
 	ReadDepTree  *cmptypes.PreplayResTrie
 	MixTree      *cmptypes.PreplayResTrie
 	DeltaTree    *cmptypes.PreplayResTrie
+	TraceTrie    cmptypes.ITracerTrie
 }
 
 // PreplayResult record one round result
@@ -143,6 +144,8 @@ type PreplayResult struct {
 
 	// Filled by the former round. -1 for no former round has the same RWRecord
 	Filled int64
+
+	Trace cmptypes.ISTrace
 }
 
 type WStateDelta struct {

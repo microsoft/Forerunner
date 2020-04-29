@@ -253,6 +253,9 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 		eth.frame.SetExtra(makeExtraData(config.Miner.ExtraData))
 		eth.blockchain.ReportReuseMiss = eth.frame.GetMissReporter()
 	}
+	if config.MSRAVMSettings.ReuseTracerChecking {
+		cmpreuse.DEBUG_TRACER = true
+	}
 
 	eth.APIBackend = &EthAPIBackend{ctx.ExtRPCEnabled(), eth, nil}
 	gpoParams := config.GPO

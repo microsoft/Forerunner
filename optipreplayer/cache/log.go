@@ -43,6 +43,7 @@ type LogBlockInfo struct {
 	UnhitHeadCount  [10]int       `json:"UHC"`
 	TrieHit         int           `json:"TH"`
 	DeltaHit        int           `json:"EH"`
+	TraceHit        int           `json:"RH"`
 	ReuseGas        int           `json:"reuseGas"`
 	ProcTime        int64         `json:"procTime"`
 	RunMode         string        `json:"runMode"`
@@ -163,14 +164,18 @@ var (
 	cumSetDB         = metrics.NewRegisteredTimer("apply.waitReuse.setDB", nil)
 	cumRunTx         = metrics.NewRegisteredTimer("apply.waitRealApply.runTx", nil)
 
-	blkCount uint64
-	txnCount uint64
-	listen   uint64
-	Package  uint64
-	enqueue  uint64
-	preplay  uint64
-	hit      uint64
-	unknown  uint64
+	blkCount      uint64
+	txnCount      uint64
+	listen        uint64
+	Package       uint64
+	enqueue       uint64
+	preplay       uint64
+	hit           uint64
+	unknown       uint64
+	mixHitCount   uint64
+	trieHitCount  uint64
+	deltaHitCount uint64
+	traceHitCount uint64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -311,6 +316,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 					infoResult.TrieHit++
 				case cmptypes.DeltaHit:
 					infoResult.DeltaHit++
+				case cmptypes.TraceHit:
+					infoResult.TraceHit++
 				}
 			case cmptypes.Miss:
 				infoResult.Miss++
@@ -438,7 +445,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		enqueueCnt := infoResult.TxnCount - infoResult.NoEnqueue
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate float64
+		var listenRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate, traceHitRate float64
 		var reuseGasRate float64
 		if infoResult.TxnCount > 0 {
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
@@ -451,6 +458,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			mixHitRate = float64(infoResult.MixHit) / float64(infoResult.TxnCount)
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
 			deltaHitRate = float64(infoResult.DeltaHit) / float64(infoResult.TxnCount)
+			traceHitRate = float64(infoResult.TraceHit) / float64(infoResult.TxnCount)
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
 		}
 		context := []interface{}{
@@ -464,9 +472,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit),
 			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
 		}
-		if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 {
-			context = append(context, "TH-EH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)",
-				infoResult.TrieHit, trieHitRate, infoResult.DeltaHit, deltaHitRate))
+		if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 || infoResult.TraceHit > 0 {
+			context = append(context, "RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				infoResult.TraceHit, traceHitRate, infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate))
 		}
 		if infoResult.Miss > 0 {
 			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))
@@ -486,6 +494,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		preplay += uint64(preplayCnt)
 		hit += uint64(infoResult.Hit)
 		unknown += uint64(infoResult.Unknown)
+		mixHitCount += uint64(infoResult.MixHit)
+		trieHitCount += uint64(infoResult.TrieHit)
+		deltaHitCount += uint64(infoResult.DeltaHit)
+		traceHitCount += uint64(infoResult.TraceHit)
+		mixHitRate = float64(mixHitCount) / float64(txnCount)
+		trieHitRate = float64(trieHitCount) / float64(txnCount)
+		deltaHitRate = float64(deltaHitCount) / float64(txnCount)
+		traceHitRate = float64(traceHitCount) / float64(txnCount)
 		log.Info("Cumulative block reuse", "block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
@@ -493,6 +509,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
 			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
+			"RH-MH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				traceHitCount, traceHitRate, mixHitCount, mixHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
 		)
 
 		var (

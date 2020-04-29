@@ -25,14 +25,14 @@ const (
 	PreBlockHash  // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance  //8
-	Nonce
-	CodeHash
-	Exist
-	Empty
-	Code
-	Storage
-	CommittedStorage  //15
+	Balance //8
+	Nonce //9
+	CodeHash //10
+	Exist // 11
+	Empty // 12
+	Code // 13
+	Storage // 14
+	CommittedStorage //15
 
 	// Dep info
 	Dependence  //16
@@ -120,6 +120,8 @@ func (s ReuseStatus) String() string {
 			statusStr += ":TrieHit"
 		case DeltaHit:
 			statusStr += ":DeltaHit"
+		case TraceHit:
+			statusStr += ":TraceHit"
 		}
 	case Miss:
 		switch s.MissType {
@@ -165,6 +167,7 @@ const (
 	DepHit
 	MixHit
 	DeltaHit
+	TraceHit
 )
 
 type MixHitType int

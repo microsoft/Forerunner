@@ -793,7 +793,10 @@ var (
 		Usage: "Log directory for computation reuse result",
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "cmpreuse")),
 	}
-
+	ResueTracerCheckFlag = cli.BoolFlag{
+		Name:  "reusetracer.check",
+		Usage: "Enable reuse tracer checking",
+	}
 	CacheRecordEnabledFlag = cli.BoolFlag{
 		Name:  "cacherecord",
 		Usage: "Enable cache record",
@@ -1745,6 +1748,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
 		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
 		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
+		ReuseTracerChecking: ctx.GlobalBool(ResueTracerCheckFlag.Name),
 
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),

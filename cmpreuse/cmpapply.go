@@ -39,7 +39,9 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 		return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
 	}
 
-	if reuseStatus, round, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, AlwaysFalse, false, &cfg); reuseStatus.BaseStatus == cmptypes.Hit {
+	chainRules := config.Rules(header.Number)
+
+	if reuseStatus, round, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, AlwaysFalse, false, &cfg); reuseStatus.BaseStatus == cmptypes.Hit {
 		receipt := reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		return receipt, nil, reuseStatus
 	} else {

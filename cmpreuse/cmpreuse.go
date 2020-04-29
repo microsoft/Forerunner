@@ -32,10 +32,10 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 	bool, error) {
 
 	t := time.Now()
-	gas, failed, err := reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, c, msg)
+	gas, failed, err := reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, c, msg, nil)
 	d := time.Since(t)
 
-	if c.TryFinish() {
+	if c.TryAbortCounterpart() {
 		cache.RunTx = append(cache.RunTx, d)
 		return gas, failed, err // apply finish and win compete
 	} else {
@@ -44,11 +44,16 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 }
 
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
+	header *types.Header, chainRules params.Rules, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
-	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, tx, blockPre, c.IsFinish, true, cfg)
+	if cfg.MSRAVMSettings.CmpReuseChecking {
+		defer c.ReuseDone.Done()
+	}
 
-	if status.BaseStatus == cmptypes.Hit && c.TryFinish() {
+
+	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, c.IsAborted, true, cfg)
+
+	if status.BaseStatus == cmptypes.Hit && c.TryAbortCounterpart() {
 		c.StopEvm()
 		cache.GetRW = append(cache.GetRW, d0)
 		cache.SetDB = append(cache.SetDB, d1)
@@ -194,8 +199,16 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	var realApply sync.WaitGroup
 	realApply.Add(1)
 	realApplyStart := time.Now()
+
+	if cfg.MSRAVMSettings.CmpReuseChecking {
+		controller.ReuseDone.Add(1)
+	}
+
 	//routinePool.JobQueue <-
 	doRealApply := func() {
+		if cfg.MSRAVMSettings.CmpReuseChecking {
+			controller.ReuseDone.Wait()
+		}
 		gasUsed, failed, realApplyErr = reuse.tryRealApplyTransaction(config, bc, author, &applyGp, applyDB, header, cfg, controller, msg)
 		if gasUsed == 0 { // tryReuseTransaction win
 			// try to help create receipt in parallel
@@ -208,8 +221,9 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	//go doRealApply()
 
 	reuseStart := time.Now()
-	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, tx, controller, blockPre, cfg); round != nil {
+	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, config.Rules(header.Number), tx, controller, blockPre, cfg); round != nil {
 		waitReuse := time.Since(reuseStart)
+		//MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
 		//var roundId uint64
 
@@ -237,7 +251,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 			curtxRes := cmptypes.NewTxResID(tx.Hash(), 0)
 			reusedTxRes := cmptypes.NewTxResID(tx.Hash(), round.RoundID)
 			for addr := range round.WObjects {
-				if hitAddrIndex<len(reuseStatus.MixHitStatus.DepHitAddr) &&addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
+				if hitAddrIndex < len(reuseStatus.MixHitStatus.DepHitAddr) && addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
 					hitAddrIndex++
 					if addr == header.Coinbase {
 						reuseDB.UpdateAccountChanged(addr, curtxRes)

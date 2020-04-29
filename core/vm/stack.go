@@ -18,6 +18,7 @@ package vm
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
 )
 
@@ -25,7 +26,8 @@ import (
 // expected to be changed and modified. stack does not take care of adding newly
 // initialised objects.
 type Stack struct {
-	data []*big.Int
+	data    []*big.Int
+	RTracer cmptypes.IReuseTracer
 }
 
 func newstack() *Stack {
