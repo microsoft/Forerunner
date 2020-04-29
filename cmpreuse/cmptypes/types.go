@@ -100,6 +100,7 @@ type ReuseStatus struct {
 	MixHitStatus *MixHitStatus
 	MissNode     *PreplayResTrieNode
 	MissValue    interface{}
+	AbortStage   AbortStage
 }
 
 type MixHitStatus struct {
@@ -184,6 +185,16 @@ type MissType int
 const (
 	NoInMiss MissType = iota
 	NoMatchMiss
+)
+
+type AbortStage int
+
+const (
+	TraceCheck AbortStage = iota
+	MixCheck
+	DeltaCheck
+	TrieCheck
+	ApplyDB
 )
 
 type RecordHolder interface {

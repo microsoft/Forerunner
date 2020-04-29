@@ -799,18 +799,26 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		round = sr.GetAnyRound()
 	} else if sr != nil && sr.aborted {
 		d0 = time.Since(t0)
-		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown}
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
 		return
-	} else {
+	}
+
+	if status == nil {
 		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
 		if ok {
 			d0 = time.Since(t0)
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
 		} else if isAbort {
 			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
 			return
 		} else {
+			if sr != nil {
+				d0 = time.Since(t0)
+				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss,
+					MissNode: missNode, MissValue: missValue}
+				return
+			}
 			if isBlockProcess {
 				round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
 				if ok {
@@ -821,7 +829,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					//log.Info("reuse delta", "txhash", tx.Hash().Hex(), "status", string(rss))
 				} else if isAbort {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.DeltaCheck} // abort before hit or miss
 					return
 				}
 			}
@@ -918,7 +926,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					}
 				} else if isAbort {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown} // abort before hit or miss
+					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TrieCheck} // abort before hit or miss
 					return
 				} else {
 					d0 = time.Since(t0)

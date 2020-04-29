@@ -36,6 +36,10 @@ type LogBlockInfo struct {
 	Hit             int           `json:"H"`
 	Miss            int           `json:"M"`
 	Unknown         int           `json:"U"`
+	AbortedTrace    int           `json:"aR"`
+	AbortedMix      int           `json:"aM"`
+	AbortedDelta    int           `json:"aD"`
+	AbortedTrie     int           `json:"aT"`
 	MixHit          int           `json:"MH"`
 	AllDepMixHit    int           `json:"DMH"`
 	AllDetailMixHit int           `json:"TMH"`
@@ -176,6 +180,10 @@ var (
 	trieHitCount  uint64
 	deltaHitCount uint64
 	traceHitCount uint64
+	AbortedTrace  uint64
+	AbortedMix    uint64
+	AbortedDelta  uint64
+	AbortedTrie   uint64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -323,6 +331,16 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 				infoResult.Miss++
 			case cmptypes.Unknown:
 				infoResult.Unknown++
+				switch ReuseResult[index].AbortStage {
+				case cmptypes.TraceCheck:
+					infoResult.AbortedTrace++
+				case cmptypes.MixCheck:
+					infoResult.AbortedMix++
+				case cmptypes.DeltaCheck:
+					infoResult.AbortedDelta++
+				case cmptypes.TrieCheck:
+					infoResult.AbortedTrie++
+				}
 			}
 		}
 	}
@@ -481,6 +499,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		}
 		if infoResult.Unknown > 0 {
 			context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate))
+			context = append(context, "AbortStage(R-M-D-T)", fmt.Sprintf("%03d-%03d-%03d-%03d",
+				infoResult.AbortedTrace, infoResult.AbortedMix, infoResult.AbortedDelta, infoResult.AbortedTrie))
 		}
 		context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
 
@@ -502,6 +522,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		trieHitRate = float64(trieHitCount) / float64(txnCount)
 		deltaHitRate = float64(deltaHitCount) / float64(txnCount)
 		traceHitRate = float64(traceHitCount) / float64(txnCount)
+		AbortedTrace += uint64(infoResult.AbortedTrace)
+		AbortedMix += uint64(infoResult.AbortedMix)
+		AbortedDelta += uint64(infoResult.AbortedDelta)
+		AbortedTrie += uint64(infoResult.AbortedTrie)
 		log.Info("Cumulative block reuse", "block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
@@ -511,6 +535,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
 			"RH-MH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
 				traceHitCount, traceHitRate, mixHitCount, mixHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
+			"AR-AM-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
+				AbortedTrace, AbortedMix, AbortedDelta, AbortedTrie),
 		)
 
 		var (

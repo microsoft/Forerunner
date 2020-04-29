@@ -255,6 +255,10 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 						atomic.LoadUint64(&ReuseTracerTracedTxCount), tx.Hash().Hex(), len(registerMapping), highestIndex, loadCount, readCount, storeCount, logCount)
 					debugOut(summary + "\n")
 				}
+
+				if rt.IsExternalTransfer {
+					trace = nil // do not process external transfer
+				}
 				//log.Info(summary)
 				//_trie, ok := txTraceTries.Get(tx.Hash())
 				//if !ok {
