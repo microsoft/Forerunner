@@ -184,8 +184,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		readDeps    []*cmptypes.AddrLocValue
 		trace       *STrace
 	)
-	chainRules := config.Rules(header.Number)
-	reuseStatus, reuseRound, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, AlwaysFalse, false, &cfg)
+
+	reuseStatus, reuseRound, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, nil, nil, tx, blockPre, AlwaysFalse, false, &cfg)
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 		MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
@@ -318,11 +318,13 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)
 		//	trace.Stats[0].inputs[0].tracer.DumpDebugBuffer(fn)
 		//} else
-		if trace != nil && len(trace.Stats) > 5000 && rand.Intn(100) < 1 {
+
+		if trace != nil && len(trace.Stats) > 2000 && rand.Intn(200) < 1 {
 			traceMutex.Lock()
 			trace.Stats[0].inputs[0].tracer.DumpDebugBuffer("/tmp/sampleTxTrace.txt")
 			traceMutex.Unlock()
 		}
+
 		if trace != nil {
 			trace.Stats[0].inputs[0].tracer.ClearDebugBuffer()
 		}

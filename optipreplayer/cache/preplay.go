@@ -634,6 +634,7 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 // SetMainResult set the result for a tx
 func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap,
 	readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
+	r.FillBigIntPool()
 
 	if receipt == nil || rwRecord == nil {
 		log.Debug("[PreplayCache] Nil Error", "txHash", txPreplay.TxHash)

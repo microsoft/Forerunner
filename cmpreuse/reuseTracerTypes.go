@@ -7,7 +7,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
+	"math/bits"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -137,12 +139,12 @@ func GetValueString(val interface{}) string {
 		valueString = typedValue.Hex()
 	case *big.Int:
 		valueString = typedValue.String()
-	case map[common.Hash]uint32:
-		valueString = fmt.Sprintf("SID{%v}", len(typedValue))
-	case map[common.Address]uint32:
-		valueString = fmt.Sprintf("AID{%v}", len(typedValue))
-	case map[uint64]uint32:
-		valueString = fmt.Sprintf("NID{%v}", len(typedValue))
+	case *StateIDM:
+		valueString = fmt.Sprintf("SID{%v}", len(typedValue.mapping))
+	case *AddrIDM:
+		valueString = fmt.Sprintf("AID{%v}", len(typedValue.mapping))
+	case *BlockHashNumIDM:
+		valueString = fmt.Sprintf("NID{%v}", len(typedValue.mapping))
 	default:
 		valueString = fmt.Sprint(typedValue)
 	}
@@ -608,7 +610,7 @@ func (v *Variable) GetDataBig(start, size *Variable) *Variable {
 				}
 			}
 		}
-		
+
 		//v.tracer.byteArrayOriginCells[ret] = newCells
 	}
 	return ret
@@ -699,13 +701,129 @@ func (v *Variable) Uint32() uint32 {
 }
 
 type ExecEnv struct {
-	state       *state.StateDB
-	inputs      []interface{}
-	config      *OpConfig
-	hasher      keccakState
-	header      *types.Header
-	getHash     vm.GetHashFunc
-	precompiles map[common.Address]vm.PrecompiledContract
+	state         *state.StateDB
+	inputs        []interface{}
+	config        *OpConfig
+	hasher        keccakState
+	header        *types.Header
+	getHash       vm.GetHashFunc
+	precompiles   map[common.Address]vm.PrecompiledContract
+	isProcess     bool
+	addrCache     map[*big.Int]common.Address
+	stateKeyCache map[*big.Int]common.Hash
+	globalCache   *cache.GlobalCache
+}
+
+func NewExecEnvWithCache() *ExecEnv {
+	return &ExecEnv{
+		addrCache:     make(map[*big.Int]common.Address, 200),
+		stateKeyCache: make(map[*big.Int]common.Hash, 200),
+	}
+}
+
+func (env *ExecEnv) GetNewBigInt() *big.Int {
+	if env.isProcess {
+		poolSize := len(env.globalCache.BigIntPool)
+		if poolSize > 0 {
+			ret := env.globalCache.BigIntPool[poolSize-1]
+			env.globalCache.BigIntPool = env.globalCache.BigIntPool[:poolSize-1]
+			return ret
+		}
+	}
+	return new(big.Int)
+}
+
+func (env *ExecEnv) HashToBig(h common.Hash) *big.Int {
+	return env.GetNewBigInt().SetBytes(h[:])
+}
+
+func (env *ExecEnv) IntToBig(i int) *big.Int {
+	return env.GetNewBigInt().SetInt64(int64(i))
+}
+
+func (env *ExecEnv) CopyBig(bi *big.Int) *big.Int {
+	return env.GetNewBigInt().Set(bi)
+}
+
+func (env *ExecEnv) BigToAddress(bi *big.Int) common.Address {
+	if env.addrCache != nil {
+		if addr, ok := env.addrCache[bi]; ok {
+			return addr
+		} else {
+			//addr := common.BigToAddress(bi)
+			addr := FastBigToAddress(bi)
+			env.addrCache[bi] = addr
+			return addr
+		}
+	}
+	//ret := common.BigToAddress(bi)
+	//MyAssert(ret == FastBigToAddress(bi))
+	ret := FastBigToAddress(bi)
+	return ret
+}
+
+func (env *ExecEnv) BigToHash(bi *big.Int, isLoad bool) common.Hash {
+	if isLoad {
+		//hash := common.BigToHash(bi)
+		hash := FastBigToHash(bi)
+		if env.stateKeyCache != nil {
+			env.stateKeyCache[bi] = hash
+		}
+		return hash
+	} else {
+		if env.stateKeyCache != nil {
+			if hash, ok := env.stateKeyCache[bi]; ok {
+				return hash
+			}
+		}
+		//ret := common.BigToHash(bi)
+		//MyAssert(ret == FastBigToHash(bi))
+		ret := FastBigToHash(bi)
+		return ret
+	}
+}
+
+const (
+	_S = _W / 8        // word size in bytes
+	_W = bits.UintSize // word size in bits
+)
+
+func FastBigToHash(bi *big.Int) (h common.Hash) {
+	words := bi.Bits()
+	i := len(h)
+	for _, d := range words {
+		for j := 0; j < _S; j++ {
+			i--
+			h[i] = byte(d)
+			d >>= 8
+			if i == 0 {
+				break
+			}
+		}
+		if i == 0 {
+			break
+		}
+	}
+	return
+}
+
+func FastBigToAddress(bi *big.Int) (h common.Address) {
+	words := bi.Bits()
+	i := len(h)
+	for _, d := range words {
+		for j := 0; j < _S; j++ {
+			i--
+			h[i] = byte(d)
+			d >>= 8
+			if i == 0 {
+				break
+			}
+		}
+		if i == 0 {
+			break
+		}
+	}
+	return
 }
 
 type OpExecuteFunc func(*ExecEnv) interface{}
@@ -845,44 +963,22 @@ func (s *Statement) getInputNameList(registerMapping *map[uint32]uint) string {
 	inputNames := make([]string, 0, len(s.inputs))
 	if s.op == OP_ConcatBytes {
 		inputNames = append(inputNames, s.inputs[0].Name()) // len
-		if len(s.inputs) > 1 {
-			inputs := s.inputs[1:]
-			currentV := inputs[0]
-			currentStartingOffset := inputs[1].Uint64()
-			currentCount := uint64(1)
+		MyAssert(len(s.inputs) >= 1)
+		MyAssert((len(s.inputs)-1)%3 == 0)
 
-			appendNewName := func() {
-				ra := s.getRegisterAppendix(currentV, registerMapping)
-				var name string
-				if currentV == currentV.tracer.ByteArray_Empty {
-					name = fmt.Sprintf("[0]*%v", currentCount)
-				} else {
-					name = fmt.Sprintf("%v%v[%v:%v]", currentV.Name(), ra, currentStartingOffset, currentCount)
-				}
-				inputNames = append(inputNames, name)
+		inputs := s.inputs[1:]
+		for i := 0; i < len(inputs); i += 3 {
+			currentV := inputs[i]
+			currentStartingOffset := inputs[i+1].Uint64()
+			currentCount := inputs[i+2].Uint64()
+			ra := s.getRegisterAppendix(currentV, registerMapping)
+			var name string
+			if currentV == currentV.tracer.ByteArray_Empty {
+				name = fmt.Sprintf("[0]*%v", currentCount)
+			} else {
+				name = fmt.Sprintf("%v%v[%v:%v]", currentV.Name(), ra, currentStartingOffset, currentCount)
 			}
-
-			for i := 2; i < len(inputs); i += 2 {
-				v := inputs[i]
-				offset := inputs[i+1].Uint64()
-				if v == currentV {
-					if v == v.tracer.ByteArray_Empty {
-						currentCount++
-						continue
-					}
-					if offset == currentStartingOffset+currentCount {
-						currentCount++
-						continue
-					}
-				}
-
-				appendNewName()
-
-				currentV = v
-				currentStartingOffset = offset
-				currentCount = 1
-			}
-			appendNewName()
+			inputNames = append(inputNames, name)
 		}
 	} else {
 		for _, v := range s.inputs {
@@ -1135,7 +1231,7 @@ func (m *TracerMem) Set(offsetVar, sizeVar, byteArrayValueVariable *Variable) {
 				m.store[i] = cell
 				if cell != nil {
 					MyAssert(bArray[i-offset] == cell.variable.ByteArray()[cell.offset])
-				}else{
+				} else {
 					MyAssert(bArray[i-offset] == 0)
 				}
 			}

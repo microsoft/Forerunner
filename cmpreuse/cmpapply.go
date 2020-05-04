@@ -30,6 +30,7 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, *cmptypes.ReuseStatus) {
 
+
 	if statedb.IsShared() || statedb.IsRWMode() {
 		panic("ApplyTransaction can only be used for process and statedb must not be shared and not be RW mode.")
 	}
@@ -39,9 +40,7 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 		return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}
 	}
 
-	chainRules := config.Rules(header.Number)
-
-	if reuseStatus, round, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, AlwaysFalse, false, &cfg); reuseStatus.BaseStatus == cmptypes.Hit {
+	if reuseStatus, round, _, _ := reuse.reuseTransaction(bc, author, gp, statedb, header, nil, nil, tx, blockPre, AlwaysFalse, false, &cfg); reuseStatus.BaseStatus == cmptypes.Hit {
 		receipt := reuse.finalise(config, statedb, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
 		return receipt, nil, reuseStatus
 	} else {

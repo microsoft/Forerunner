@@ -533,10 +533,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
 			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
-			"RH-MH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				traceHitCount, traceHitRate, mixHitCount, mixHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
-			"AR-AM-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
-				AbortedTrace, AbortedMix, AbortedDelta, AbortedTrie),
+			"MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
+			"AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
+				AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie),
 		)
 
 		var (

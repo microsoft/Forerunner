@@ -16,6 +16,17 @@ import (
 	"unsafe"
 )
 
+type BlockHashNumIDM struct {
+	mapping map[uint64]uint32
+	mutable bool
+}
+
+func NewBlockHashNumIDM() *BlockHashNumIDM {
+	return &BlockHashNumIDM{
+		mapping: make(map[uint64]uint32),
+	}
+}
+
 type ReuseTracer struct {
 	Statements                 []*Statement
 	cachedConstants            map[interface{}]*Variable
@@ -67,7 +78,7 @@ type ReuseTracer struct {
 	debugOutBuffer             []string
 	DebugFlag                  bool
 	guardedBlockHashNum        map[*Variable]bool
-	blockHashNumIDs            map[uint64]uint32
+	blockHashNumIDs            *BlockHashNumIDM
 	blockHashNumIDMVar         *Variable
 	hasNonConstBlockHashNum    bool
 	methodCache                map[string]reflect.Value
@@ -89,18 +100,18 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 		chainRules:             chainRules,
 		cachedHeaderRead:       make(map[string]*Variable),
 		world:                  NewTracerWorldState(),
-		DebugFlag:            false,
-		byte32VarToBigIntVar: make(map[*Variable]*Variable),
-		bigIntVarToByte32Var: make(map[*Variable]*Variable),
-		isZeroCachedResult:   make(map[*Variable]*Variable),
-		isCompareOpOutput:    make(map[*Variable]bool),
-		valueCounter:         1,
-		cachedComputes:       make(map[string]*Variable, 1000),
-		guardedBlockHashNum:  make(map[*Variable]bool),
-		blockHashNumIDs:      make(map[uint64]uint32),
-		methodCache:          make(map[string]reflect.Value),
-		byteArrayCachedSize:  make(map[*Variable]*Variable),
-		byteArrayOriginCells: make(map[*Variable][]*MemByteCell),
+		DebugFlag:              false,
+		byte32VarToBigIntVar:   make(map[*Variable]*Variable),
+		bigIntVarToByte32Var:   make(map[*Variable]*Variable),
+		isZeroCachedResult:     make(map[*Variable]*Variable),
+		isCompareOpOutput:      make(map[*Variable]bool),
+		valueCounter:           1,
+		cachedComputes:         make(map[string]*Variable, 1000),
+		guardedBlockHashNum:    make(map[*Variable]bool),
+		blockHashNumIDs:        NewBlockHashNumIDM(),
+		methodCache:            make(map[string]reflect.Value),
+		byteArrayCachedSize:    make(map[*Variable]*Variable),
+		byteArrayOriginCells:   make(map[*Variable][]*MemByteCell),
 	}
 
 	rt.snapshotStartingPoints[0] = 0
@@ -607,45 +618,91 @@ func (rt *ReuseTracer) TraceRefund(remaining *big.Int, gasUsed uint64) {
 	rt.txFrom.StoreBalance(afterBalanceVar)
 }
 
+func (rt *ReuseTracer) CellsToInputs(arrayLenVar_BigInt *Variable, cells []*MemByteCell) []*Variable {
+
+	inputs := make([]*Variable, 0, len(cells)/32+4)
+	inputs = append(inputs, arrayLenVar_BigInt)
+	if len(cells) == 0 {
+		MyAssert(arrayLenVar_BigInt.BigInt().Sign() == 0)
+		return inputs
+	}
+	//MyAssert(len(cells) > 0)
+
+	GetCellVariableAndOffset := func(c *MemByteCell) (*Variable, uint64) {
+		if c == nil {
+			return rt.ByteArray_Empty, 0
+		}
+		return c.variable, c.offset
+	}
+
+	currentV, currentStartingOffset := GetCellVariableAndOffset(cells[0])
+	currentCount := uint64(1)
+
+	appendNewVariable := func() {
+		if currentV == currentV.tracer.ByteArray_Empty {
+			inputs = append(inputs, currentV, rt.ConstVar(uint64(0)), rt.ConstVar(currentCount))
+		} else {
+			inputs = append(inputs, currentV, rt.ConstVar(currentStartingOffset), rt.ConstVar(currentCount))
+		}
+	}
+
+	for i := 1; i < len(cells); i++ {
+		v, offset := GetCellVariableAndOffset(cells[i])
+		if v == currentV {
+			if v == v.tracer.ByteArray_Empty {
+				currentCount++
+				continue
+			}
+			if offset == currentStartingOffset+currentCount {
+				currentCount++
+				continue
+			}
+		}
+
+		appendNewVariable()
+
+		currentV = v
+		currentStartingOffset = offset
+		currentCount = 1
+	}
+	appendNewVariable()
+
+	return inputs
+}
+
 func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*MemByteCell) *Variable {
 	arrayLen := arrayLenVar_BigInt.BigInt().Int64()
 	if int64(len(cells)) != arrayLen {
 		panic(fmt.Sprintf("Wrong inputs arrayLen %v, cellLen %v", arrayLen, len(cells)))
 	}
-	inputs := make([]*Variable, 0, 2*arrayLen+1)
-	inputs = append(inputs, arrayLenVar_BigInt)
 
-	singleCellVariable := true
-	offsetFullCoverage := true
-	for i := int64(0); i < arrayLen; i++ {
-		cell := cells[i]
-		cellVar := rt.ByteArray_Empty
-		offset := uint64(0)
-		if cell != nil {
-			cellVar = cell.variable
-			offset = cell.offset
-		}
-		inputs = append(inputs, cellVar, rt.ConstVarWithName(offset, "offset"+strconv.Itoa(int(offset))))
+	inputs := rt.CellsToInputs(arrayLenVar_BigInt, cells)
 
-		if cell == nil {
-			singleCellVariable = false
-		}else if i > 0 && singleCellVariable {
-			if cells[i].variable != cells[i-1].variable {
-				singleCellVariable = false
+	singleCellVariable := false
+	offsetFullCoverage := false
+	if len(inputs) == 4 && inputs[1] != rt.ByteArray_Empty {
+		singleCellVariable = true
+	}
+	if singleCellVariable {
+		start := inputs[2].Uint64()
+		if start == 0 {
+			v := inputs[1]
+			vLen := uint64(len(v.ByteArray()))
+			count := inputs[3].Uint64()
+			MyAssert(count == uint64(arrayLen))
+			if count == vLen {
+				offsetFullCoverage = true
 			}
-		}
-		if offset != uint64(i) {
-			offsetFullCoverage = false
 		}
 	}
 
 	var ret *Variable
 
-	if arrayLen > 0 && singleCellVariable && offsetFullCoverage && int64(len(cells[0].variable.ByteArray())) == arrayLen {
+	if arrayLen > 0  && singleCellVariable && offsetFullCoverage {
 		ret = cells[0].variable
-	}else {
+	} else {
 		ret = rt.TraceWithName(OP_ConcatBytes, nil, "[]byte", inputs...)
-		MyAssert(len(ret.ByteArray())==len(cells))
+		MyAssert(len(ret.ByteArray()) == len(cells))
 		if !ret.IsConst() {
 			if oldCells, ok := rt.byteArrayOriginCells[ret]; !ok {
 				cellsCopy := make([]*MemByteCell, len(cells))
@@ -666,10 +723,6 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 				}
 			}
 		}
-		//if len(cells) > 0 {
-		//	MyAssert(len(ret.ByteArray())==len(cells))
-		//	rt.byteArrayOriginCells[ret] = cells
-		//}
 	}
 	MyAssert(arrayLenVar_BigInt.IsConst())
 	rt.byteArrayCachedSize[ret] = arrayLenVar_BigInt
@@ -1655,8 +1708,8 @@ func (rt *ReuseTracer) guardBlockHashNum(numVar *Variable) {
 		}
 	} else {
 		if numVar.IsConst() {
-			if _, ok := rt.blockHashNumIDs[num]; !ok {
-				rt.blockHashNumIDs[num] = numVar.id
+			if _, ok := rt.blockHashNumIDs.mapping[num]; !ok {
+				rt.blockHashNumIDs.mapping[num] = numVar.id
 			}
 		} else {
 			MyAssert(rt.blockHashNumIDMVar == nil)

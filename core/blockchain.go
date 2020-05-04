@@ -1605,9 +1605,15 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	// Pre-checks passed, start the full block imports
 	bc.wg.Add(1)
 	bc.chainmu.Lock()
+	insertStart := time.Now()
 	n, err := bc.insertChain(chain, true)
+	insertDuration := time.Since(insertStart)
 	bc.chainmu.Unlock()
 	bc.wg.Done()
+
+	// make it visible in the flame graph
+	for; insertDuration.Milliseconds() < 200; insertDuration = time.Since(insertStart) {
+	}
 
 	return n, err
 }
@@ -1869,7 +1875,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if len(statedb.UnknownTxs) > 0 {
 			for i, tx := range statedb.UnknownTxs {
 				receipt := statedb.UnknownTxReceipts[i]
-				log.Info("Unknown Status Tx", "hash", tx.Hash().Hex(), "gasused", receipt.GasUsed, "status", receipt.Status)
+				if receipt.GasUsed > 21000 {
+					log.Info("Unknown Status Tx", "hash", tx.Hash().Hex(), "gasused", receipt.GasUsed, "status", receipt.Status)
+					break
+				}
 			}
 		}
 		// Update the metrics touched during block processing

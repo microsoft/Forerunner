@@ -17,6 +17,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
@@ -42,8 +43,9 @@ type TransactionApplier interface {
 
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller, tmsg *types.Message, signer types.Signer) (*types.Receipt,
-		error, *cmptypes.ReuseStatus)
+		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller,
+		getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
+		tmsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -120,6 +122,24 @@ func CmpStateDB(groundStatedb, statedb *state.StateDB, groundReceipt *types.Rece
 				"status", fmt.Sprintf("%v", reuseStatus), "ground", groundReceipt.GasUsed, "our gasused", receipt.GasUsed)
 			diff = true
 		}
+		if len(groundReceipt.Logs) != len(receipt.Logs) {
+			log.Info("Logs len diff", "index", i, "tx", tx.Hash().Hex(),
+				"status", fmt.Sprintf("%v", reuseStatus), "ground", len(groundReceipt.Logs), "our log len", len(receipt.Logs))
+			diff = true
+		}
+
+		for i, glog := range groundReceipt.Logs {
+			rlog := receipt.Logs[i]
+			gb, _ := json.Marshal(glog)
+			lb, _ := json.Marshal(rlog)
+			gs, ls := string(gb), string(lb)
+			if  gs != ls {
+				log.Info("Log diff", "index", i, "tx", tx.Hash().Hex(),
+					"status", fmt.Sprintf("%v", reuseStatus), "logIndex", i, "ground", gs, "our log", ls)
+				diff = true
+			}
+		}
+
 	}
 
 	for address, groundObject := range groundStateObjects {
@@ -281,6 +301,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	blockHash := block.Hash()
 	printCmp := true
 
+	getHashFunc := GetHashFn(header, p.bc)
+	chainConfig := p.config.Rules(header.Number)
+	precompiles := vm.GetPrecompiledMapping(&chainConfig)
+
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		statedb.Prepare(tx.Hash(), blockHash, i)
@@ -295,7 +319,8 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			// var groundStatedb vm.StateDB
 			// groundStatedb = state.NewRWStateDB(statedb.Copy())
 			groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
-			receipt, err = p.bc.Cmpreuse.PreplayTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg, 0, blockPre, 1)
+			receipt, err = p.bc.Cmpreuse.PreplayTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx,
+				groundUsedGas, cfg, 0, blockPre, 1)
 			//log.Info("GroundTruth Finish")
 		}
 
@@ -307,7 +332,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			}
 
 			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
-				tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, pMsg, signer)
+				tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
 			reuseResult = append(reuseResult, reuseStatus)
 			if reuseStatus.BaseStatus == cmptypes.Unknown {
 				statedb.UnknownTxs = append(statedb.UnknownTxs, tx)
@@ -315,6 +340,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			}
 
 			if cfg.MSRAVMSettings.CmpReuseChecking {
+				groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
 				groundReceipt, groundErr := ApplyTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg)
 				if printCmp {
 					//groundRoot := groundStatedb.IntermediateRoot(true)

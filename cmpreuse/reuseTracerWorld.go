@@ -6,6 +6,17 @@ import (
 	"strconv"
 )
 
+type StateIDM struct {
+	mapping map[common.Hash]uint32
+	mutable bool
+}
+
+func NewStateIDM() *StateIDM {
+	return &StateIDM{
+		mapping: make(map[common.Hash]uint32),
+	}
+}
+
 type TracerStateObject struct {
 	//	Account map[StringID] *Variable
 	//Balance *Variable
@@ -18,7 +29,7 @@ type TracerStateObject struct {
 	Storage        map[interface{}]*Variable
 	CommittedState map[common.Hash]*Variable
 	HasNonConstKey bool
-	StateIDs       map[common.Hash]uint32
+	StateIDs       *StateIDM
 	StateIDMVar    *Variable
 }
 
@@ -26,7 +37,18 @@ func NewTracerStateObject() *TracerStateObject {
 	return &TracerStateObject{
 		Storage:        make(map[interface{}]*Variable),
 		CommittedState: make(map[common.Hash]*Variable),
-		StateIDs:       make(map[common.Hash]uint32),
+		StateIDs:       NewStateIDM(),
+	}
+}
+
+type AddrIDM struct {
+	mapping map[common.Address]uint32
+	mutable bool
+}
+
+func NewAddrIDM() *AddrIDM {
+	return &AddrIDM{
+		mapping: make(map[common.Address]uint32),
 	}
 }
 
@@ -34,7 +56,7 @@ type TracerWorldState struct {
 	WorldState            map[common.Address]*TracerStateObject
 	SnapshotInitialValues []map[common.Address]*TracerStateObject
 	HasNonConstAddr       bool
-	AddrIDs               map[common.Address]uint32
+	AddrIDs               *AddrIDM
 	AddrIDMVar            *Variable
 	GuardedAddrVars       map[*Variable]bool
 }
@@ -45,7 +67,7 @@ func NewTracerWorldState() *TracerWorldState {
 	return &TracerWorldState{
 		WorldState:            make(map[common.Address]*TracerStateObject),
 		SnapshotInitialValues: siv,
-		AddrIDs:               make(map[common.Address]uint32),
+		AddrIDs:               NewAddrIDM(),
 		GuardedAddrVars:       make(map[*Variable]bool),
 	}
 }
@@ -238,11 +260,11 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 		}
 	} else {
 		if keyVar.IsConst() {
-			if _, ok := so.StateIDs[hashKey]; !ok || isStore {
+			if _, ok := so.StateIDs.mapping[hashKey]; !ok || isStore {
 				if isStore {
 					MyAssert(ok, "read should be before store")
 				}
-				so.StateIDs[hashKey] = valVar.id
+				so.StateIDs.mapping[hashKey] = valVar.id
 			}
 		} else {
 			MyAssert(so.StateIDMVar == nil)
@@ -263,7 +285,7 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 func (ws *TracerWorldState) guardAddr(addr common.Address, addrVar *Variable) {
 	if ws.GuardedAddrVars[addrVar] {
 		return
-	}else {
+	} else {
 		ws.GuardedAddrVars[addrVar] = true
 	}
 	if ws.HasNonConstAddr {
@@ -273,8 +295,8 @@ func (ws *TracerWorldState) guardAddr(addr common.Address, addrVar *Variable) {
 		}
 	} else {
 		if addrVar.IsConst() {
-			if _, ok := ws.AddrIDs[addr]; !ok {
-				ws.AddrIDs[addr] = addrVar.id
+			if _, ok := ws.AddrIDs.mapping[addr]; !ok {
+				ws.AddrIDs.mapping[addr] = addrVar.id
 			}
 		} else {
 			MyAssert(ws.AddrIDMVar == nil)

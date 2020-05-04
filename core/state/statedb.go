@@ -185,7 +185,7 @@ func (self *StateDB) PreAllocateObjects() {
 	preOriginCount := 400
 	prePendingCount := 100
 	preDeltaCount := 100
-	preBigIntCount := 400
+	preBigIntCount := 600
 	self.preAllocatedOriginStorages = make([]Storage, preOriginCount)
 	self.preAllocatedPendingStorages = make([]Storage, prePendingCount)
 	self.preAllocatedDeltaObjects = make([]*deltaObject, preDeltaCount)
@@ -659,6 +659,17 @@ func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy 
 	return changed.Copy()
 }
 
+func (s *StateDB) GetTxDepByAccountNoCopy(address common.Address) *cmptypes.ChangedBy {
+	changed, ok := s.AccountChangedBy[address]
+	if !ok {
+		accSnap := s.GetAccountSnap(address)
+		changed = cmptypes.NewChangedBy2(accSnap)
+		s.AccountChangedBy[address] = changed
+	}
+	// TODO: just return Hash
+	return changed
+}
+
 func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
 	res := make(map[common.Address]*cmptypes.ChangedBy)
 	for _, addr := range addresses {
@@ -1119,7 +1130,13 @@ func (s *StateDB) Update() {
 }
 
 func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
-	obj, ok := s.stateObjects[address]
+	var obj *stateObject
+	var ok bool
+	if s.IsShared() {
+		obj, ok = s.delta.stateObjects[address]
+	}else {
+		obj, ok = s.stateObjects[address]
+	}
 	if ok && obj != nil {
 		if obj.snap != nil {
 			return obj.snap

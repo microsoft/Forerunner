@@ -18,6 +18,9 @@ package cache
 
 import (
 	"encoding/json"
+	"github.com/ethereum/go-ethereum/crypto"
+	"math/big"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -84,7 +87,13 @@ type GlobalCache struct {
 	pause int32
 
 	Synced func() bool
+
+	// global bigIntPool
+	BigIntPool []*big.Int
+	BigIntPoolMutex sync.Mutex
 }
+
+var BigIntPoolTargetSize = 10000
 
 // NewGlobalCache create new global cache structure
 func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCache {
@@ -113,12 +122,27 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.CreateTimeStamp = time.Now()
 	// g.BucketCache, _ = lru.New(bSize)
 
+	g.BigIntPool = make([]*big.Int, 0, BigIntPoolTargetSize)
+
 	logDir = filepath.Join(logRoot, g.CreateTimeStamp.Format("2006_01_02_15_04_05")+"_"+strconv.FormatInt(g.CreateTimeStamp.Unix(), 10))
 	_, err := os.Stat(logDir)
 	if err != nil {
 		os.MkdirAll(logDir, os.ModePerm)
 	}
 	return g
+}
+
+var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
+
+func (r *GlobalCache) FillBigIntPool() {
+	if rand.Intn(10) < 1 {
+		r.BigIntPoolMutex.Lock()
+		defer r.BigIntPoolMutex.Unlock()
+		for len(r.BigIntPool) < BigIntPoolTargetSize {
+			bi := new(big.Int).Set(aBigInt)
+			r.BigIntPool = append(r.BigIntPool, bi)
+		}
+	}
 }
 
 // ResetGlobalCache reset the global cache size

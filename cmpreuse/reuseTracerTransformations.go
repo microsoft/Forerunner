@@ -72,11 +72,7 @@ func HasInterestingStatements(stats []*Statement) bool {
 
 type PassFunc func([]*Statement, DebugOutFunc) []*Statement
 
-func ExecutePassAndPrint(pass PassFunc, stats []*Statement) []*Statement {
-	return ExecutePassAndPrintWithOut(pass, stats, nil)
-}
-
-func ExecutePassAndPrintWithOut(pass PassFunc, stats []*Statement, debugOut DebugOutFunc) []*Statement {
+func ExecutePassAndPrintWithOut(pass PassFunc, stats []*Statement, debugOut DebugOutFunc, printStats bool) []*Statement {
 	//if debugOut == nil {
 	//	debugOut = func(fmtStr string, args ...interface{}) {
 	//		fmt.Printf(fmtStr, args...)
@@ -91,7 +87,9 @@ func ExecutePassAndPrintWithOut(pass PassFunc, stats []*Statement, debugOut Debu
 		debugOut("PASS %v\n", funcName)
 	}
 	after := pass(stats, debugOut)
-	PrintStatementsWithWriteOut(after, debugOut)
+	if printStats {
+		PrintStatementsWithWriteOut(after, debugOut)
+	}
 	return after
 }
 

@@ -44,14 +44,14 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 }
 
 func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, chainRules params.Rules, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
+	header *types.Header, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
 	if cfg.MSRAVMSettings.CmpReuseChecking {
 		defer c.ReuseDone.Done()
 	}
 
 
-	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, &chainRules, tx, blockPre, c.IsAborted, true, cfg)
+	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, c.IsAborted, true, cfg)
 
 	if status.BaseStatus == cmptypes.Hit && c.TryAbortCounterpart() {
 		c.StopEvm()
@@ -167,7 +167,9 @@ func (reuse *Cmpreuse) TryCreateReceipt(statedb *state.StateDB, header *types.He
 //		4: abort before hit or miss;
 func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller, pMsg *types.Message, signer types.Signer) (*types.Receipt,
+	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller,
+	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
+	pMsg *types.Message, signer types.Signer) (*types.Receipt,
 	error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
@@ -221,7 +223,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	//go doRealApply()
 
 	reuseStart := time.Now()
-	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, config.Rules(header.Number), tx, controller, blockPre, cfg); round != nil {
+	if reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, getHashFunc, precompiles, tx, controller, blockPre, cfg); round != nil {
 		waitReuse := time.Since(reuseStart)
 		//MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
