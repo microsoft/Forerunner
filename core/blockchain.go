@@ -1980,6 +1980,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
+		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount := bc.MSRACache.GetTrieSizes()
 		log.Info("Read memory statistics",
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
@@ -1988,6 +1989,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			"NextGC", common.StorageSize(m.NextGC),
 			"NnmGC", m.NumGC,
 			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
+			"cachedTxCount", cachedTxCount,
+			"tracedTxCount", cachedTxWithTraceCount,
+			"maxTraceNodeCount", maxTrieNodeCount,
+			"totalTraceNodeCount", totalTrieNodeCount,
 		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones

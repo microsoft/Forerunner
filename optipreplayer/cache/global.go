@@ -145,6 +145,32 @@ func (r *GlobalCache) FillBigIntPool() {
 	}
 }
 
+func (r *GlobalCache) GetTrieSizes() (cachedTxCount int, cachedTxWithTraceCount int,
+	maxTrieNodeCount int64, totalTrieNodeCount int64) {
+		txHashes := r.PreplayCache.Keys()
+		cachedTxCount = len(txHashes)
+		cachedTxWithTraceCount = 0
+		maxTrieNodeCount = 0
+		totalTrieNodeCount = 0
+		for _, key := range txHashes {
+			p, _ := r.PreplayCache.Peek(key)
+			if p != nil {
+				tp := p.(*TxPreplay)
+				t := tp.PreplayResults.TraceTrie
+				if t != nil {
+					cachedTxWithTraceCount++
+					nc := t.GetNodeCount()
+					totalTrieNodeCount += nc
+					if nc > maxTrieNodeCount {
+						maxTrieNodeCount = nc
+					}
+				}
+			}
+		}
+		return
+
+}
+
 // ResetGlobalCache reset the global cache size
 func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 

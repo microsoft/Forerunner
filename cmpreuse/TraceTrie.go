@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -1706,10 +1707,22 @@ func ImmutableBytesToString(buf []byte) string {
 	//return string(buf)
 }
 
+func GetBigIntGuardKey(bi *big.Int) interface{} {
+	words := bi.Bits()
+	if len(words) <= 8 {
+		var key [8]big.Word
+		copy(key[:], words)
+		return key
+	}else {
+		return ImmutableBytesToString(bi.Bytes())
+	}
+}
+
 func GetGuardKey(a interface{}) interface{} {
 	switch ta := a.(type) {
 	case *big.Int:
-		return ImmutableBytesToString(ta.Bytes())
+		//return ImmutableBytesToString(ta.Bytes())
+		return GetBigIntGuardKey(ta)
 	case []byte:
 		return ImmutableBytesToString(ta)
 	case uint64:
@@ -1793,7 +1806,7 @@ type TraceTrie struct {
 	RoundRefNodesHead     *TraceTrieRoundRefNodes
 	RoundRefNodesTail     *TraceTrieRoundRefNodes
 	RoundRefCount         uint
-	TrieNodeCount         uint
+	TrieNodeCount         int64
 	PreAllocatedExecEnvs  []*ExecEnv
 	PreAllocatedHistory   []*RegisterFile
 	PreAllocatedRegisters []*RegisterFile
@@ -1814,6 +1827,10 @@ func NewTraceTrie(tx *types.Transaction) *TraceTrie {
 		tt.PreAllocatedHistory = append(tt.PreAllocatedHistory, NewRegisterFile(1000))
 	}
 	return tt
+}
+
+func (tt *TraceTrie) GetNodeCount() int64 {
+	return atomic.LoadInt64(&tt.TrieNodeCount)
 }
 
 func (tt *TraceTrie) GetNewExecEnv(db *state.StateDB, header *types.Header,
@@ -1982,7 +1999,7 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 		}
 
 		tt.RoundRefCount++
-		tt.TrieNodeCount += newNodeCount
+		atomic.AddInt64(&tt.TrieNodeCount, int64(newNodeCount))
 		if tt.RoundRefNodesHead == nil {
 			MyAssert(tt.RoundRefNodesTail == nil)
 			MyAssert(uint(len(refNodes)) == newNodeCount)
@@ -2046,7 +2063,7 @@ func (tt *TraceTrie) GCRoundRefNodes() {
 }
 
 func (tt *TraceTrie) RemoveRoundRef(rf *TraceTrieRoundRefNodes) uint {
-	removedNodes := 0
+	removedNodes := int64(0)
 	for _, n := range rf.RefNodes {
 		n.RemoveRef(rf.RoundID)
 		if n.GetRefCount() == 0 {
@@ -2054,7 +2071,7 @@ func (tt *TraceTrie) RemoveRoundRef(rf *TraceTrieRoundRefNodes) uint {
 		}
 	}
 	tt.RoundRefCount--
-	tt.TrieNodeCount -= uint(removedNodes)
+	atomic.AddInt64(&tt.TrieNodeCount, -removedNodes)
 	MyAssert(tt.RoundRefCount >= 0)
 	MyAssert(tt.TrieNodeCount >= 0)
 	return uint(removedNodes)

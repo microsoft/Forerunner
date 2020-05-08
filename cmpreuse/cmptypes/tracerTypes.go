@@ -59,6 +59,7 @@ type IReuseTracer interface {
 }
 
 type ITracerTrie interface {
+  GetNodeCount() int64
 }
 
 type ISTrace interface {
