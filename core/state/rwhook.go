@@ -470,12 +470,14 @@ func (h *rwRecorderImpl) updateWStorage(addr common.Address, key common.Hash, va
 }
 
 func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject) {
-	cpy := object.deepCopy(object.db)
-	cpy.delta = newDeltaObject()
-	cpy.Code(cpy.db.db)
 	if h.statedb.EnableWObject {
-		cpy.updateRoot(cpy.db.db)
+		cpy := object.deepCopy(object.db)
+		cpy.delta = newDeltaObject()
+		cpy.Code(cpy.db.db)
+		if h.statedb.EnableUpdateRoot {
+			cpy.updateRoot(cpy.db.db)
+		}
+		cpy.shareCopy(cpy.db)
+		h.WObject[addr] = cpy
 	}
-	cpy.shareCopy(cpy.db)
-	h.WObject[addr] = cpy
 }

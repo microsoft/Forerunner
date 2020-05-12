@@ -290,7 +290,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			case cmptypes.NoPreplay:
 				infoResult.NoPreplay++
 				txEnqueue := r.GetTxEnqueue(tx.Hash())
-				if txEnqueue == 0 || txEnqueue > processTimeNano {
+				if txEnqueue[0] == 0 || txEnqueue[0] > processTimeNano {
 					infoResult.NoEnqueue++
 					txPackage := r.GetTxPackage(tx.Hash())
 					if txPackage == 0 || txPackage > processTimeNano {
@@ -549,8 +549,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		for index, txn := range block.Transactions() {
 			if ReuseResult[index].BaseStatus == cmptypes.NoPreplay {
 				txEnqueue := r.GetTxEnqueue(txn.Hash())
-				if txEnqueue > 0 && txEnqueue <= processTimeNano {
-					enqueues = append(enqueues, txEnqueue)
+				if txEnqueue[0] > 0 && txEnqueue[0] <= processTimeNano {
+					enqueues = append(enqueues, txEnqueue[1])
 					noPreplayTxns = append(noPreplayTxns, txn)
 				}
 			}
@@ -566,6 +566,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		}
 		if len(noPreplayTxns) > 0 || len(missTxns) > 0 {
 			reporter.SetBlock(block)
+			for index, txn := range noPreplayTxns {
+				reporter.SetNoPreplayTxn(txn, enqueues[index])
+			}
 			for i, txn := range missTxns {
 				var txnType int
 				if txn.To() == nil {
@@ -576,9 +579,6 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 					}
 				}
 				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
-			}
-			for index, txn := range noPreplayTxns {
-				reporter.SetNoPreplayTxn(txn, enqueues[index])
 			}
 		}
 		reporter.ReportMiss(txnCount-listen, listen-Package, Package-enqueue, enqueue-preplay)

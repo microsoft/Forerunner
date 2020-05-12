@@ -179,11 +179,11 @@ func (r *GlobalCache) GetTxPackage(hash common.Hash) uint64 {
 	}
 }
 
-func (r *GlobalCache) GetTxEnqueue(hash common.Hash) uint64 {
+func (r *GlobalCache) GetTxEnqueue(hash common.Hash) [2]uint64 {
 	if result, ok := r.TxEnqueueCache.Peek(hash); ok {
-		return result.(uint64)
+		return result.([2]uint64)
 	} else {
-		return 0
+		return [2]uint64{}
 	}
 }
 
@@ -213,7 +213,13 @@ func (r *GlobalCache) CommitTxPackage(tx common.Hash, txPackage uint64) {
 }
 
 func (r *GlobalCache) CommitTxEnqueue(tx common.Hash, txEnqueue uint64) {
-	r.TxEnqueueCache.ContainsOrAdd(tx, txEnqueue)
+	if rawEnqueue, ok := r.TxEnqueueCache.Peek(tx); ok {
+		enqueue := rawEnqueue.([2]uint64)
+		enqueue[1] = txEnqueue
+		r.TxEnqueueCache.Add(tx, enqueue)
+	} else {
+		r.TxEnqueueCache.Add(tx, [2]uint64{txEnqueue, txEnqueue})
+	}
 }
 
 // func (r *GlobalCache) GetListenTxCnt(block *types.Block) uint64 {

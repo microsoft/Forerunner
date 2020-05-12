@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"sort"
 
-	mapset "github.com/deckarep/golang-set"
+	"github.com/deckarep/golang-set"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -59,14 +59,14 @@ type Executor struct {
 
 	EnableReuseTracer bool
 
-	enableAgg     bool
-	enablePause   bool
-	enableWObject bool
+	enableAgg    bool
+	enablePause  bool
+	basicPreplay bool
 }
 
 func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
 	rawPending map[common.Address]types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
-	enableAgg bool, enablePause bool, enableWObject bool) *Executor {
+	enableAgg bool, enablePause bool, basicPreplay bool) *Executor {
 	executor := &Executor{
 		id:             id,
 		config:         config,
@@ -83,7 +83,7 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		resultCh:       resultCh,
 		enableAgg:      enableAgg,
 		enablePause:    enablePause,
-		enableWObject:  enableWObject,
+		basicPreplay:   basicPreplay,
 	}
 
 	for _, txs := range rawPending {
@@ -118,8 +118,8 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 	statedbInstance, err := e.chain.StateAt(parent.Root())
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
 		statedb = state.NewRWStateDB(statedbInstance)
-		if !e.enableWObject {
-			statedb.DisableWObject()
+		if !e.basicPreplay {
+			statedb.DisableUpdateRoot()
 		}
 	} else {
 		statedb = statedbInstance
@@ -179,7 +179,7 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 		if e.EnableReuseTracer {
 			vmconfig.MSRAVMSettings.EnableReuseTracer = true
 		}
-		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil, 0)
+		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil, 0, e.basicPreplay)
 	} else {
 		snap := e.current.state.Snapshot()
 		receipt, err = core.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vm.Config{})
@@ -481,7 +481,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 		for _, tx := range rawTxs[acc] {
 
 			txHash := tx.Hash()
-			gasPrice := tx.GasPrice().Uint64()
+			gasPrice := tx.GasPriceU64()
 
 			priceExist[gasPrice] = uint64(1)
 
@@ -595,7 +595,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 		}
 
 		txHash := tx.Hash()
-		gasPrice := tx.GasPrice().Uint64()
+		gasPrice := tx.GasPriceU64()
 		from, _ := types.Sender(e.current.signer, tx)
 
 		if e.trigger.IsPriceRankDrive && gasPrice < lastPrice {
@@ -686,15 +686,15 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 			}
 			txs.Shift()
 
-		// case core.ErrNonceTooLow:
-		// 	// NewFrame head notification data race between the transaction pool and miner, shift
-		// 	log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
-		// 	txs.Shift()
+			// case core.ErrNonceTooLow:
+			// 	// NewFrame head notification data race between the transaction pool and miner, shift
+			// 	log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
+			// 	txs.Shift()
 
-		// case core.ErrNonceTooHigh:
-		// 	// Reorg notification data race between the transaction pool and miner, skip account =
-		// 	log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
-		// 	txs.Pop()
+			// case core.ErrNonceTooHigh:
+			// 	// Reorg notification data race between the transaction pool and miner, skip account =
+			// 	log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
+			// 	txs.Pop()
 
 		case nil:
 			// Everything ok, collect the logs and shift in the next transaction from the same account
@@ -781,7 +781,7 @@ func (e *Executor) preplay(rawTxs map[common.Address]types.Transactions, coinbas
 
 		for _, tx := range calTxs[price] {
 			txHash := tx.Hash()
-			txPrice := tx.GasPrice().Uint64()
+			txPrice := tx.GasPriceU64()
 			txResult, ok := e.resultMap[txHash]
 			if !ok {
 				if e.trigger.IsTxsNumDrive && e.trigger.PreplayedTxsNumLimit == 0 {

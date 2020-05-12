@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
+	"github.com/hashicorp/golang-lru"
 	"io"
 	"math/big"
 	"time"
@@ -69,11 +70,52 @@ func newDeltaObject() *deltaObject {
 	}
 }
 
+const stateObjectLen = 10
+
 type ObjectList []*stateObject
 type ObjectMap map[common.Address]*stateObject
-type ObjectPointerMap map[*stateObject]struct{}
-type ObjectListMap map[common.Address][]*stateObject
-type ObjectMapMap map[common.Address]map[*stateObject]struct{}
+type ObjectListMap map[common.Address]ObjectList
+type ObjectPool struct {
+	objMap map[common.Address]*lru.Cache
+}
+
+func NewObjectPool() ObjectPool {
+	return ObjectPool{
+		objMap: make(map[common.Address]*lru.Cache),
+	}
+}
+
+func (m ObjectPool) GetObjectList(addr common.Address) ObjectList {
+	list := make([]*stateObject, 0, stateObjectLen)
+	if cache, ok := m.objMap[addr]; ok {
+		for _, rawObj := range cache.Keys() {
+			list = append(list, rawObj.(*stateObject))
+		}
+	}
+	return list
+}
+
+func (m ObjectPool) IsObjectInPool(addr common.Address, object *stateObject) bool {
+	if cache, ok := m.objMap[addr]; ok {
+		return cache.Contains(object)
+	} else {
+		return false
+	}
+}
+
+func (m ObjectPool) AddObjectList(addr common.Address, newObjList ObjectList) {
+	if _, ok := m.objMap[addr]; !ok {
+		m.objMap[addr], _ = lru.New(stateObjectLen)
+	}
+	cache := m.objMap[addr]
+	for _, obj := range newObjList {
+		if cache.Contains(obj) {
+			cache.Get(obj)
+			continue
+		}
+		cache.Add(obj, struct{}{})
+	}
+}
 
 // stateObject represents an Ethereum account which is being modified.
 //

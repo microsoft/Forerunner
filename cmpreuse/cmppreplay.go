@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/golang-lru"
 	"math/rand"
 	"runtime/debug"
 	"sync"
@@ -35,7 +35,7 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
 	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash,
-	trace *STrace) {
+	trace *STrace, basicPreplay bool) {
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -49,10 +49,6 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	defer txPreplay.Mu.Unlock()
 	start := time.Now()
 
-	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
-	if ok {
-		round.Trace = trace
-	}
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
 	// To set results more effectively, we should
 	// Generate new round for all scenarios //* Generate new round for scenario 1 and 3 (which have new read deps, that means this preplay result does not exist before )
@@ -61,6 +57,11 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
 	if reuseStatus.BaseStatus != cmptypes.Hit || !(reuseStatus.HitType == cmptypes.DepHit ||
 		(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit)) {
+		round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
+		if ok {
+			round.Trace = trace
+		}
+
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
 		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
@@ -82,9 +83,14 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 				}
 			}
 		}
-	}
-	if time.Since(start) > 30*time.Second {
-		log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
+
+		if time.Since(start) > 30*time.Second {
+			log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
+		}
+	} else {
+		if !basicPreplay {
+			reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, readDep, preBlockHash, txPreplay)
+		}
 	}
 }
 
@@ -136,7 +142,7 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 
 func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
 	txPreplay := cache.NewTxPreplay(tx)
-	reuse.MSRACache.CommitTxPreplay(txPreplay)
+	reuse.MSRACache.AddTxPreplay(txPreplay)
 	return txPreplay
 }
 
@@ -148,9 +154,11 @@ var traceMutex sync.Mutex
 // the receipt for the transaction and an error if the transaction failed,
 // indicating the block was invalid.
 // Cmpreuse.PreplayTransaction used for these scenarios
-// 		1. preplay,
+// 		1. basic preplay,
 // 		2. record the ground truth rw state when interChain (blockchain.processor.Process)
 //		3. worker package the next block
+//		4. preplay for grouping transactions
+//		5. preplay for reporting miss
 // external args (comparing with core.ApplyTransaction)
 // 		`roundID`:
 //			used for scenario 1. 0 for other scenarios
@@ -160,9 +168,12 @@ var traceMutex sync.Mutex
 // 			0 for no ground feature, scenario 1;
 // 			1 for recording the ground truth rw states, scenario 2;
 // 			2 for just printing the rw states, scenario 3.
+//		`basicPreplay`:
+//			true for basic preplay, scenario 1, 2 or 3;
+//			false for preplay for grouping transactions or reporting miss, scenario 4 or 5;
 func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg vm.Config, roundID uint64, blockPre *cache.BlockPre, groundFlag uint64) (*types.Receipt, error) {
+	cfg vm.Config, roundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay bool) (*types.Receipt, error) {
 
 	if statedb.IsShared() || !statedb.IsRWMode() {
 		panic("PreplayTransaction can't be used for process and statedb must be RW mode and not be shared.")
@@ -189,7 +200,13 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 		MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
+		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+			statedb.SetEnableWObject(false)
+		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
+		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+			statedb.SetEnableWObject(true)
+		}
 		rwrecord = reuseRound.RWrecord
 		trace = reuseRound.Trace.(*STrace)
 
@@ -312,7 +329,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			statedb.UpdateAccountChangedByMap(wobjects, tx.Hash(), roundID, nil)
 		}
 
-		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash, trace)
+		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, readDeps, header.ParentHash, trace, basicPreplay)
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)

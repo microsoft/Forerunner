@@ -1984,7 +1984,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		log.Info("Read memory statistics",
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
-			"HeadIdle", common.StorageSize(m.HeapIdle),
+			"HeapIdle", common.StorageSize(m.HeapIdle),
 			"HeapInuse", common.StorageSize(m.HeapInuse),
 			"NextGC", common.StorageSize(m.NextGC),
 			"NnmGC", m.NumGC,

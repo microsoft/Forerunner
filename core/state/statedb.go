@@ -125,6 +125,7 @@ type StateDB struct {
 	// MSRA fields !!! don't forget to initialize in New() and Copy()
 	EnableFeeToCoinbase bool       // default true
 	EnableWObject       bool       // default true
+	EnableUpdateRoot    bool       // default true
 	rwRecorder          RWRecorder // RWRecord mode
 
 	ReuseTracer cmptypes.IReuseTracer
@@ -276,6 +277,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 
 		EnableFeeToCoinbase: true,
 		EnableWObject:       true,
+		EnableUpdateRoot:    true,
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
 		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
@@ -288,8 +290,12 @@ func NewRWStateDB(state *StateDB) *StateDB {
 	return state
 }
 
-func (self *StateDB) DisableWObject() {
-	self.EnableWObject = false
+func (self *StateDB) SetEnableWObject(enableWObject bool) {
+	self.EnableWObject = enableWObject
+}
+
+func (self *StateDB) DisableUpdateRoot() {
+	self.EnableUpdateRoot = false
 }
 
 func (self *StateDB) SetRWMode(enabled bool) {
@@ -1012,6 +1018,7 @@ func (s *StateDB) Copy() *StateDB {
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		EnableWObject:       s.EnableWObject,
+		EnableUpdateRoot:    s.EnableUpdateRoot,
 		rwRecorder:          emptyRWRecorder{},
 		IsParallelHasher:    s.IsParallelHasher,
 	}
@@ -1088,6 +1095,7 @@ func (s *StateDB) ShareCopy() {
 		journal:             newJournal(),
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		EnableWObject:       s.EnableWObject,
+		EnableUpdateRoot:    s.EnableUpdateRoot,
 		rwRecorder:          emptyRWRecorder{},
 		primary:             false,
 		delta:               newDeltaDB(),
@@ -1134,7 +1142,7 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 	var ok bool
 	if s.IsShared() {
 		obj, ok = s.delta.stateObjects[address]
-	}else {
+	} else {
 		obj, ok = s.stateObjects[address]
 	}
 	if ok && obj != nil {

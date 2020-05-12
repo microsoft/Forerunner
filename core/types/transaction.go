@@ -188,6 +188,10 @@ func (tx *Transaction) Value() *big.Int    { return new(big.Int).Set(tx.data.Amo
 func (tx *Transaction) Nonce() uint64      { return tx.data.AccountNonce }
 func (tx *Transaction) CheckNonce() bool   { return true }
 
+func (tx *Transaction) GasPriceU64() uint64             { return tx.data.Price.Uint64() }
+func (tx *Transaction) CmpGasPrice(price2 *big.Int) int { return tx.data.Price.Cmp(price2) }
+func (tx *Transaction) CmpGasPriceWithTxn(tx2 *Transaction) int { return tx.data.Price.Cmp(tx2.data.Price) }
+
 // To returns the recipient address of the transaction.
 // It returns nil if the transaction is a contract creation.
 func (tx *Transaction) To() *common.Address {
@@ -301,6 +305,25 @@ func TxDifference(a, b Transactions) Transactions {
 	return keep
 }
 
+func IsTxnsPoolLarge(a, b Transactions) bool {
+	if a.Len() > b.Len() {
+		return true
+	}
+
+	remove := make(map[common.Hash]struct{})
+	for _, tx := range b {
+		remove[tx.Hash()] = struct{}{}
+	}
+
+	for _, tx := range a {
+		if _, ok := remove[tx.Hash()]; !ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 // TxByNonce implements the sort interface to allow sorting a list of transactions
 // by their nonces. This is usually only useful for sorting transactions from a
 // single account, otherwise a nonce comparison doesn't make much sense.
@@ -313,33 +336,33 @@ func (s TxByNonce) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 // TxByPrice implements both the sort and the heap interface, making it useful
 // for all at once sorting as well as individually adding and removing elements.
 type TxByPrice struct {
-	txns     Transactions
-	txnOrder map[common.Hash]int
+	Txns     Transactions
+	TxnOrder map[common.Hash]int
 }
 
-func (s TxByPrice) Len() int { return len(s.txns) }
+func (s TxByPrice) Len() int { return len(s.Txns) }
 func (s TxByPrice) Less(i, j int) bool {
-	cmp := s.txns[i].data.Price.Cmp(s.txns[j].data.Price)
-	if s.txnOrder != nil && cmp == 0 {
-		iOrder, iOk := s.txnOrder[s.txns[i].Hash()]
-		jOrder, jOk := s.txnOrder[s.txns[j].Hash()]
+	cmp := s.Txns[i].data.Price.Cmp(s.Txns[j].data.Price)
+	if s.TxnOrder != nil && cmp == 0 {
+		iOrder, iOk := s.TxnOrder[s.Txns[i].Hash()]
+		jOrder, jOk := s.TxnOrder[s.Txns[j].Hash()]
 		if iOk && jOk {
 			return iOrder < jOrder
 		}
 	}
 	return cmp > 0
 }
-func (s TxByPrice) Swap(i, j int) { s.txns[i], s.txns[j] = s.txns[j], s.txns[i] }
+func (s TxByPrice) Swap(i, j int) { s.Txns[i], s.Txns[j] = s.Txns[j], s.Txns[i] }
 
 func (s *TxByPrice) Push(x interface{}) {
-	s.txns = append(s.txns, x.(*Transaction))
+	s.Txns = append(s.Txns, x.(*Transaction))
 }
 
 func (s *TxByPrice) Pop() interface{} {
-	old := s.txns
+	old := s.Txns
 	n := len(old)
 	x := old[n-1]
-	s.txns = old[0 : n-1]
+	s.Txns = old[0 : n-1]
 	return x
 }
 
@@ -362,11 +385,11 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transa
 	// Initialize a price based heap with the head transactions
 	// total := len(txs)
 	heads := TxByPrice{
-		txns:     make(Transactions, 0, len(txs)),
-		txnOrder: txnOrder,
+		Txns:     make(Transactions, 0, len(txs)),
+		TxnOrder: txnOrder,
 	}
 	for from, accTxs := range txs {
-		heads.txns = append(heads.txns, accTxs[0])
+		heads.Txns = append(heads.Txns, accTxs[0])
 		if fast {
 			txs[from] = accTxs[1:]
 		} else {
@@ -436,17 +459,17 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[common.Address]Transa
 
 // Peek returns the next transaction by price.
 func (t *TransactionsByPriceAndNonce) Peek() *Transaction {
-	if len(t.heads.txns) == 0 {
+	if len(t.heads.Txns) == 0 {
 		return nil
 	}
-	return t.heads.txns[0]
+	return t.heads.Txns[0]
 }
 
 // Shift replaces the current best head with the next one from the same account.
 func (t *TransactionsByPriceAndNonce) Shift() {
-	acc, _ := Sender(t.signer, t.heads.txns[0])
+	acc, _ := Sender(t.signer, t.heads.Txns[0])
 	if txs, ok := t.txs[acc]; ok && len(txs) > 0 {
-		t.heads.txns[0], t.txs[acc] = txs[0], txs[1:]
+		t.heads.Txns[0], t.txs[acc] = txs[0], txs[1:]
 		heap.Fix(&t.heads, 0)
 	} else {
 		heap.Pop(&t.heads)

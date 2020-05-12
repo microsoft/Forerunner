@@ -60,13 +60,8 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 		for _, tx := range rawPending[acc] {
 			txHash := tx.Hash()
 
-			iTx, ok := r.PreplayCache.Peek(txHash)
-			if !ok {
-				continue
-			}
-
-			tx, ok := iTx.(*TxPreplay)
-			if !ok {
+			tx := r.PeekTxPreplay(txHash)
+			if tx == nil {
 				continue
 			}
 

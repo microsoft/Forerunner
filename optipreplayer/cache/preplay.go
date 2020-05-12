@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/gob"
 	"fmt"
 	"math"
@@ -519,11 +520,106 @@ func (ra *Rank) TxHash() common.Hash {
 	return ra.txHash
 }
 
-// GetTxPreplay return the result of preplay
-func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
+type TxFromCheapest struct {
+	types.TxByPrice
+}
 
-	// r.ResultMu.RLock()
-	// defer r.ResultMu.RUnlock()
+func (s TxFromCheapest) Less(i, j int) bool {
+	return s.Txns[i].CmpGasPriceWithTxn(s.Txns[j]) < 0
+}
+
+type TxPreplayMap struct {
+	Size int
+
+	txnMap      map[common.Hash]*TxPreplay
+	removed     map[common.Hash]struct{}
+	sortByPrice TxFromCheapest
+	lock        sync.RWMutex
+}
+
+func NewTxPreplayMap(pSize int) *TxPreplayMap {
+	return &TxPreplayMap{
+		Size:        pSize,
+		txnMap:      make(map[common.Hash]*TxPreplay),
+		removed:     make(map[common.Hash]struct{}),
+		sortByPrice: TxFromCheapest{},
+	}
+}
+
+func (m *TxPreplayMap) Get(txn common.Hash) *TxPreplay {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	return m.txnMap[txn]
+}
+
+func (m *TxPreplayMap) GetCheapest() *TxPreplay {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	for {
+		if m.sortByPrice.Len() == 0 {
+			return nil
+		}
+		cheapest := m.sortByPrice.Txns[0].Hash()
+		if _, ok := m.removed[cheapest]; ok {
+			heap.Pop(&m.sortByPrice)
+		} else {
+			return m.txnMap[cheapest]
+		}
+	}
+}
+
+func (m *TxPreplayMap) Len() int {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	return len(m.txnMap)
+}
+
+func (m *TxPreplayMap) Commit(txPreplay *TxPreplay) {
+	if txPreplay == nil {
+		return
+	}
+
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	m.txnMap[txPreplay.TxHash] = txPreplay
+	heap.Push(&m.sortByPrice, txPreplay.Tx)
+}
+
+func (m *TxPreplayMap) Remove(txn common.Hash) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	originSize := len(m.txnMap)
+	delete(m.txnMap, txn)
+	if len(m.txnMap) < originSize {
+		m.removed[txn] = struct{}{}
+	}
+}
+
+func (m *TxPreplayMap) RemoveCheapest(remove int) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	for i := 0; i < remove; {
+		if m.sortByPrice.Len() == 0 {
+			return
+		}
+		txn := heap.Pop(&m.sortByPrice).(*types.Transaction)
+		if _, ok := m.removed[txn.Hash()]; ok {
+			delete(m.removed, txn.Hash())
+		} else {
+			i++
+			delete(m.txnMap, txn.Hash())
+		}
+	}
+}
+
+// GetTxPreplay returns the result of preplay and updates the "recently used"-ness of the key
+func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 
 	result, response := r.PreplayCache.Get(txHash)
 
@@ -538,12 +634,24 @@ func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 	return nil
 }
 
-func (r *GlobalCache) GetTxPreplayLen() int {
-	return r.PreplayCache.Len()
+// PeekTxPreplay returns the result of preplay and will not update the "recently used"-ness of the key
+func (r *GlobalCache) PeekTxPreplay(txHash common.Hash) *TxPreplay {
+
+	result, response := r.PreplayCache.Peek(txHash)
+
+	if !response {
+		return nil
+	}
+
+	if tx, ok := result.(*TxPreplay); ok {
+		return tx
+	}
+
+	return nil
 }
 
-func (r *GlobalCache) GetTxPreplayKeys() []interface{} {
-	return r.PreplayCache.Keys()
+func (r *GlobalCache) GetTxPreplayLen() int {
+	return r.PreplayCache.Len()
 }
 
 // GetGasUsedResult return the cache of gas
@@ -751,12 +859,16 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 	return true
 }
 
-// CommitTxPreplay update after preplay
-func (r *GlobalCache) CommitTxPreplay(txPreplay *TxPreplay) {
+// AddTxPreplay update after preplay
+func (r *GlobalCache) AddTxPreplay(txPreplay *TxPreplay) {
 	if txPreplay == nil {
 		return
 	}
 	r.PreplayCache.Add(txPreplay.TxHash, txPreplay)
+}
+
+func (r *GlobalCache) ResizeTxPreplay(size int) int {
+	return r.PreplayCache.Resize(size)
 }
 
 func (r *GlobalCache) RemoveTxPreplay(txn common.Hash) {

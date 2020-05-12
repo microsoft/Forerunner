@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -40,25 +39,23 @@ type TaskBuilder struct {
 	// Cache
 	globalCache *cache.GlobalCache
 
-	// Listener
-	listener *Listener
-
 	// Package
-	followLatest bool
-	packagePool  TransactionPool
-	addedTxn     TransactionPool
-	removedTxn   bool
-	signer       types.Signer
-	minerList    *MinerList
-	reachLast    *int32
-	nowStart     uint64 // only valid for followLatest is false
+	packageType PackageType
+	originPool  TransactionPool
+	packagePool TransactionPool
+	removedTxn  bool
+	preplayPool TransactionPool
+	minerList   *MinerList
+	signer      types.Signer
 	lastBaseline uint64
 	txnBaseline  uint64
 	txnDeadline  uint64
+	setMinPrice  func(price *big.Int)
 
 	// Transaction distributor
 	trigger    *Trigger
 	nowHeader  *Header
+	nowRoundID uint64
 	nowGroups  map[common.Hash]*TxnGroup
 	parent     *types.Block
 	rwrecord   map[common.Hash]*RWRecord
@@ -69,11 +66,11 @@ type TaskBuilder struct {
 
 	// Log groups and transactions
 	preplayLog *PreplayLog
+
+	preplayer *Preplayer
 }
 
-func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Backend, mu *sync.RWMutex, listener *Listener,
-	followLatest bool, minerList *MinerList, nowHeader *Header, taskQueue *TaskQueue,
-	preplayLog *PreplayLog) *TaskBuilder {
+func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Backend, mu *sync.RWMutex, packageType PackageType) *TaskBuilder {
 	builder := &TaskBuilder{
 		config:       config,
 		engine:       engine,
@@ -83,27 +80,30 @@ func NewTaskBuilder(config *params.ChainConfig, engine consensus.Engine, eth Bac
 		finishOnceCh: make(chan struct{}),
 		exitCh:       make(chan struct{}),
 		mu:           mu,
-		followLatest: followLatest,
+		packageType:  packageType,
+		originPool:   make(TransactionPool),
 		packagePool:  make(TransactionPool),
-		addedTxn:     make(TransactionPool),
+		preplayPool:  make(TransactionPool),
 		signer:       types.NewEIP155Signer(config.ChainID),
-		minerList:    minerList,
-		reachLast:    new(int32),
 		lastBaseline: uint64(time.Now().Unix()),
+		setMinPrice:  func(price *big.Int) {},
 		trigger:      NewTrigger("TxsBlock1P1", 1),
-		nowHeader:    nowHeader,
 		nowGroups:    make(map[common.Hash]*TxnGroup),
 		rwrecord:     make(map[common.Hash]*RWRecord),
-		taskQueue:    taskQueue,
-		preplayLog:   preplayLog,
-	}
-	if followLatest {
-		builder.listener = listener
 	}
 	return builder
 }
 
-func (b *TaskBuilder) mainLoop() {
+func (b *TaskBuilder) setPreplayer(preplayer *Preplayer) {
+	b.preplayer = preplayer
+
+	b.minerList = preplayer.minerList
+	b.nowHeader = preplayer.nowHeader
+	b.taskQueue = preplayer.taskQueue
+	b.preplayLog = preplayer.preplayLog
+}
+
+func (b *TaskBuilder) mainLoop0() {
 	for {
 		select {
 		case <-b.startCh:
@@ -112,11 +112,33 @@ func (b *TaskBuilder) mainLoop() {
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
 				b.resetPackagePool(rawPending)
-				b.preplayLog.reportNewPackage(!b.removedTxn)
-				if b.removedTxn || len(b.addedTxn) > 0 {
-					b.commitNewWork()
+				b.resetPreplayPool()
+				if b.removedTxn || len(b.preplayPool) > 0 {
+					b.commitNewWork(false)
+					b.updateDependency(b.nowRoundID, b.preplayPool)
 					b.updateTxnGroup()
-					b.preplayLog.reportNewTaskBuild()
+				}
+			}
+			b.mu.RUnlock()
+			b.finishOnceCh <- struct{}{}
+		case <-b.exitCh:
+			return
+		}
+	}
+}
+
+func (b *TaskBuilder) mainLoop1() {
+	for {
+		select {
+		case <-b.startCh:
+			b.mu.RLock()
+			rawPending, _ := b.eth.TxPool().Pending()
+			currentBlock := b.chain.CurrentBlock()
+			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
+				b.resetPackagePool(rawPending)
+				b.resetPreplayPool()
+				if len(b.preplayPool) > 0 {
+					b.commitNewWork(true)
 				}
 			}
 			b.mu.RUnlock()
@@ -128,113 +150,129 @@ func (b *TaskBuilder) mainLoop() {
 }
 
 func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
-	originPool := b.packagePool
-	b.packagePool = make(TransactionPool)
+	b.originPool, b.packagePool = b.packagePool, make(TransactionPool)
 
-	// inWhiteList the whitelist txns in advance
-	for from := range b.minerList.whiteList {
-		if txns, ok := rawPending[from]; ok {
-			b.packagePool[from] = txns
-			delete(rawPending, from)
-		}
-	}
-
-	isTxTooLate := func(txn *types.Transaction) bool {
-		if txnListen := b.globalCache.GetTxListen(txn.Hash()); txnListen != nil {
-			return txnListen.ListenTime > b.txnDeadline
-		}
-		return true
-	}
-
-	var (
-		currentPrice                   = new(big.Int)
-		minPrice                       *big.Int
-		currentPriceStartingCumGasUsed uint64
-		cumGasUsed                     uint64
-		currentPriceCumGasUsedBySender = make(map[common.Address]uint64)
-		pending                        = types.NewTransactionsByPriceAndNonce(b.signer, rawPending, nil, true)
-		poppedSenders                  = make(map[common.Address]struct{})
-	)
-
-	for pending.Peek() != nil {
-		txn := pending.Peek()
-
-		if isTxTooLate(txn) {
-			pending.Pop()
-			continue
+	if b.packageType == TYPE0 {
+		// inWhiteList the whitelist txns in advance
+		for from := range b.minerList.whiteList {
+			if txns, ok := rawPending[from]; ok {
+				b.packagePool[from] = txns
+				delete(rawPending, from)
+			}
 		}
 
-		gasPrice := txn.GasPrice()
-		if gasPrice.Cmp(currentPrice) != 0 {
-			if cumGasUsed+params.TxGas > b.nowHeader.gasLimit {
+		var (
+			txnWithMinPrice *types.Transaction // Denote min price for avoiding call types.Transaction.GasPrice()
+			pending         = types.NewTransactionsByPriceAndNonce(b.signer, rawPending, nil, true)
+			poppedSenders   = make(map[common.Address]struct{})
+		)
+
+		for range b.packageType.packageRatio() {
+			var (
+				cumGasUsed                     uint64
+				currentPriceStartingCumGasUsed uint64
+				currentPriceCumGasUsedBySender = make(map[common.Address]uint64)
+			)
+
+			if pending.Peek() == nil {
 				break
 			}
+			// Denote current price for avoiding call types.Transaction.GasPrice()
+			for txnWithCurrentPrice := pending.Peek(); pending.Peek() != nil; {
+				txn := pending.Peek()
 
-			currentPrice = gasPrice
-			currentPriceStartingCumGasUsed = cumGasUsed
-			currentPriceCumGasUsedBySender = make(map[common.Address]uint64)
-		}
+				if b.isTxTooLate(txn) {
+					pending.Pop()
+					continue
+				}
 
-		sender, _ := types.Sender(b.signer, txn)
-		gasUsed := b.globalCache.GetGasUsedCache(sender, txn)
+				if txn.CmpGasPriceWithTxn(txnWithCurrentPrice) != 0 {
+					txnWithCurrentPrice = txn
+					currentPriceStartingCumGasUsed = cumGasUsed
+					currentPriceCumGasUsedBySender = make(map[common.Address]uint64)
 
-		if _, senderPopped := poppedSenders[sender]; !senderPopped {
-			if cumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
-				cumGasUsed += gasUsed
-			} else {
-				poppedSenders[sender] = struct{}{}
+					if cumGasUsed+params.TxGas > b.nowHeader.gasLimit {
+						break
+					}
+				}
+
+				sender, _ := types.Sender(b.signer, txn)
+				gasUsed := b.globalCache.GetGasUsedCache(sender, txn)
+
+				if _, senderPopped := poppedSenders[sender]; !senderPopped {
+					if cumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
+						cumGasUsed += gasUsed
+					} else {
+						poppedSenders[sender] = struct{}{}
+					}
+				}
+				pending.Shift()
+
+				senderCumGasUsed, ok := currentPriceCumGasUsedBySender[sender]
+				if !ok {
+					senderCumGasUsed = currentPriceStartingCumGasUsed
+				}
+				if senderCumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
+					if b.packagePool.addTxn(sender, txn) {
+						currentPriceCumGasUsedBySender[sender] = senderCumGasUsed + gasUsed
+						if txnWithMinPrice == nil || txnWithMinPrice.CmpGasPriceWithTxn(txn) >= 0 {
+							txnWithMinPrice = txn
+						}
+					}
+				}
 			}
 		}
-		pending.Shift()
 
-		senderCumGasUsed, ok := currentPriceCumGasUsedBySender[sender]
-		if !ok {
-			senderCumGasUsed = currentPriceStartingCumGasUsed
+		if txnWithMinPrice != nil {
+			b.setMinPrice(txnWithMinPrice.GasPrice())
 		}
-		if senderCumGasUsed+txn.Gas() <= b.nowHeader.gasLimit {
-			if b.packagePool.addTxn(sender, txn) {
-				currentPriceCumGasUsedBySender[sender] = senderCumGasUsed + gasUsed
-				if minPrice == nil {
-					minPrice = gasPrice
+	} else {
+		for from, txns := range rawPending {
+			for _, txn := range txns {
+				if b.isTxTooLate(txn) {
+					break
 				} else {
-					if minPrice.Cmp(gasPrice) >= 0 {
-						minPrice = gasPrice
-					}
+					b.packagePool.addTxn(from, txn)
 				}
 			}
 		}
 	}
 
-	b.addedTxn = b.packagePool.txnsPoolDiff(originPool)
-	b.removedTxn = originPool.isTxnsPoolLarge(b.packagePool)
-
+	b.removedTxn = b.originPool.isTxnsPoolLarge(b.packagePool)
+	b.preplayLog.reportNewPackage(!b.removedTxn)
 	b.preplayLog.reportNewDeadline(b.txnDeadline)
 	b.txnDeadline = b.nextTxnDeadline(b.txnDeadline)
-	if b.followLatest {
-		b.listener.setMinPrice(minPrice)
-	}
 
-	nowTime := time.Now()
+	nowTime := uint64(time.Now().UnixNano())
 	for _, txn := range b.packagePool {
 		for _, tx := range txn {
-			b.globalCache.CommitTxPackage(tx.Hash(), uint64(nowTime.Unix()))
+			b.globalCache.CommitTxPackage(tx.Hash(), nowTime)
 		}
 	}
 }
 
-func (b *TaskBuilder) commitNewWork() {
+func (b *TaskBuilder) resetPreplayPool() {
+	if b.packageType == TYPE0 {
+		b.preplayPool = b.packagePool.filter(func(sender common.Address, txn *types.Transaction) bool {
+			return !b.originPool.isTxnIn(sender, txn)
+		})
+	} else {
+		b.preplayPool = b.packagePool.filter(func(sender common.Address, txn *types.Transaction) bool {
+			return b.globalCache.GetTxPreplay(txn.Hash()) == nil
+		})
+		nowTime := uint64(time.Now().UnixNano())
+		for _, txns := range b.preplayPool {
+			for _, txn := range txns {
+				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+			}
+		}
+	}
+}
+
+func (b *TaskBuilder) commitNewWork(basicPreplay bool) {
 	parentHash := b.parent.Hash()
 	parentNumber := b.parent.Number()
 	parentNumberU64 := b.parent.NumberU64()
-
-	gasLimit := uint64(0)
-	pendingTxn := make(TransactionPool)
-	for from, txns := range b.addedTxn {
-		pendingTxn[from] = b.packagePool[from]
-		for _, txn := range txns {
-			gasLimit += txn.Gas()
-		}
-	}
 
 	totalDifficulty := b.chain.GetTd(parentHash, parentNumberU64)
 	if totalDifficulty == nil {
@@ -253,25 +291,39 @@ func (b *TaskBuilder) commitNewWork() {
 	header := &types.Header{
 		ParentHash: parentHash,
 		Number:     parentNumber.Add(parentNumber, common.Big1),
-		GasLimit:   gasLimit,
+		GasLimit:   b.preplayPool.gas(),
 		Coinbase:   b.nowHeader.coinbase,
 		Extra:      b.extra,
 		Time:       b.nowHeader.time,
 	}
 
-	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), nil, pendingTxn, currentState,
-		b.trigger, nil, false, true, false)
+	executor := NewExecutor("0", b.config, b.engine, b.chain, b.eth.ChainDb(), nil, b.preplayPool, currentState,
+		b.trigger, nil, false, true, basicPreplay)
 
 	//executor.EnableReuseTracer = true
 
 	executor.RoundID = b.globalCache.NewRoundID()
 
 	// Execute, use pending for preplay
-	executor.commit(header.Coinbase, b.parent, header, pendingTxn)
+	executor.commit(header.Coinbase, b.parent, header, b.preplayPool)
 
-	b.updateDependency(executor.RoundID, pendingTxn)
-
+	b.nowRoundID = executor.RoundID
 	b.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, b.parent.Root())
+}
+
+func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
+	for _, txns := range pool {
+		for _, txn := range txns {
+			txnHash := txn.Hash()
+			txPreplay := b.globalCache.GetTxPreplay(txnHash)
+			if txPreplay != nil {
+				if round, ok := txPreplay.PeekRound(roundID); ok {
+					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))
+					continue
+				}
+			}
+		}
+	}
 }
 
 func (b *TaskBuilder) updateTxnGroup() {
@@ -279,7 +331,7 @@ func (b *TaskBuilder) updateTxnGroup() {
 		b.nowGroups = make(map[common.Hash]*TxnGroup)
 		b.groupTxns(b.packagePool)
 	} else {
-		b.groupTxns(b.addedTxn)
+		b.groupTxns(b.preplayPool)
 	}
 
 	for groupHash, group := range b.nowGroups {
@@ -316,33 +368,32 @@ func (b *TaskBuilder) updateTxnGroup() {
 
 		b.taskQueue.pushTask(group)
 
-		nowTime := time.Now()
+		nowTime := uint64(time.Now().UnixNano())
 		for _, txns := range group.txns {
 			for _, txn := range txns {
-				b.globalCache.CommitTxEnqueue(txn.Hash(), uint64(nowTime.Unix()))
+				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
 			}
 		}
 	}
+
+	b.preplayLog.reportNewTaskBuild()
 }
 
 func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
-	if b.followLatest {
-		b.listener.setMinPrice(new(big.Int))
-	}
+	b.originPool = make(TransactionPool)
+	b.packagePool = make(TransactionPool)
+	b.preplayPool = make(TransactionPool)
+	b.setMinPrice(common.Big0)
 	b.lastBaseline = b.txnBaseline
 	if blockPre := b.globalCache.PeekBlockPre(block.Hash()); blockPre != nil {
 		b.txnBaseline = blockPre.ListenTime
 	} else {
 		b.txnBaseline = block.Time()
 	}
-	if b.followLatest {
-		b.txnDeadline = b.txnBaseline
+	if b.packageType ==TYPE2 {
+		b.txnDeadline = b.txnBaseline - leftwardsStep
 	} else {
-		b.nowStart = b.txnBaseline - leftwardsStep
-		if b.nowStart <= b.lastBaseline {
-			b.nowStart = b.lastBaseline + 1
-		}
-		b.txnDeadline = b.nowStart
+		b.txnDeadline = b.txnBaseline
 	}
 	b.parent = block
 	b.clearRWRecord()
@@ -386,19 +437,21 @@ func divideTransactionPool(txns TransactionPool, chainFactor int) (orderCount *b
 	)
 	for inPoolList < txnCount {
 		var (
-			maxPriceFrom = make([]common.Address, 0)
-			maxPrice     = new(big.Int)
+			maxPriceFrom    = make([]common.Address, 0)
+			txnWithMaxPrice *types.Transaction
 		)
 		for from, txns := range poolCpy {
 			if len(txns) == 0 {
 				continue
 			}
 			headTxn := txns[0]
-			headGasPrice := headTxn.GasPrice()
-			cmp := headGasPrice.Cmp(maxPrice)
+			if txnWithMaxPrice == nil {
+				txnWithMaxPrice = headTxn
+			}
+			cmp := headTxn.CmpGasPriceWithTxn(txnWithMaxPrice)
 			switch {
 			case cmp > 0:
-				maxPrice = headGasPrice
+				txnWithMaxPrice = headTxn
 				maxPriceFrom = []common.Address{from}
 			case cmp == 0:
 				maxPriceFrom = append(maxPriceFrom, from)
@@ -417,7 +470,7 @@ func divideTransactionPool(txns TransactionPool, chainFactor int) (orderCount *b
 				maxPriceCount int64
 			)
 			for ; index < txnsSize; index++ {
-				cmp := txns[index].GasPrice().Cmp(maxPrice)
+				cmp := txns[index].CmpGasPriceWithTxn(txnWithMaxPrice)
 				switch {
 				case cmp == 0:
 					maxPriceCount++
@@ -502,8 +555,8 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b
 	subpool := group.subpoolList[subpoolLoc]
 	nextIn := group.nextInList[subpoolLoc]
 	var (
-		maxPriceFrom = make([]common.Address, 0)
-		maxPrice     = new(big.Int)
+		maxPriceFrom    = make([]common.Address, 0)
+		txnWithMaxPrice *types.Transaction
 	)
 	for from, txns := range subpool {
 		nextIndex := nextIn[from]
@@ -511,11 +564,13 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b
 			continue
 		}
 		headTxn := txns[nextIndex]
-		headGasPrice := headTxn.GasPrice()
-		cmp := headGasPrice.Cmp(maxPrice)
+		if txnWithMaxPrice == nil {
+			txnWithMaxPrice = headTxn
+		}
+		cmp := headTxn.CmpGasPriceWithTxn(txnWithMaxPrice)
 		switch {
 		case cmp > 0:
-			maxPrice = headGasPrice
+			txnWithMaxPrice = headTxn
 			maxPriceFrom = []common.Address{from}
 		case cmp == 0:
 			maxPriceFrom = append(maxPriceFrom, from)
@@ -533,42 +588,21 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b
 	}
 }
 
+func (b *TaskBuilder) isTxTooLate(txn *types.Transaction) bool {
+	if txnListen := b.globalCache.GetTxListen(txn.Hash()); txnListen != nil {
+		return txnListen.ListenTime > b.txnDeadline
+	}
+	return true
+}
+
 func (b *TaskBuilder) nextTxnDeadline(nowValue uint64) uint64 {
-	if b.followLatest {
+	if b.packageType == TYPE1 {
+		return nowValue
+	} else {
 		if nowValue+1 <= uint64(time.Now().Unix()) {
 			return nowValue + 1
 		} else {
 			return nowValue
-		}
-	} else {
-		if nowValue+1-b.nowStart >= leftwardsStep {
-			if b.nowStart <= b.lastBaseline+1 {
-				atomic.StoreInt32(b.reachLast, 1)
-			} else {
-				b.nowStart -= leftwardsStep
-				if b.nowStart <= b.lastBaseline {
-					b.nowStart = b.lastBaseline + 1
-				}
-				nowValue = b.nowStart
-			}
-			return nowValue
-		} else {
-			return nowValue + 1
-		}
-	}
-}
-
-func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
-	for _, txns := range pool {
-		for _, txn := range txns {
-			txnHash := txn.Hash()
-			txPreplay := b.globalCache.GetTxPreplay(txnHash)
-			if txPreplay != nil {
-				if round, ok := txPreplay.PeekRound(roundID); ok {
-					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))
-					continue
-				}
-			}
 		}
 	}
 }

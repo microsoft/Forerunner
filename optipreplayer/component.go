@@ -16,6 +16,22 @@ import (
 	"time"
 )
 
+type PackageType int
+
+const (
+	TYPE0 PackageType = iota
+	TYPE1
+	TYPE2
+)
+
+func (t PackageType) packageRatio() []int {
+	if t == TYPE2 {
+		return []int{0, 1}
+	} else {
+		return []int{0}
+	}
+}
+
 type TransactionPool map[common.Address]types.Transactions
 
 func (p TransactionPool) String() string {
@@ -93,25 +109,10 @@ func (p TransactionPool) copy() TransactionPool {
 	return newPool
 }
 
-func (p TransactionPool) txnsPoolDiff(p2 TransactionPool) TransactionPool {
-	keep := make(TransactionPool)
-	for addr, txns1 := range p {
-		if txns2, ok := p2[addr]; ok {
-			diff := types.TxDifference(txns1, txns2)
-			if len(diff) > 0 {
-				keep[addr] = diff
-			}
-		} else {
-			keep[addr] = txns1
-		}
-	}
-	return keep
-}
-
 func (p TransactionPool) isTxnsPoolLarge(p2 TransactionPool) bool {
 	for addr, txns1 := range p {
 		if txns2, ok := p2[addr]; ok {
-			if len(types.TxDifference(txns1, txns2)) > 0 {
+			if types.IsTxnsPoolLarge(txns1, txns2) {
 				return true
 			}
 		} else {
@@ -119,6 +120,33 @@ func (p TransactionPool) isTxnsPoolLarge(p2 TransactionPool) bool {
 		}
 	}
 	return false
+}
+
+func (p TransactionPool) filter(check func(sender common.Address, tx *types.Transaction) bool) TransactionPool {
+	var p2 = make(TransactionPool)
+	for from, txns := range p {
+		for _, txn := range txns {
+			if check(from, txn) {
+				cpy := make(types.Transactions, txns.Len())
+				copy(cpy, txns)
+				p2[from] = cpy
+				break
+			}
+		}
+	}
+	return p2
+}
+
+func (p TransactionPool) isTxnIn(sender common.Address, txn *types.Transaction) bool {
+	if txns, ok := p[sender]; ok {
+		txnsLen := txns.Len()
+		index := sort.Search(txnsLen, func(i int) bool {
+			return txns[i].Nonce() >= txn.Nonce()
+		})
+		return index < txnsLen && txns[index].Nonce() == txn.Nonce() && txns[index].Hash() == txn.Hash()
+	} else {
+		return false
+	}
 }
 
 const (
@@ -764,7 +792,7 @@ func (l *PreplayLog) searchGroupHitGroup(currentTxn *types.Transaction, sender c
 	return groupHitGroup
 }
 
-func (l *PreplayLog) getDeadlineHistory() []uint64 {
+func (l *PreplayLog) getDeadlineHistory() string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -775,7 +803,20 @@ func (l *PreplayLog) getDeadlineHistory() []uint64 {
 	sort.Slice(history, func(i, j int) bool {
 		return history[i] < history[j]
 	})
-	return history
+	if size := len(history); size > 0 {
+		return fmt.Sprintf("%d-%d-[%d:%d]", len(history), history[size-1]-history[0]+1, history[0], history[size-1])
+	} else {
+		return ""
+	}
+}
+
+func (l *PreplayLog) disableGroup() {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	for _, group := range l.groupLog {
+		group.setInvalid()
+	}
 }
 
 func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
@@ -799,9 +840,6 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	l.simplePackageCnt = 0
 	l.taskBuildCnt = 0
 	l.deadlineLog = make(map[uint64]struct{})
-	for _, group := range l.groupLog {
-		group.setInvalid()
-	}
 	l.groupLog = make(map[common.Hash]*TxnGroup)
 	l.groupEnd = make(map[common.Hash]struct{})
 	l.groupExecCnt = 0

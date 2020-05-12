@@ -49,7 +49,7 @@ type TransactionApplier interface {
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64) (*types.Receipt, error)
+		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay bool) (*types.Receipt, error)
 }
 
 //
@@ -320,7 +320,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			// groundStatedb = state.NewRWStateDB(statedb.Copy())
 			groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
 			receipt, err = p.bc.Cmpreuse.PreplayTransaction(p.config, p.bc, nil, groundGP, groundStatedb, header, tx,
-				groundUsedGas, cfg, 0, blockPre, 1)
+				groundUsedGas, cfg, 0, blockPre, 1, true)
 			//log.Info("GroundTruth Finish")
 		}
 

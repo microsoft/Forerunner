@@ -438,7 +438,7 @@ package optipreplayer
 //		for _, txs := range txCommit {
 //			for _, tx := range txs {
 //				if p.globalCache.GetTxPreplay(tx.Hash()) == nil {
-//					p.globalCache.CommitTxPreplay(cache.NewTxPreplay(tx))
+//					p.globalCache.AddTxPreplay(cache.NewTxPreplay(tx))
 //				}
 //			}
 //		}

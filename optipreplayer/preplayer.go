@@ -48,24 +48,30 @@ type Preplayer struct {
 	// Listener
 	listener *Listener
 
-	minerList    *MinerList
-	nowHeader    *Header
-	taskQueue    *TaskQueue
-	preplayLog   *PreplayLog
+	// Package
+	minerList *MinerList
+
+	// Transaction distributor
+	nowHeader *Header
+
+	// Task queue
+	taskQueue *TaskQueue
+
+	// Log groups and transactions
+	preplayLog *PreplayLog
+
 	taskBuilder0 *TaskBuilder
 	taskBuilder1 *TaskBuilder
+	//taskBuilder2 *TaskBuilder
 	missReporter *MissReporter
 	routinePool  *grpool.Pool
 }
 
 func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *Preplayer {
 	mu := new(sync.RWMutex)
-	minerList := NewMinerList(eth.BlockChain())
-	nowHeader := new(Header)
-	taskQueue := NewTaskQueue()
-	preplayLog := NewPreplayLog()
-	taskBuilder0 := NewTaskBuilder(config, engine, eth, mu, listener, true, minerList, nowHeader, taskQueue, preplayLog)
-	taskBuilder1 := NewTaskBuilder(config, engine, eth, mu, listener, false, minerList, nowHeader, taskQueue, preplayLog)
+	taskBuilder0 := NewTaskBuilder(config, engine, eth, mu, TYPE0)
+	taskBuilder1 := NewTaskBuilder(config, engine, eth, mu, TYPE1)
+	//taskBuilder2 := NewTaskBuilder(config, engine, eth, mu, TYPE2)
 	preplayer := &Preplayer{
 		config:       config,
 		engine:       engine,
@@ -77,19 +83,24 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 		trigger:      NewTrigger("TxsBlock1P1", executorNum),
 		builderMu:    mu,
 		listener:     listener,
-		minerList:    minerList,
-		nowHeader:    nowHeader,
-		taskQueue:    taskQueue,
-		preplayLog:   preplayLog,
+		minerList:    NewMinerList(eth.BlockChain()),
+		nowHeader:    new(Header),
+		taskQueue:    NewTaskQueue(),
+		preplayLog:   NewPreplayLog(),
 		taskBuilder0: taskBuilder0,
 		taskBuilder1: taskBuilder1,
+		//taskBuilder2: taskBuilder2,
 		missReporter: NewMissReporter(config),
 		routinePool:  grpool.NewPool(executorNum, executorNum),
 	}
+	preplayer.taskBuilder0.setPreplayer(preplayer)
+	preplayer.taskBuilder1.setPreplayer(preplayer)
+	//preplayer.taskBuilder2.setPreplayer(preplayer)
 	preplayer.missReporter.preplayer = preplayer
 
-	go taskBuilder0.mainLoop()
-	go taskBuilder1.mainLoop()
+	go taskBuilder0.mainLoop0()
+	go taskBuilder1.mainLoop1()
+	//go taskBuilder2.mainLoop()
 
 	go preplayer.listenLoop()
 
@@ -108,27 +119,48 @@ func (p *Preplayer) listenLoop() {
 	defer chainHeadSub.Unsubscribe()
 
 	go func() {
+		var waitForNewTx func()
+		p.taskBuilder0.setMinPrice, waitForNewTx = p.listener.register()
+
 		for {
-			p.listener.waitForNewTx()
+			waitForNewTx()
 			p.taskBuilder0.startCh <- struct{}{}
 			<-p.taskBuilder0.finishOnceCh
 		}
 	}()
 
+	var stop = new(int32)
 	go func() {
+		var packageCnt int
 		for {
-			if atomic.LoadInt32(p.taskBuilder1.reachLast) == 0 {
+			if atomic.LoadInt32(stop) == 0 {
 				p.taskBuilder1.startCh <- struct{}{}
 			}
 			<-p.taskBuilder1.finishOnceCh
+			packageCnt++
+			if packageCnt >= 1 {
+				atomic.StoreInt32(stop, 1)
+				packageCnt = 0
+			}
 		}
 	}()
+
+	//go func() {
+	//	var waitForNewTx func()
+	//	p.taskBuilder2.setMinPrice, waitForNewTx = p.listener.register()
+	//
+	//	for {
+	//		waitForNewTx()
+	//		p.taskBuilder2.startCh <- struct{}{}
+	//		<-p.taskBuilder2.finishOnceCh
+	//	}
+	//}()
 
 	for {
 		select {
 		case chainHeadEvent := <-chainHeadCh:
 			p.builderMu.Lock()
-			if atomic.CompareAndSwapInt32(p.taskBuilder1.reachLast, 1, 0) {
+			if atomic.CompareAndSwapInt32(stop, 1, 0) {
 				p.taskBuilder1.startCh <- struct{}{}
 			}
 
@@ -139,6 +171,8 @@ func (p *Preplayer) listenLoop() {
 			p.nowHeader.gasLimit = core.CalcGasLimit(currentBlock, p.gasFloor, p.gasCeil)
 			p.taskBuilder0.chainHeadUpdate(currentBlock)
 			p.taskBuilder1.chainHeadUpdate(currentBlock)
+			//p.taskBuilder2.chainHeadUpdate(currentBlock)
+			p.preplayLog.disableGroup()
 			p.preplayLog.printAndClearLog(currentBlock.NumberU64(), p.taskQueue.countTask())
 			p.builderMu.Unlock()
 		case <-p.exitCh:
@@ -147,7 +181,7 @@ func (p *Preplayer) listenLoop() {
 	}
 }
 
-var TXN_PREPLAY_ROUND_LIMIT = 30
+const TxnPreplayRoundLimit = 6
 
 func (p *Preplayer) mainLoop() {
 	for {
@@ -161,7 +195,7 @@ func (p *Preplayer) mainLoop() {
 					task.priority = task.getPreplayCount() * task.txnCount
 					task.preplayHistory = append(task.preplayHistory, orderAndHeader.order)
 					task.timeHistory = append(task.timeHistory, orderAndHeader.header.time)
-					if task.preplayCount < TXN_PREPLAY_ROUND_LIMIT {
+					if task.preplayCount < TxnPreplayRoundLimit {
 						//if task.txnCount > 1 || task.isChainDep() {
 						p.taskQueue.pushTask(task)
 					} else {
@@ -180,6 +214,7 @@ func (p *Preplayer) mainLoop() {
 func (p *Preplayer) setExtra(extra []byte) {
 	p.taskBuilder0.setExtra(extra)
 	p.taskBuilder1.setExtra(extra)
+	//p.taskBuilder2.setExtra(extra)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.extra = extra
@@ -194,6 +229,7 @@ func (p *Preplayer) setNodeID(nodeID string) {
 func (p *Preplayer) setGlobalCache(globalCache *cache.GlobalCache) {
 	p.taskBuilder0.setGlobalCache(globalCache)
 	p.taskBuilder1.setGlobalCache(globalCache)
+	//p.taskBuilder2.setGlobalCache(globalCache)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.globalCache = globalCache
@@ -219,6 +255,7 @@ func (p *Preplayer) isRunning() bool {
 func (p *Preplayer) close() {
 	p.taskBuilder0.close()
 	p.taskBuilder1.close()
+	//p.taskBuilder2.close()
 	p.routinePool.Release()
 	close(p.exitCh)
 }

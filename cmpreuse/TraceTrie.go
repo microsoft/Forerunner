@@ -2022,7 +2022,7 @@ var gcMutex sync.Mutex
 
 func (tt *TraceTrie) GCRoundRefNodes() {
 	MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
-	if tt.RoundRefCount > uint(optipreplayer.TXN_PREPLAY_ROUND_LIMIT*2) {
+	if tt.RoundRefCount > uint(optipreplayer.TxnPreplayRoundLimit*2) {
 		//runtime.GC()
 		//m := new(runtime.MemStats)
 		//runtime.ReadMemStats(m)

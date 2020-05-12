@@ -7,7 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/golang-lru"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,8 +40,7 @@ type StatedbBox struct {
 	processedForDb map[common.Address]map[common.Hash]struct{}
 	dbWarmupCh     chan *ColdTask
 
-	wobjectListMap  state.ObjectListMap
-	wobjectMapMap   state.ObjectMapMap
+	wobjectPool     state.ObjectPool
 	prepareForObj   map[common.Address]map[common.Hash]struct{}
 	processedForObj map[common.Address]map[common.Hash]struct{}
 
@@ -344,7 +343,7 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 				groupId := address[0] % objSubgroupSize
 				w.objWarmupChList[groupId] <- &ObjWarmupTask{
 					root:    task.root,
-					objects: box.wobjectListMap[address][:],
+					objects: box.wobjectPool.GetObjectList(address),
 					storage: deltaStorage,
 				}
 			} else {
@@ -360,7 +359,7 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 	for address, objectList := range task.contentForObject {
 		newObjectList := make(state.ObjectList, 0, len(objectList))
 		for _, obj := range objectList {
-			if _, ok := box.wobjectMapMap[address][obj]; !ok {
+			if !box.wobjectPool.IsObjectInPool(address, obj) {
 				newObjectList = append(newObjectList, obj)
 			}
 		}
@@ -399,7 +398,7 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 
 		w.objWarmupChList[groupId] <- &ObjWarmupTask{
 			root:    task.root,
-			objects: box.wobjectListMap[address][:],
+			objects: box.wobjectPool.GetObjectList(address),
 			storage: deltaStorage,
 		}
 		w.objWarmupChList[groupId] <- &ObjWarmupTask{
@@ -408,13 +407,7 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 			storage: baseStorageCpy,
 		}
 
-		box.wobjectListMap[address] = append(box.wobjectListMap[address], newObjectList...)
-		if _, ok := box.wobjectMapMap[address]; !ok {
-			box.wobjectMapMap[address] = make(state.ObjectPointerMap)
-		}
-		for _, obj := range newObjectList {
-			box.wobjectMapMap[address][obj] = struct{}{}
-		}
+		box.wobjectPool.AddObjectList(address, newObjectList)
 	}
 }
 
@@ -438,8 +431,7 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 			statedbList:     [dbListSize]*state.StateDB{statedb, statedb.Copy()},
 			processedForDb:  make(map[common.Address]map[common.Hash]struct{}),
 			dbWarmupCh:      make(chan *ColdTask, warmupQueueSize),
-			wobjectListMap:  make(state.ObjectListMap),
-			wobjectMapMap:   make(state.ObjectMapMap),
+			wobjectPool:     state.NewObjectPool(),
 			prepareForObj:   make(map[common.Address]map[common.Hash]struct{}),
 			processedForObj: make(map[common.Address]map[common.Hash]struct{}),
 			valid:           true,

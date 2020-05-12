@@ -55,6 +55,7 @@ type GlobalCache struct {
 	PreplayMu        sync.RWMutex
 	PreplayRoundIDMu sync.RWMutex
 	PreplayCache     *lru.Cache // Result Cache
+	PreplayCacheSize int
 	PreplayRoundID   uint64
 	PreplayTimestamp uint64 // Last time stamp
 
@@ -103,11 +104,12 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.BlockPreCache, _ = lru.New(bSize)
 	g.BlockCache, _ = lru.New(bSize)
 
-	g.TxListenCache, _ = lru.New(tSize)
+	g.TxListenCache, _ = lru.New(tSize * 5)
 	g.TxPackageCache, _ = lru.New(tSize)
 	g.TxEnqueueCache, _ = lru.New(tSize)
 
-	g.PreplayCache, _ = lru.New(pSize)
+	g.PreplayCache, _ = lru.New(pSize * 2)
+	g.PreplayCacheSize = pSize
 	g.PreplayRoundID = 1
 	g.PreplayTimestamp = uint64(time.Now().Unix())
 	g.TimestampField = -2

@@ -83,26 +83,24 @@ func (r *MissReporter) SetBlock(block *types.Block) {
 func (r *MissReporter) SetNoPreplayTxn(txn *types.Transaction, enqueue uint64) {
 	index := r.txnsIndexMap[txn.Hash()]
 	sender := r.txnsSenderMap[txn.Hash()]
-	enqueueTime := time.Unix(int64(enqueue), 0)
+	enqueueTime := time.Unix(int64(enqueue/1e9), int64(enqueue%1e9))
 	enqueueStr := enqueueTime.Format("2006-01-02 15:04:05")
-	duration := time.Since(enqueueTime)
+	duration := common.PrettyDuration(time.Since(enqueueTime))
 	groupHitGroup := r.preplayer.preplayLog.searchGroupHitGroup(txn, sender)
 	if len(groupHitGroup) == 0 {
 		r.noGroupPreplay++
-		log.Info("Report reuse no preplay: NoGroup", "tx", txn.Hash(), "index", index,
-			"enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+		log.Info("Report reuse no preplay: NoGroup", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration)
 		return
 	}
 	execHitGroup := r.searchExecHitGroup(txn, groupHitGroup)
 	if len(execHitGroup) == 0 {
 		r.noExecPreplay++
 		pickGroup := pickOneGroup(groupHitGroup)
-		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash(), "index", index,
-			"reason", pickGroup.failPreplay[txn.Hash()], "enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration,
+			"reason", pickGroup.failPreplay[txn.Hash()])
 		return
 	}
-	log.Info("Report reuse no preplay: bug", "tx", txn.Hash(), "index", index,
-		"enqueue", enqueueStr, "duration", common.PrettyDuration(duration))
+	log.Info("Report reuse no preplay: bug", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration)
 }
 
 func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.PreplayResTrieNode, value interface{}, txnType int) {
