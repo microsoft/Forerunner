@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ivpusic/grpool"
 	"math/big"
@@ -181,8 +182,6 @@ func (p *Preplayer) listenLoop() {
 	}
 }
 
-const TxnPreplayRoundLimit = 6
-
 func (p *Preplayer) mainLoop() {
 	for {
 		if task := p.taskQueue.popTask(); task == nil {
@@ -195,7 +194,7 @@ func (p *Preplayer) mainLoop() {
 					task.priority = task.getPreplayCount() * task.txnCount
 					task.preplayHistory = append(task.preplayHistory, orderAndHeader.order)
 					task.timeHistory = append(task.timeHistory, orderAndHeader.header.time)
-					if task.preplayCount < TxnPreplayRoundLimit {
+					if task.preplayCount < config.TXN_PREPLAY_ROUND_LIMIT {
 						//if task.txnCount > 1 || task.isChainDep() {
 						p.taskQueue.pushTask(task)
 					} else {

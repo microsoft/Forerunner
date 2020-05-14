@@ -8,8 +8,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/optipreplayer"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"math/big"
 	"os"
 	"reflect"
@@ -156,7 +156,7 @@ func (dep InputDependence) SetDiffWithPreallocation(other, ret InputDependence) 
 	if ret == nil {
 		ret = make(InputDependence, 0, len(dep))
 	} else {
-		MyAssert(len(ret) == 0)
+		cmptypes.MyAssert(len(ret) == 0)
 	}
 
 	depSize := len(dep)
@@ -213,8 +213,8 @@ var DEBUG_TRACER = false
 func AssertIncreasingDep(dep InputDependence) {
 	if DEBUG_TRACER {
 		for i := 1; i < len(dep); i++ {
-			//MyAssert(dep[i-1] < dep[i], "wrong dep: %v", dep)
-			MyAssert(dep[i-1] < dep[i])
+			//cmptypes.MyAssert(dep[i-1] < dep[i], "wrong dep: %v", dep)
+			cmptypes.MyAssert(dep[i-1] < dep[i])
 		}
 	}
 }
@@ -233,7 +233,7 @@ func MergeInputDependenciesWithPreallocation(ret InputDependence, dependencies .
 	if ret == nil {
 		ret = make(InputDependence, 0, totalCount)
 	} else {
-		MyAssert(len(ret) == 0)
+		cmptypes.MyAssert(len(ret) == 0)
 	}
 
 	MAX_UINT := ^uint(0)
@@ -250,14 +250,14 @@ func MergeInputDependenciesWithPreallocation(ret InputDependence, dependencies .
 			}
 		}
 
-		MyAssert(minDep != -1 && minVId != MAX_UINT)
+		cmptypes.MyAssert(minDep != -1 && minVId != MAX_UINT)
 
 		// append it to ret if not already appended
 		lenRet := len(ret)
 		if lenRet == 0 {
 			ret = append(ret, minVId)
 		} else {
-			MyAssert(ret[lenRet-1] <= minVId)
+			cmptypes.MyAssert(ret[lenRet-1] <= minVId)
 			if ret[lenRet-1] < minVId {
 				ret = append(ret, minVId)
 			}
@@ -305,13 +305,13 @@ func (st *STrace) CalculateInputDependencies() {
 	for i, s := range st.Stats {
 		if s.op.isStoreOp {
 			if st.FirstStoreNodeIndex == 0 {
-				MyAssert(i > 0)
+				cmptypes.MyAssert(i > 0)
 				st.FirstStoreNodeIndex = uint(i)
 			}
 			if !(s.op.IsLog()) && !(s.op.IsVirtual()) {
 				addr := s.inputs[0].BAddress()
 				addrAccountIndex := addrToAccountId[addr]
-				MyAssert(addrAccountIndex > 0)
+				cmptypes.MyAssert(addrAccountIndex > 0)
 
 				storeNodeIndexToStoreAccountIndex[uint(i)] = addrAccountIndex
 
@@ -324,7 +324,7 @@ func (st *STrace) CalculateInputDependencies() {
 				//	continue
 				//}
 
-				//MyAssert(len(s.inputs) > 1)
+				//cmptypes.MyAssert(len(s.inputs) > 1)
 
 				for _, v := range s.inputs {
 					if v.IsConst() {
@@ -337,13 +337,13 @@ func (st *STrace) CalculateInputDependencies() {
 					storeAccountIndexToStoreVarRegisterIndices[addrAccountIndex] = storeVarIds
 
 					valFieldDependencies, fok := variableInputFieldDependencies[valueVarID]
-					MyAssert(fok)
+					cmptypes.MyAssert(fok)
 					fDeps := storeAccountIndexToStoreFieldDependencies[addrAccountIndex]
 					fDeps = MergeInputDependencies(fDeps, valFieldDependencies)
 					storeAccountIndexToStoreFieldDependencies[addrAccountIndex] = fDeps
 
 					valAccountDependencies, aok := variableInputAccountDependencies[valueVarID]
-					MyAssert(aok)
+					cmptypes.MyAssert(aok)
 					aDeps := storeAccountIndexToStoreAccountDependencies[addrAccountIndex]
 					aDeps = MergeInputDependencies(aDeps, valAccountDependencies)
 					storeAccountIndexToStoreAccountDependencies[addrAccountIndex] = aDeps
@@ -354,7 +354,7 @@ func (st *STrace) CalculateInputDependencies() {
 		nodeIndex := uint(i)
 		vid := s.output.id
 		_, ok := variableInputFieldDependencies[vid]
-		MyAssert(!ok)
+		cmptypes.MyAssert(!ok)
 		if s.op.isLoadOp || s.op.isReadOp {
 			rLNodeIndices = append(rLNodeIndices, nodeIndex)
 			rLNodeSet[nodeIndex] = true
@@ -377,7 +377,7 @@ func (st *STrace) CalculateInputDependencies() {
 						accountIdToAddrOrRId[aIndex] = addr
 					} else {
 						rid := st.RAlloc[s.inputs[0].id]
-						MyAssert(rid != 0)
+						cmptypes.MyAssert(rid != 0)
 						accountIdToAddrOrRId[aIndex] = rid
 					}
 				}
@@ -389,7 +389,7 @@ func (st *STrace) CalculateInputDependencies() {
 				aNodeIndexToAccountIndex[nodeIndex] = aIndex
 			} else if s.op.isLoadOp {
 				istLNode := false
-				MyAssert(len(rLNodeIndices) >= 2)
+				cmptypes.MyAssert(len(rLNodeIndices) >= 2)
 				prevIndex := rLNodeIndices[len(rLNodeIndices)-2]
 				prevS := st.Stats[prevIndex]
 				if prevS.op.isReadOp {
@@ -409,7 +409,7 @@ func (st *STrace) CalculateInputDependencies() {
 			}
 
 			fieldIndex, ok := rLNodeToFieldIndex[nodeIndex]
-			MyAssert(ok)
+			cmptypes.MyAssert(ok)
 
 			inputFieldDependency := make(InputDependence, 0)
 			inputAccountDependency := make(InputDependence, 0)
@@ -418,15 +418,15 @@ func (st *STrace) CalculateInputDependencies() {
 					continue
 				}
 				inputFieldDependency = MergeInputDependencies(variableInputFieldDependencies[v.id], inputFieldDependency)
-				MyAssert(len(inputFieldDependency) > 0)
+				cmptypes.MyAssert(len(inputFieldDependency) > 0)
 				inputAccountDependency = MergeInputDependencies(variableInputAccountDependencies[v.id], inputAccountDependency)
-				MyAssert(len(inputAccountDependency) > 0)
+				cmptypes.MyAssert(len(inputAccountDependency) > 0)
 			}
 			//if s.op == OP_LoadState && !s.inputs[1].IsConst() {
 			//	inputFieldDependency = variableInputFieldDependencies[s.inputs[1].id]
-			//	MyAssert(len(inputFieldDependency) > 0)
+			//	cmptypes.MyAssert(len(inputFieldDependency) > 0)
 			//	inputAccountDependency = variableInputAccountDependencies[s.inputs[1].id]
-			//	MyAssert(len(inputAccountDependency) > 0)
+			//	cmptypes.MyAssert(len(inputAccountDependency) > 0)
 			//}
 			fDeps := MergeInputDependencies(inputFieldDependency, InputDependence{fieldIndex})
 			variableInputFieldDependencies[vid] = fDeps // load/read output depend on itself
@@ -442,18 +442,18 @@ func (st *STrace) CalculateInputDependencies() {
 			for _, v := range s.inputs {
 				if !v.IsConst() {
 					dep, ok := variableInputFieldDependencies[v.id]
-					MyAssert(ok)
+					cmptypes.MyAssert(ok)
 					inputFieldDeps = append(inputFieldDeps, dep)
 					dep, ok = variableInputAccountDependencies[v.id]
-					MyAssert(ok)
+					cmptypes.MyAssert(ok)
 					inputAccountDeps = append(inputAccountDeps, dep)
 				}
 			}
-			MyAssert(len(inputFieldDeps) > 0)
+			cmptypes.MyAssert(len(inputFieldDeps) > 0)
 			outputFieldDep := MergeInputDependencies(inputFieldDeps...)
 			outputAccountDep := MergeInputDependencies(inputAccountDeps...)
 			if !s.op.IsGuard() {
-				MyAssert(!s.output.IsConst())
+				cmptypes.MyAssert(!s.output.IsConst())
 				variableInputFieldDependencies[vid] = outputFieldDep
 				variableInputAccountDependencies[vid] = outputAccountDep
 			}
@@ -511,7 +511,7 @@ func (st *STrace) FindOutJumpStartingPoints() {
 			// Any non-A-Load is a JSP
 			isJSP = true
 		} else { // node is a Compute/Guard
-			MyAssert(nodeIndex > 0)
+			cmptypes.MyAssert(nodeIndex > 0)
 			prevIndex := nodeIndex - 1
 			prevS := st.Stats[prevIndex]
 
@@ -577,15 +577,15 @@ type AccountNodeJumpDef struct {
 	FieldHistorySnapshot *RegisterFile
 	InJumpNode           *AccountSearchTrieNode
 	InJumpAVId           uint
-	SRefCount
+	cmptypes.SRefCount
 }
 
-func (jd *AccountNodeJumpDef) RemoveRef(roundID uint64) {
-	newRefCount := jd.removeRef()
+func (jd *AccountNodeJumpDef) RemoveRef(roundID interface{}) {
+	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
-			MyAssert(jd.InJumpAVId != 0)
-			MyAssert(jd.InJumpNode.JumpTable[jd.InJumpAVId] == jd)
+			cmptypes.MyAssert(jd.InJumpAVId != 0)
+			cmptypes.MyAssert(jd.InJumpNode.JumpTable[jd.InJumpAVId] == jd)
 			jd.InJumpNode.JumpTable[jd.InJumpAVId] = nil
 		}
 	}
@@ -596,7 +596,7 @@ type AccountSearchTrieNode struct {
 	JumpTable []*AccountNodeJumpDef
 	Exit      *FieldSearchTrieNode
 	Rounds    []*cache.PreplayResult
-	SRefCount
+	cmptypes.SRefCount
 	BigSize
 }
 
@@ -606,15 +606,15 @@ func NewAccountSearchTrieNode(node *SNode) *AccountSearchTrieNode {
 	}
 }
 
-func (n *AccountSearchTrieNode) RemoveRef(roundID uint64) {
-	n.removeRef()
+func (n *AccountSearchTrieNode) RemoveRef(roundID interface{}) {
+	n.SRemoveRef()
 	if n.Rounds != nil {
-		_removeRound(n.Rounds, roundID)
+		_removeRound(n.Rounds, roundID.(uint64))
 	}
 }
 
 func (n *AccountSearchTrieNode) getOrCreateJumpDef(jt []*AccountNodeJumpDef, vid uint) ([]*AccountNodeJumpDef, *AccountNodeJumpDef) {
-	MyAssert(vid > 0)
+	cmptypes.MyAssert(vid > 0)
 	targetLength := vid + 1
 	increase := int(targetLength) - len(jt)
 	for i := 0; i < increase; i++ {
@@ -652,20 +652,20 @@ type FieldNodeJumpDef struct {
 	InJumpNode          *FieldSearchTrieNode
 	InJumpVId           uint
 	IsAJump             bool
-	SRefCount
+	cmptypes.SRefCount
 }
 
-func (jd *FieldNodeJumpDef) RemoveRef(roundID uint64) {
-	newRefCount := jd.removeRef()
+func (jd *FieldNodeJumpDef) RemoveRef(roundID interface{}) {
+	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
-			MyAssert(jd.InJumpVId != 0)
+			cmptypes.MyAssert(jd.InJumpVId != 0)
 			jt := jd.InJumpNode.AJumpTable
 			if !jd.IsAJump {
 				jt = jd.InJumpNode.FJumpTable
 			}
-			MyAssert(jt[jd.InJumpVId] != nil)
-			MyAssert(jt[jd.InJumpVId] == jd)
+			cmptypes.MyAssert(jt[jd.InJumpVId] != nil)
+			cmptypes.MyAssert(jt[jd.InJumpVId] == jd)
 			jt[jd.InJumpVId] = nil
 		}
 	}
@@ -676,7 +676,7 @@ type FieldSearchTrieNode struct {
 	AJumpTable []*FieldNodeJumpDef
 	FJumpTable []*FieldNodeJumpDef
 	Exit       *SNode
-	SRefCount
+	cmptypes.SRefCount
 	BigSize
 }
 
@@ -687,8 +687,8 @@ func NewFieldSearchTrieNode(node *SNode) *FieldSearchTrieNode {
 	return fn
 }
 
-func (n *FieldSearchTrieNode) RemoveRef(roundID uint64) {
-	n.removeRef()
+func (n *FieldSearchTrieNode) RemoveRef(roundID interface{}) {
+	n.SRemoveRef()
 }
 
 func (f *FieldSearchTrieNode) GetOrCreateFJumpDef(fvid uint) (ret *FieldNodeJumpDef) {
@@ -721,7 +721,7 @@ func (f *FieldSearchTrieNode) getJumpDef(table []*FieldNodeJumpDef, vid uint) (r
 }
 
 func (f *FieldSearchTrieNode) getOrCreateJumpDef(jt []*FieldNodeJumpDef, vid uint) ([]*FieldNodeJumpDef, *FieldNodeJumpDef) {
-	MyAssert(vid > 0)
+	cmptypes.MyAssert(vid > 0)
 	targetLength := vid + 1
 	increase := int(targetLength) - len(jt)
 	for i := 0; i < increase; i++ {
@@ -745,27 +745,27 @@ type OpNodeJumpDef struct {
 	InJumpNode          *OpSearchTrieNode
 	InJumpKey           OpJumpKey
 	InJumpVId           uint
-	SRefCount
+	cmptypes.SRefCount
 }
 
-func (jd *OpNodeJumpDef) RemoveRef(roundID uint64) {
-	newRefCount := jd.removeRef()
+func (jd *OpNodeJumpDef) RemoveRef(roundID interface{}) {
+	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
 			if len(jd.InJumpNode.VIndices) == 1 {
 				if DEBUG_TRACER {
-					MyAssert(jd.InJumpKey == EMPTY_JUMP_KEY)
-					MyAssert(len(jd.InJumpNode.JumpMap) == 0)
-					MyAssert(jd.InJumpVId != 0)
-					MyAssert(jd.InJumpNode.JumpTable[jd.InJumpVId] == jd)
+					cmptypes.MyAssert(jd.InJumpKey == EMPTY_JUMP_KEY)
+					cmptypes.MyAssert(len(jd.InJumpNode.JumpMap) == 0)
+					cmptypes.MyAssert(jd.InJumpVId != 0)
+					cmptypes.MyAssert(jd.InJumpNode.JumpTable[jd.InJumpVId] == jd)
 				}
 				jd.InJumpNode.JumpTable[jd.InJumpVId] = nil
 			} else {
 				if DEBUG_TRACER {
-					MyAssert(jd.InJumpKey != EMPTY_JUMP_KEY)
-					MyAssert(jd.InJumpNode.JumpMap[jd.InJumpKey] == jd)
-					MyAssert(jd.InJumpVId == 0)
-					MyAssert(jd.InJumpNode.JumpTable == nil)
+					cmptypes.MyAssert(jd.InJumpKey != EMPTY_JUMP_KEY)
+					cmptypes.MyAssert(jd.InJumpNode.JumpMap[jd.InJumpKey] == jd)
+					cmptypes.MyAssert(jd.InJumpVId == 0)
+					cmptypes.MyAssert(jd.InJumpNode.JumpTable == nil)
 				}
 				delete(jd.InJumpNode.JumpMap, jd.InJumpKey)
 			}
@@ -792,7 +792,7 @@ type OpSearchTrieNode struct {
 	VIndices      []uint
 	JumpMap       map[OpJumpKey]*OpNodeJumpDef
 	JumpTable     []*OpNodeJumpDef
-	SRefCount
+	cmptypes.SRefCount
 	BigSize
 }
 
@@ -804,17 +804,17 @@ func NewOpSearchTrieNode(node *SNode) *OpSearchTrieNode {
 	return fn
 }
 
-func (n *OpSearchTrieNode) RemoveRef(roundID uint64) {
-	n.removeRef()
+func (n *OpSearchTrieNode) RemoveRef(roundID interface{}) {
+	n.SRemoveRef()
 }
 
 func (f *OpSearchTrieNode) getOrCreateMapJumpDef(key OpJumpKey) (*OpNodeJumpDef, bool) {
 	if len(f.VIndices) == 1 {
 		vid := key[0]
 		if DEBUG_TRACER {
-			MyAssert(vid > 0)
-			for i:= 1; i < OP_JUMP_KEY_SIZE; i++ {
-				MyAssert(key[i]==0)
+			cmptypes.MyAssert(vid > 0)
+			for i := 1; i < OP_JUMP_KEY_SIZE; i++ {
+				cmptypes.MyAssert(key[i] == 0)
 			}
 		}
 		targetLength := vid + 1
@@ -880,7 +880,7 @@ func (rf RegisterSegment) Copy() RegisterSegment {
 }
 
 func (rf RegisterSegment) AssertEqual(other RegisterSegment) {
-	//MyAssert(len(rf) == len(other))
+	//cmptypes.MyAssert(len(rf) == len(other))
 	smaller := len(rf)
 	if smaller > len(other) {
 		smaller = len(other)
@@ -938,15 +938,15 @@ func NewRegisterFileSnapshot(seg RegisterSegment) *RegisterFile {
 func (rf *RegisterFile) Get(index uint) interface{} {
 	if index < rf.firstSectionSize {
 		if DEBUG_TRACER {
-			MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-			MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+			cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+			cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 		}
 		return rf.firstSection[index]
 	} else {
 		if DEBUG_TRACER {
-			MyAssert(rf.isSnapshot == false)
-			MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-			MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+			cmptypes.MyAssert(rf.isSnapshot == false)
+			cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+			cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 		}
 		return rf.secondSection[index-rf.firstSectionSize]
 	}
@@ -955,20 +955,20 @@ func (rf *RegisterFile) Get(index uint) interface{} {
 func (rf *RegisterFile) AppendRegister(index uint, val interface{}) {
 	if !rf.firstSectionSealed {
 		if DEBUG_TRACER {
-			MyAssert(index == rf.size)
-			MyAssert(rf.isSnapshot == false)
-			MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-			MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+			cmptypes.MyAssert(index == rf.size)
+			cmptypes.MyAssert(rf.isSnapshot == false)
+			cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+			cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 		}
 		rf.firstSection = append(rf.firstSection, val)
 		rf.firstSectionSize++
 		rf.size++
 	} else {
 		if DEBUG_TRACER {
-			MyAssert(index == rf.size)
-			MyAssert(rf.isSnapshot == false)
-			MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-			MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+			cmptypes.MyAssert(index == rf.size)
+			cmptypes.MyAssert(rf.isSnapshot == false)
+			cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+			cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 		}
 		rf.secondSection = append(rf.secondSection, val)
 		rf.size++
@@ -977,13 +977,13 @@ func (rf *RegisterFile) AppendRegister(index uint, val interface{}) {
 
 func (rf *RegisterFile) ApplySnapshot(snapshot *RegisterFile) {
 	if DEBUG_TRACER {
-		MyAssert(snapshot.firstSectionSealed && snapshot.size == snapshot.firstSectionSize)
-		MyAssert(snapshot.isSnapshot == true)
-		MyAssert(snapshot.secondSection == nil)
-		MyAssert(rf.size == rf.firstSectionSize)
-		MyAssert(rf.isSnapshot == false)
-		MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-		MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+		cmptypes.MyAssert(snapshot.firstSectionSealed && snapshot.size == snapshot.firstSectionSize)
+		cmptypes.MyAssert(snapshot.isSnapshot == true)
+		cmptypes.MyAssert(snapshot.secondSection == nil)
+		cmptypes.MyAssert(rf.size == rf.firstSectionSize)
+		cmptypes.MyAssert(rf.isSnapshot == false)
+		cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+		cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 	}
 	rf.firstSection = snapshot.firstSection
 	rf.firstSectionSize = snapshot.firstSectionSize
@@ -993,10 +993,10 @@ func (rf *RegisterFile) ApplySnapshot(snapshot *RegisterFile) {
 
 func (rf *RegisterFile) AppendSegment(index uint, seg RegisterSegment) {
 	if DEBUG_TRACER {
-		MyAssert(rf.size == index)
-		MyAssert(rf.isSnapshot == false)
-		MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-		MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+		cmptypes.MyAssert(rf.size == index)
+		cmptypes.MyAssert(rf.isSnapshot == false)
+		cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+		cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 	}
 	if rf.firstSectionSealed {
 		rf.secondSection = append(rf.secondSection, seg...)
@@ -1010,21 +1010,21 @@ func (rf *RegisterFile) AppendSegment(index uint, seg RegisterSegment) {
 
 func (rf *RegisterFile) Slice(si uint, di uint) RegisterSegment {
 	if DEBUG_TRACER {
-		MyAssert(!rf.firstSectionSealed && rf.size == rf.firstSectionSize)
-		MyAssert(si < rf.firstSectionSize)
-		MyAssert(di <= rf.firstSectionSize)
-		MyAssert(rf.isSnapshot == false)
-		MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
-		MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
+		cmptypes.MyAssert(!rf.firstSectionSealed && rf.size == rf.firstSectionSize)
+		cmptypes.MyAssert(si < rf.firstSectionSize)
+		cmptypes.MyAssert(di <= rf.firstSectionSize)
+		cmptypes.MyAssert(rf.isSnapshot == false)
+		cmptypes.MyAssert(rf.firstSectionSize == uint(len(rf.firstSection)))
+		cmptypes.MyAssert(rf.size == rf.firstSectionSize+uint(len(rf.secondSection)))
 	}
 	return rf.firstSection[si:di]
 }
 
 func (rf *RegisterFile) AssertSnapshotEqual(other *RegisterFile) {
-	MyAssert(rf.size == other.size)
-	MyAssert(rf.firstSectionSealed && other.firstSectionSealed)
-	MyAssert(rf.isSnapshot)
-	MyAssert(other.isSnapshot)
+	cmptypes.MyAssert(rf.size == other.size)
+	cmptypes.MyAssert(rf.firstSectionSealed && other.firstSectionSealed)
+	cmptypes.MyAssert(rf.isSnapshot)
+	cmptypes.MyAssert(other.isSnapshot)
 
 	for i := uint(1); i < rf.size; i++ {
 		AssertEqualRegisterValue(rf.Get(i), other.Get(i))
@@ -1035,35 +1035,35 @@ func AssertEqualRegisterValue(a, b interface{}) {
 	switch ta := a.(type) {
 	case *big.Int:
 		tb := b.(*big.Int)
-		MyAssert(ta.Cmp(tb) == 0, "%v : %v", a, b)
+		cmptypes.MyAssert(ta.Cmp(tb) == 0, "%v : %v", a, b)
 		return
 	case []byte:
 		tb := b.([]byte)
-		MyAssert(string(ta) == string(tb), "%v : %v", a, b)
+		cmptypes.MyAssert(string(ta) == string(tb), "%v : %v", a, b)
 		return
 	case *StateIDM:
 		tb := b.(*StateIDM)
-		MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
+		cmptypes.MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
 		for k, v := range ta.mapping {
-			MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
+			cmptypes.MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
 		}
 		return
 	case *AddrIDM:
 		tb := b.(*AddrIDM)
-		MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
+		cmptypes.MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
 		for k, v := range ta.mapping {
-			MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
+			cmptypes.MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
 		}
 		return
 	case *BlockHashNumIDM:
 		tb := b.(*BlockHashNumIDM)
-		MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
+		cmptypes.MyAssert(len(ta.mapping) == len(tb.mapping), "%v : %v", a, b)
 		for k, v := range ta.mapping {
-			MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
+			cmptypes.MyAssert(tb.mapping[k] == v, "%v : %v", a, b)
 		}
 		return
 	}
-	MyAssert(a == b, "%v : %v", a, b)
+	cmptypes.MyAssert(a == b, "%v : %v", a, b)
 }
 
 type RoundMapping struct {
@@ -1077,7 +1077,7 @@ type RoundMapping struct {
 func GetDepsKey(depIndices []uint, history *RegisterFile) (string, bool, []uint) {
 	buf := strings.Builder{}
 	fvids := make([]uint, len(depIndices))
-	MyAssert(reflect.TypeOf(uint(0)).Size() == 8)
+	cmptypes.MyAssert(reflect.TypeOf(uint(0)).Size() == 8)
 	for i, index := range depIndices {
 		vId := history.Get(index).(uint)
 		if vId == 0 {
@@ -1132,27 +1132,27 @@ func (rr *StoreInfo) AddRound(round *cache.PreplayResult) {
 		if r == nil {
 			continue
 		}
-		MyAssert(r.RoundID != round.RoundID)
-		MyAssert(r.Receipt.GasUsed == round.Receipt.GasUsed)
-		MyAssert(r.Receipt.Status == round.Receipt.Status)
-		MyAssert(len(r.Receipt.Logs) == len(round.Receipt.Logs))
+		cmptypes.MyAssert(r.RoundID != round.RoundID)
+		cmptypes.MyAssert(r.Receipt.GasUsed == round.Receipt.GasUsed)
+		cmptypes.MyAssert(r.Receipt.Status == round.Receipt.Status)
+		cmptypes.MyAssert(len(r.Receipt.Logs) == len(round.Receipt.Logs))
 	}
 	rr.rounds = append(rr.rounds, round)
 }
 
 func AssertAAMapEqual(a, b map[uint]interface{}) {
-	MyAssert(len(a) == len(b))
+	cmptypes.MyAssert(len(a) == len(b))
 	for k, va := range a {
 		vb, ok := b[k]
-		MyAssert(ok)
-		MyAssert(vb == va)
+		cmptypes.MyAssert(ok)
+		cmptypes.MyAssert(vb == va)
 	}
 }
 
 func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *RegisterFile, fields *RegisterFile, round *cache.PreplayResult, debugOut DebugOutFunc) {
 	for _, aIndex := range rr.StoreAccountIndices {
 		aVId := accounts.Get(aIndex).(uint)
-		MyAssert(aVId != 0)
+		cmptypes.MyAssert(aVId != 0)
 		d2rm := rr.StoreAccountIndexToAVIdToRoundMapping[aIndex]
 		if d2rm == nil {
 			d2rm = make(DepAVIdToRoundMapping)
@@ -1184,7 +1184,7 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 		if true {
 			accountDeps := rr.StoreAccountIndexToStoreAccountDependencies[aIndex]
 			adk, aok, avids := GetDepsKey(accountDeps, accounts)
-			MyAssert(aok)
+			cmptypes.MyAssert(aok)
 			arounds := rm.AccountDepsToRounds[adk]
 			arounds = append(arounds, round)
 			rm.AccountDepsToRounds[adk] = arounds
@@ -1198,13 +1198,13 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 		if true {
 			fieldDeps := rr.StoreAccountIndexToStoreFieldDependencies[aIndex]
 			afk, fok, fvids := GetDepsKey(fieldDeps, fields)
-			MyAssert(fok)
+			cmptypes.MyAssert(fok)
 			frounds := rm.FieldDepsToRounds[afk]
 			frounds = append(frounds, round)
 			rm.FieldDepsToRounds[afk] = frounds
 
 			//if bfk, bfok := rm.AccountDepsToFieldDeps[adk]; bfok {
-			//	MyAssert(bfk == afk)
+			//	cmptypes.MyAssert(bfk == afk)
 			//} else {
 			//	rm.AccountDepsToFieldDeps[adk] = afk
 			//}
@@ -1223,7 +1223,7 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 			rm.StoreValuesToRounds[vk] = vrounds
 
 			//if bvk, bvok := rm.FieldDepsToStoreValues[afk]; bvok {
-			//	MyAssert(bvk == vk)
+			//	cmptypes.MyAssert(bvk == vk)
 			//} else {
 			//	rm.FieldDepsToStoreValues[afk] = vk
 			//}
@@ -1314,53 +1314,28 @@ func (rr *StoreInfo) ClearRound(roundId uint64) {
 }
 
 func AssertUUMapEqual(a map[uint]uint, b map[uint]uint) {
-	MyAssert(len(a) == len(b))
+	cmptypes.MyAssert(len(a) == len(b))
 	for k, va := range a {
 		vb, ok := b[k]
-		MyAssert(ok)
-		MyAssert(va == vb)
+		cmptypes.MyAssert(ok)
+		cmptypes.MyAssert(va == vb)
 	}
 }
 
 func AssertADMapEqual(a map[uint][]uint, b map[uint][]uint) {
-	MyAssert(len(a) == len(b))
+	cmptypes.MyAssert(len(a) == len(b))
 	for k, va := range a {
 		vb, ok := b[k]
-		MyAssert(ok)
+		cmptypes.MyAssert(ok)
 		AssertUArrayEqual(va, vb)
 	}
 }
 
 func AssertUArrayEqual(indices []uint, indices2 []uint) {
-	MyAssert(len(indices) == len(indices2))
+	cmptypes.MyAssert(len(indices) == len(indices2))
 	for i, v := range indices {
-		MyAssert(v == indices2[i])
+		cmptypes.MyAssert(v == indices2[i])
 	}
-}
-
-type ISRefCountNode interface {
-	GetRefCount() uint
-	AddRef() uint             // add a ref and return the new ref count
-	RemoveRef(roundID uint64) // remove a ref
-}
-
-type SRefCount struct {
-	refCount uint
-}
-
-func (rf *SRefCount) GetRefCount() uint {
-	return rf.refCount
-}
-
-func (rf *SRefCount) AddRef() uint {
-	rf.refCount++
-	return rf.refCount
-}
-
-func (rf *SRefCount) removeRef() uint {
-	MyAssert(rf.refCount > 0)
-	rf.refCount--
-	return rf.refCount
 }
 
 type SNode struct {
@@ -1393,7 +1368,7 @@ type SNode struct {
 	BeforeFieldHistorySize                 uint
 	BeforeAccounHistorySize                uint
 	roundResults                           *StoreInfo
-	SRefCount
+	cmptypes.SRefCount
 	BigSize
 }
 
@@ -1429,7 +1404,7 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	}
 
 	if n.IsANode {
-		MyAssert(n.AccountIndex != 0)
+		cmptypes.MyAssert(n.AccountIndex != 0)
 		n.BeforeAccounHistorySize = n.AccountIndex
 	} else {
 		if n.Prev.IsANode {
@@ -1440,7 +1415,7 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	}
 
 	if n.IsRLNode {
-		MyAssert(n.FieldIndex != 0)
+		cmptypes.MyAssert(n.FieldIndex != 0)
 		n.BeforeFieldHistorySize = n.FieldIndex
 	} else {
 		if n.Prev.IsRLNode {
@@ -1454,11 +1429,11 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	n.AccountDependencies = st.SNodeInputAccountDependencies[nodeIndex]
 	if n.IsRLNode && !n.IsANode {
 		selfFDs := make(InputDependence, 0, len(n.FieldDependencies))
-		MyAssert(n.AccountIndex != 0)
+		cmptypes.MyAssert(n.AccountIndex != 0)
 		for _, fIndex := range n.FieldDependencies {
 			nIndex := st.FieldIndexToRLNodeIndex[fIndex]
 			aIndex := st.RLNodeIndexToAccountIndex[nIndex]
-			MyAssert(aIndex != 0)
+			cmptypes.MyAssert(aIndex != 0)
 			if aIndex == n.AccountIndex {
 				selfFDs = append(selfFDs, fIndex)
 			}
@@ -1466,10 +1441,10 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 		n.FieldDependenciesExcludingSelfAccount = n.FieldDependencies.SetDiff(selfFDs)
 		n.AccountDepedenciesExcludingSelfAccount = n.AccountDependencies.SetDiff([]uint{n.AccountIndex})
 		if len(n.FieldDependenciesExcludingSelfAccount) == 0 {
-			MyAssert(len(n.AccountDepedenciesExcludingSelfAccount) == 0)
+			cmptypes.MyAssert(len(n.AccountDepedenciesExcludingSelfAccount) == 0)
 		}
 		if len(n.AccountDepedenciesExcludingSelfAccount) == 0 {
-			MyAssert(len(n.FieldDependenciesExcludingSelfAccount) == 0)
+			cmptypes.MyAssert(len(n.FieldDependenciesExcludingSelfAccount) == 0)
 		}
 	}
 
@@ -1481,18 +1456,18 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 			//n.InputRegisterIndices[i] = 0
 		} else {
 			rid, ok := registerMapping[v.id]
-			MyAssert(ok)
+			cmptypes.MyAssert(ok)
 			n.InputRegisterIndices[i] = rid
 		}
 	}
 
 	if s.output != nil && !s.output.IsConst() {
 		rid, ok := registerMapping[s.output.id]
-		MyAssert(ok)
+		cmptypes.MyAssert(ok)
 		n.OutputRegisterIndex = rid
 		n.BeforeRegisterSize = rid
 	} else {
-		MyAssert(n.Prev != nil)
+		cmptypes.MyAssert(n.Prev != nil)
 		if n.Prev.OutputRegisterIndex == 0 {
 			n.BeforeRegisterSize = n.Prev.BeforeRegisterSize
 		} else {
@@ -1512,23 +1487,24 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	return n
 }
 
-func (n *SNode) RemoveRef(roundID uint64) {
-	newRefCount := n.removeRef()
+func (n *SNode) RemoveRef(roundID interface{}) {
+	newRefCount := n.SRemoveRef()
 	if newRefCount == 0 {
 		if n.Prev != nil && n.Prev.GetRefCount() != 0 {
-			MyAssert(n.PrevGuardKey != nil)
+			cmptypes.MyAssert(n.PrevGuardKey != nil)
 			_, ok := n.Prev.GuardedNext[n.PrevGuardKey]
-			MyAssert(ok)
+			cmptypes.MyAssert(ok)
 			delete(n.Prev.GuardedNext, n.PrevGuardKey)
 		}
 	}
 	if n.roundResults != nil {
-		n.roundResults.ClearRound(roundID)
+
+		n.roundResults.ClearRound(roundID.(uint64))
 	}
 }
 
 func (n *SNode) AddStoreInfo(round *cache.PreplayResult, trace *STrace) {
-	MyAssert(n.Op.isStoreOp)
+	cmptypes.MyAssert(n.Op.isStoreOp)
 	if n.roundResults == nil {
 		n.roundResults = NewStoreInfo()
 	}
@@ -1574,8 +1550,8 @@ func (n *SNode) RegisterValueString(registers *RegisterFile) string {
 }
 
 func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile) (uint, bool) {
-	MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
-	//MyAssert(n.IsANode)
+	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	//cmptypes.MyAssert(n.IsANode)
 	if n.AccountIndex < accountHistory.size {
 		return accountHistory.Get(n.AccountIndex).(uint), false
 	}
@@ -1601,14 +1577,14 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 	}
 
 	if DEBUG_TRACER {
-		MyAssert(accountHistory.firstSectionSealed == false)
+		cmptypes.MyAssert(accountHistory.firstSectionSealed == false)
 	}
 	accountHistory.AppendRegister(n.AccountIndex, vid)
 	return vid, true
 }
 
 func (n *SNode) LoadFieldValueID(env *ExecEnv, registers *RegisterFile, fieldHistory *RegisterFile) (uint, interface{}) {
-	MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
 
 	val := n.Execute(env, registers)
 	k := GetGuardKey(val)
@@ -1618,7 +1594,7 @@ func (n *SNode) LoadFieldValueID(env *ExecEnv, registers *RegisterFile, fieldHis
 }
 
 func (n *SNode) GetOrCreateAccountValueID(val interface{}) uint {
-	MyAssert(n.IsANode)
+	cmptypes.MyAssert(n.IsANode)
 	val = GetGuardKey(val)
 	if id, ok := n.AccountValueToID[val]; ok {
 		return id
@@ -1630,7 +1606,7 @@ func (n *SNode) GetOrCreateAccountValueID(val interface{}) uint {
 }
 
 func (n *SNode) GetOrCreateFieldValueID(val interface{}) uint {
-	MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
 	val = GetGuardKey(val)
 	if id, ok := n.FieldValueToID[val]; ok {
 		return id
@@ -1642,54 +1618,54 @@ func (n *SNode) GetOrCreateFieldValueID(val interface{}) uint {
 }
 
 func (n *SNode) AssertIsomorphic(s *Statement, nodeIndex uint, trace *STrace, params ...interface{}) {
-	MyAssert(n.Op == s.op, params...)
-	MyAssert(len(n.InputVals) == len(s.inputs), params...)
-	MyAssert(n.Seq == nodeIndex, params...)
+	cmptypes.MyAssert(n.Op == s.op, params...)
+	cmptypes.MyAssert(len(n.InputVals) == len(s.inputs), params...)
+	cmptypes.MyAssert(n.Seq == nodeIndex, params...)
 	if n.Op.IsGuard() {
-		MyAssert(n.Statement.inputs[0].varType == s.inputs[0].varType, params...)
+		cmptypes.MyAssert(n.Statement.inputs[0].varType == s.inputs[0].varType, params...)
 	} else {
 		for i, v := range s.inputs {
 			if v.IsConst() {
-				MyAssert(n.InputRegisterIndices[i] == 0, params...)
+				cmptypes.MyAssert(n.InputRegisterIndices[i] == 0, params...)
 				AssertEqualRegisterValue(n.InputVals[i], v.val)
 			} else {
 				registerMapping := trace.RAlloc
 				rid, ok := registerMapping[v.id]
-				MyAssert(ok, params...)
-				MyAssert(n.InputRegisterIndices[i] == rid, params...)
+				cmptypes.MyAssert(ok, params...)
+				cmptypes.MyAssert(n.InputRegisterIndices[i] == rid, params...)
 			}
 		}
 	}
-	MyAssert(n.IsANode == trace.ANodeSet[nodeIndex], params...)
-	MyAssert(n.IsTLNode == trace.TLNodeSet[nodeIndex], params...)
-	MyAssert(n.AccountIndex == trace.RLNodeIndexToAccountIndex[nodeIndex], params...)
-	MyAssert(n.FieldIndex == trace.RLNodeIndexToFieldIndex[nodeIndex], params...)
-	MyAssert(n.FieldDependencies.Equals(trace.SNodeInputFieldDependencies[nodeIndex]), params...)
-	MyAssert(n.AccountDependencies.Equals(trace.SNodeInputAccountDependencies[nodeIndex]), params...)
-	MyAssert(n.IsJSPNode == trace.JSPSet[nodeIndex], params...)
+	cmptypes.MyAssert(n.IsANode == trace.ANodeSet[nodeIndex], params...)
+	cmptypes.MyAssert(n.IsTLNode == trace.TLNodeSet[nodeIndex], params...)
+	cmptypes.MyAssert(n.AccountIndex == trace.RLNodeIndexToAccountIndex[nodeIndex], params...)
+	cmptypes.MyAssert(n.FieldIndex == trace.RLNodeIndexToFieldIndex[nodeIndex], params...)
+	cmptypes.MyAssert(n.FieldDependencies.Equals(trace.SNodeInputFieldDependencies[nodeIndex]), params...)
+	cmptypes.MyAssert(n.AccountDependencies.Equals(trace.SNodeInputAccountDependencies[nodeIndex]), params...)
+	cmptypes.MyAssert(n.IsJSPNode == trace.JSPSet[nodeIndex], params...)
 	if s.output == nil || s.output.IsConst() {
-		MyAssert(n.OutputRegisterIndex == 0)
-		MyAssert(n.Prev != nil)
+		cmptypes.MyAssert(n.OutputRegisterIndex == 0)
+		cmptypes.MyAssert(n.Prev != nil)
 		if n.Prev.OutputRegisterIndex == 0 {
-			MyAssert(n.BeforeRegisterSize == n.Prev.BeforeRegisterSize)
+			cmptypes.MyAssert(n.BeforeRegisterSize == n.Prev.BeforeRegisterSize)
 		} else {
-			MyAssert(n.BeforeRegisterSize == n.Prev.BeforeRegisterSize+1)
+			cmptypes.MyAssert(n.BeforeRegisterSize == n.Prev.BeforeRegisterSize+1)
 		}
 	} else {
-		MyAssert(n.OutputRegisterIndex != 0)
-		MyAssert(n.OutputRegisterIndex == trace.RAlloc[s.output.id])
-		MyAssert(n.OutputRegisterIndex == n.BeforeRegisterSize)
+		cmptypes.MyAssert(n.OutputRegisterIndex != 0)
+		cmptypes.MyAssert(n.OutputRegisterIndex == trace.RAlloc[s.output.id])
+		cmptypes.MyAssert(n.OutputRegisterIndex == n.BeforeRegisterSize)
 	}
 
 	if n.IsRLNode && !n.IsANode {
-		MyAssert(n.FieldDependenciesExcludingSelfAccount != nil)
-		MyAssert(n.AccountDepedenciesExcludingSelfAccount != nil)
+		cmptypes.MyAssert(n.FieldDependenciesExcludingSelfAccount != nil)
+		cmptypes.MyAssert(n.AccountDepedenciesExcludingSelfAccount != nil)
 		selfFDs := make(InputDependence, 0, len(n.FieldDependencies))
-		MyAssert(n.AccountIndex != 0)
+		cmptypes.MyAssert(n.AccountIndex != 0)
 		for _, fIndex := range n.FieldDependencies {
 			nIndex := trace.FieldIndexToRLNodeIndex[fIndex]
 			aIndex := trace.RLNodeIndexToAccountIndex[nIndex]
-			MyAssert(aIndex != 0)
+			cmptypes.MyAssert(aIndex != 0)
 			if aIndex == n.AccountIndex {
 				selfFDs = append(selfFDs, fIndex)
 			}
@@ -1697,8 +1673,8 @@ func (n *SNode) AssertIsomorphic(s *Statement, nodeIndex uint, trace *STrace, pa
 		AssertUArrayEqual(n.FieldDependenciesExcludingSelfAccount, n.FieldDependencies.SetDiff(selfFDs))
 		AssertUArrayEqual(n.AccountDepedenciesExcludingSelfAccount, n.AccountDependencies.SetDiff([]uint{n.AccountIndex}))
 	} else {
-		MyAssert(n.FieldDependenciesExcludingSelfAccount == nil)
-		MyAssert(n.AccountDepedenciesExcludingSelfAccount == nil)
+		cmptypes.MyAssert(n.FieldDependenciesExcludingSelfAccount == nil)
+		cmptypes.MyAssert(n.AccountDepedenciesExcludingSelfAccount == nil)
 	}
 }
 
@@ -1746,7 +1722,7 @@ func (n *SNode) GetNextNode(registers *RegisterFile) *SNode {
 	if n.Op.IsGuard() {
 		k := registers.Get(n.InputRegisterIndices[0])
 		if DEBUG_TRACER {
-			MyAssert(k != nil)
+			cmptypes.MyAssert(k != nil)
 		}
 		gk := GetGuardKey(k)
 		next := n.GuardedNext[gk]
@@ -1770,8 +1746,8 @@ func (n *SNode) SetBeforeNextGuardNewRegisterCount() {
 	}
 	node = n
 	for ; !node.Op.IsGuard() && !node.Op.isStoreOp; {
-		MyAssert(node.BeforeNextGuardNewRegisterSize == -1)
-		MyAssert(registerCount >= 0)
+		cmptypes.MyAssert(node.BeforeNextGuardNewRegisterSize == -1)
+		cmptypes.MyAssert(registerCount >= 0)
 		node.BeforeNextGuardNewRegisterSize = registerCount
 		if node.OutputRegisterIndex != 0 {
 			registerCount -= 1
@@ -1789,12 +1765,6 @@ type JumpDef struct {
 	outTrackId      uint
 }
 
-type TraceTrieRoundRefNodes struct {
-	RefNodes []ISRefCountNode
-	RoundID  uint64
-	Next     *TraceTrieRoundRefNodes
-}
-
 type TraceTrie struct {
 	Head                  *SNode
 	Tx                    *types.Transaction
@@ -1803,13 +1773,10 @@ type TraceTrie struct {
 	DebugOut              DebugOutFunc
 	AccountHead           *AccountSearchTrieNode
 	FieldHead             *FieldSearchTrieNode
-	RoundRefNodesHead     *TraceTrieRoundRefNodes
-	RoundRefNodesTail     *TraceTrieRoundRefNodes
-	RoundRefCount         uint
-	TrieNodeCount         int64
 	PreAllocatedExecEnvs  []*ExecEnv
 	PreAllocatedHistory   []*RegisterFile
 	PreAllocatedRegisters []*RegisterFile
+	cmptypes.TrieRoundRef
 }
 
 func NewTraceTrie(tx *types.Transaction) *TraceTrie {
@@ -1880,16 +1847,6 @@ func (tt *TraceTrie) UpdateTraceSize(size uint) {
 	}
 }
 
-func MyAssert(b bool, params ...interface{}) {
-	if !b {
-		msg := ""
-		if len(params) > 0 {
-			msg = fmt.Sprintf(params[0].(string), params[1:]...)
-		}
-		panic(msg)
-	}
-}
-
 func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLocValue) map[uint]interface{} {
 	ret := make(map[uint]interface{})
 	temp := make(map[string]interface{})
@@ -1925,7 +1882,7 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 		var key string
 		if s.op.isLoadOp {
 			key = s.inputs[0].BAddress().Hex()
-			MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
+			cmptypes.MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
 			ret[nodeIndex] = temp[key]
 		}
 		//} else {
@@ -1955,11 +1912,11 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult) {
 		tt.DebugOut("InsertTrace\n")
 	}
 	currentTraceNodes := make([]*SNode, len(stats))
-	refNodes := make([]ISRefCountNode, len(stats))
+	refNodes := make([]cmptypes.ISRefCountNode, len(stats))
 	newNodeCount := uint(0)
 	for i, s := range stats {
 		n, gk = tt.insertStatement(n, gk, s, uint(i), trace)
-		MyAssert(n.Seq == uint(i))
+		cmptypes.MyAssert(n.Seq == uint(i))
 		//n.Seq = uint(i)
 		currentTraceNodes[i] = n
 		refNodes[i] = n
@@ -1968,7 +1925,7 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult) {
 		}
 	}
 
-	MyAssert(tt.Head == nil || tt.Head == preHead.Next)
+	cmptypes.MyAssert(tt.Head == nil || tt.Head == preHead.Next)
 	tt.Head = preHead.Next
 
 	firstStoreNode := currentTraceNodes[trace.FirstStoreNodeIndex]
@@ -1982,7 +1939,7 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult) {
 	tt.TrackRoundRefNodes(refNodes, newNodeCount+ji.newNodeCount, round)
 }
 
-func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
+func (tt *TraceTrie) TrackRoundRefNodes(refNodes []cmptypes.ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
 	if newNodeCount > 0 {
 		if tt.DebugOut != nil {
 			tt.DebugOut("NewRound %v: %v New trieNodes created, round node count: %v, total round count: %v, total trie node count:%v\n",
@@ -1990,10 +1947,10 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 		}
 		for _, n := range refNodes {
 			rc := n.AddRef()
-			MyAssert(rc > 0)
+			cmptypes.MyAssert(rc > 0)
 		}
 
-		r := &TraceTrieRoundRefNodes{
+		r := &cmptypes.TrieRoundRefNodes{
 			RefNodes: refNodes,
 			RoundID:  round.RoundID,
 		}
@@ -2001,12 +1958,12 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 		tt.RoundRefCount++
 		atomic.AddInt64(&tt.TrieNodeCount, int64(newNodeCount))
 		if tt.RoundRefNodesHead == nil {
-			MyAssert(tt.RoundRefNodesTail == nil)
-			MyAssert(uint(len(refNodes)) == newNodeCount)
+			cmptypes.MyAssert(tt.RoundRefNodesTail == nil)
+			cmptypes.MyAssert(uint(len(refNodes)) == newNodeCount)
 			tt.RoundRefNodesHead = r
 			tt.RoundRefNodesTail = r
 		} else {
-			MyAssert(tt.RoundRefNodesTail.Next == nil)
+			cmptypes.MyAssert(tt.RoundRefNodesTail.Next == nil)
 			tt.RoundRefNodesTail.Next = r
 			tt.RoundRefNodesTail = r
 		}
@@ -2021,8 +1978,8 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 var gcMutex sync.Mutex
 
 func (tt *TraceTrie) GCRoundRefNodes() {
-	MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
-	if tt.RoundRefCount > uint(optipreplayer.TxnPreplayRoundLimit*2) {
+	cmptypes.MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
+	if tt.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT*2) {
 		//runtime.GC()
 		//m := new(runtime.MemStats)
 		//runtime.ReadMemStats(m)
@@ -2062,7 +2019,7 @@ func (tt *TraceTrie) GCRoundRefNodes() {
 	}
 }
 
-func (tt *TraceTrie) RemoveRoundRef(rf *TraceTrieRoundRefNodes) uint {
+func (tt *TraceTrie) RemoveRoundRef(rf *cmptypes.TrieRoundRefNodes) uint {
 	removedNodes := int64(0)
 	for _, n := range rf.RefNodes {
 		n.RemoveRef(rf.RoundID)
@@ -2072,8 +2029,8 @@ func (tt *TraceTrie) RemoveRoundRef(rf *TraceTrieRoundRefNodes) uint {
 	}
 	tt.RoundRefCount--
 	atomic.AddInt64(&tt.TrieNodeCount, -removedNodes)
-	MyAssert(tt.RoundRefCount >= 0)
-	MyAssert(tt.TrieNodeCount >= 0)
+	cmptypes.MyAssert(tt.RoundRefCount >= 0)
+	cmptypes.MyAssert(tt.TrieNodeCount >= 0)
 	return uint(removedNodes)
 }
 
@@ -2093,27 +2050,27 @@ type TraceTrieSearchResult struct {
 }
 
 func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
-	MyAssert(r.hit)
-	MyAssert(r.node.Op.isStoreOp)
+	cmptypes.MyAssert(r.hit)
+	cmptypes.MyAssert(r.node.Op.isStoreOp)
 	for _, round := range r.node.roundResults.rounds {
 		if round != nil {
 			return round
 		}
 	}
-	MyAssert(false) // should never reach here
+	cmptypes.MyAssert(false) // should never reach here
 	return nil
 }
 
-func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) bool {
-	MyAssert(r.node.Op.isStoreOp)
-	r.applyWObjects()
+func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) (bool,cmptypes.TxResIDMap){
+	cmptypes.MyAssert(r.node.Op.isStoreOp)
+	resMap := r.applyWObjects()
 	for n := r.node; !n.Op.IsVirtual(); n = n.Next {
 		if abort() {
-			return true
+			return true, nil
 		}
 		if !n.Op.IsLog() {
 			aIndex := r.storeInfo.StoreNodeIndexToAccountIndex[n.Seq]
-			MyAssert(aIndex > 0)
+			cmptypes.MyAssert(aIndex > 0)
 			if r.accountIndexToAppliedWObject[aIndex] {
 				if r.debugOut != nil {
 					r.debugOut("SkipStore: %v", n.SimpleNameString())
@@ -2131,16 +2088,16 @@ func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) bool {
 	if r.fOut != nil {
 		r.fOut.Close()
 	}
-	return false
+	return false, resMap
 }
 
-func (r *TraceTrieSearchResult) applyWObjects() {
-	MyAssert(r.accountIndexToAppliedWObject == nil)
+func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
+	cmptypes.MyAssert(r.accountIndexToAppliedWObject == nil)
 	r.accountIndexToAppliedWObject = make(map[uint]bool)
 
 	accountLaneHit := r.accountLaneRounds != nil
 	rounds := r.accountLaneRounds
-
+	resMap := make(cmptypes.TxResIDMap)
 	for _, si := range r.storeInfo.StoreAccountIndices {
 		aVId := r.accountHistory.Get(si).(uint)
 		if aVId != 0 {
@@ -2196,13 +2153,16 @@ func (r *TraceTrieSearchResult) applyWObjects() {
 
 			for _, round := range rounds {
 				if round != nil {
+					changed, fok :=  round.AccountChanges[addr]
+					cmptypes.MyAssert(fok)
+					resMap[addr] = changed
 					obj := round.WObjects[addr]
 					if obj != nil {
 						if r.debugOut != nil {
 							r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n", round.RoundID, si, aVId, addr.Hex())
 						}
 						round.WObjects[addr] = nil
-						r.env.state.ApplyStateObject(obj)
+						r.env.state.ApplyStateObject(obj) // TODO
 						r.accountIndexToAppliedWObject[si] = true
 						break
 					}
@@ -2211,6 +2171,8 @@ func (r *TraceTrieSearchResult) applyWObjects() {
 
 		}
 	}
+
+	return resMap
 }
 
 func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
@@ -2276,7 +2238,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		}
 		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
 		if debug {
-			MyAssert(newAccount)
+			cmptypes.MyAssert(newAccount)
 		}
 		jd := aNode.GetAJumpDef(aVId)
 		if jd == nil {
@@ -2284,11 +2246,11 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 			}
 			if debug {
-				MyAssert(aNode.Exit != nil)
+				cmptypes.MyAssert(aNode.Exit != nil)
 			}
 			fNode = aNode.Exit
 			if debug {
-				MyAssert(aNode.LRNode == fNode.LRNode)
+				cmptypes.MyAssert(aNode.LRNode == fNode.LRNode)
 			}
 			break
 		} else {
@@ -2297,17 +2259,17 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 					node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(), jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId)
 			}
 			if debug {
-				MyAssert(jd.RegisterSnapshot != nil)
-				MyAssert(jd.FieldHistorySnapshot != nil)
+				cmptypes.MyAssert(jd.RegisterSnapshot != nil)
+				cmptypes.MyAssert(jd.FieldHistorySnapshot != nil)
 			}
 			registers.ApplySnapshot(jd.RegisterSnapshot)
 			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
 			aNode = jd.Dest
 			node = aNode.LRNode
 			if debug {
-				MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
+				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
 				if !aNode.LRNode.Op.isStoreOp {
-					MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
+					cmptypes.MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
 				}
 			}
 		}
@@ -2317,7 +2279,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			}
 			accountLaneRounds = aNode.Rounds
 			if debug {
-				MyAssert(len(accountLaneRounds) > 0)
+				cmptypes.MyAssert(len(accountLaneRounds) > 0)
 			}
 			ok = true
 			return
@@ -2325,7 +2287,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 	}
 
 	if debug {
-		MyAssert(fNode != nil)
+		cmptypes.MyAssert(fNode != nil)
 	}
 	fStart := fNode
 
@@ -2336,14 +2298,14 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			return
 		}
 		if debug {
-			MyAssert(fNode.LRNode == node)
+			cmptypes.MyAssert(fNode.LRNode == node)
 		}
 
 		beforeNode := node
 		if fNode.LRNode.Op.isLoadOp {
 			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
 			if !node.IsANode {
-				MyAssert(!newAccount)
+				cmptypes.MyAssert(!newAccount)
 			}
 			jd := fNode.GetAJumpDef(aVId)
 			if jd == nil {
@@ -2357,19 +2319,19 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 						jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId, jd.FieldHistorySegment)
 				}
 				if debug {
-					MyAssert(jd.RegisterSnapshot != nil)
+					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
 				}
 				registers.ApplySnapshot(jd.RegisterSnapshot)
 				if debug {
-					MyAssert(jd.FieldHistorySegment != nil)
-					MyAssert(fieldHistory.size == node.FieldIndex, "%v, %v", fieldHistory.size, node.FieldIndex)
+					cmptypes.MyAssert(jd.FieldHistorySegment != nil)
+					cmptypes.MyAssert(fieldHistory.size == node.FieldIndex, "%v, %v", fieldHistory.size, node.FieldIndex)
 				}
 				fieldHistory.AppendSegment(fNode.LRNode.FieldIndex, jd.FieldHistorySegment)
 				fNode = jd.Dest
 				node = fNode.LRNode
 				if debug {
-					MyAssert(registers.size == node.BeforeRegisterSize)
-					MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
 				}
 			}
 		}
@@ -2378,7 +2340,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			if node.Op.isReadOp {
 				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
 				if fNode != fStart {
-					MyAssert(newAccount)
+					cmptypes.MyAssert(newAccount)
 				}
 			}
 			var fVId uint
@@ -2392,7 +2354,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 				registers.AppendRegister(node.OutputRegisterIndex, fVal)
 				node = fNode.Exit
 				if debug {
-					MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 				}
 				break
 			} else {
@@ -2403,13 +2365,13 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 						node.FieldIndex, fVId)
 				}
 				if debug {
-					MyAssert(jd.RegisterSnapshot != nil)
+					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
 				}
 				registers.ApplySnapshot(jd.RegisterSnapshot)
 				fNode = jd.Dest
 				node = fNode.LRNode
 				if debug {
-					MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 				}
 			}
 		}
@@ -2425,8 +2387,8 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	// start the OpLane
 	if debug {
-		MyAssert(fNode.Exit == node)
-		MyAssert(!node.Op.isStoreOp)
+		cmptypes.MyAssert(fNode.Exit == node)
+		cmptypes.MyAssert(!node.Op.isStoreOp)
 	}
 
 	for {
@@ -2462,7 +2424,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			if node.IsANode {
 				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
 				if debug {
-					MyAssert(newAccount)
+					cmptypes.MyAssert(newAccount)
 				}
 			}
 			if node.IsRLNode {
@@ -2481,7 +2443,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		if node == nil {
 			node = beforeJumpNode
 			if debug {
-				MyAssert(node.Op.IsGuard())
+				cmptypes.MyAssert(node.Op.IsGuard())
 			}
 			if debugOut != nil {
 				stats := []*Statement(nil)
@@ -2512,8 +2474,8 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 	if DEBUG_TRACER {
-		MyAssert(len(indices) > 0)
-		MyAssert(len(indices) <= OP_JUMP_KEY_SIZE)
+		cmptypes.MyAssert(len(indices) > 0)
+		cmptypes.MyAssert(len(indices) <= OP_JUMP_KEY_SIZE)
 	}
 	for i, index := range indices {
 		v := rf.Get(index).(uint)
@@ -2530,7 +2492,7 @@ func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int, accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}), fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode) *SNode {
 	for {
 		if debug {
-			MyAssert(jNode.OpNode == node)
+			cmptypes.MyAssert(jNode.OpNode == node)
 		}
 		if jNode.IsAccountJump {
 			aCheckCount += len(jNode.VIndices)
@@ -2548,7 +2510,7 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				if jNode.Exit != nil {
 					jNode = jNode.Exit.Next
 					if debug {
-						MyAssert(jNode != nil)
+						cmptypes.MyAssert(jNode != nil)
 					}
 				} else {
 					jNode = nil
@@ -2561,15 +2523,15 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 
 				if len(jd.FieldHistorySegment) > 0 {
 					if DEBUG_TRACER {
-						MyAssert(node.FieldIndex != 0)
-						MyAssert(node.IsRLNode)
-						MyAssert(node.BeforeFieldHistorySize == node.FieldIndex)
+						cmptypes.MyAssert(node.FieldIndex != 0)
+						cmptypes.MyAssert(node.IsRLNode)
+						cmptypes.MyAssert(node.BeforeFieldHistorySize == node.FieldIndex)
 					}
 					fieldHistory.AppendSegment(node.BeforeFieldHistorySize, jd.FieldHistorySegment)
 				}
 				if len(jd.RegisterSegment) > 0 {
 					if debug {
-						MyAssert(registers.size == node.BeforeRegisterSize, "%v, %v", registers.size, node.BeforeRegisterSize)
+						cmptypes.MyAssert(registers.size == node.BeforeRegisterSize, "%v, %v", registers.size, node.BeforeRegisterSize)
 					}
 					registers.AppendSegment(node.BeforeRegisterSize, jd.RegisterSegment)
 				}
@@ -2579,15 +2541,15 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				if jNode != nil {
 					node = jNode.OpNode
 					if debug {
-						MyAssert(jd.Dest == nil)
+						cmptypes.MyAssert(jd.Dest == nil)
 					}
 				} else if jd.Dest != nil {
 					node = jd.Dest
 				}
 
 				if debug {
-					MyAssert(registers.size == node.BeforeRegisterSize)
-					MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
 				}
 			}
 		} else {
@@ -2601,7 +2563,7 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				if debugOut != nil {
 					debugOut("  OpLane FCheck Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(),
 						jNode.VIndices, fKey[:len(jNode.VIndices)])
-					MyAssert(jNode.Exit == nil)
+					cmptypes.MyAssert(jNode.Exit == nil)
 				}
 				jNode = nil
 			} else {
@@ -2611,18 +2573,18 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				}
 				if node.IsJSPNode && node.Op.isLoadOp && len(node.FieldDependencies) > 0 && jd.Next == nil {
 					if debug {
-						MyAssert(len(jd.FieldHistorySegment) == 1)
-						MyAssert(len(jd.RegisterSegment) == 1)
+						cmptypes.MyAssert(len(jd.FieldHistorySegment) == 1)
+						cmptypes.MyAssert(len(jd.RegisterSegment) == 1)
 					}
 					fieldHistory.AppendRegister(node.FieldIndex, jd.FieldHistorySegment[0])
 				} else {
 					if debug {
-						MyAssert(jd.FieldHistorySegment == nil)
+						cmptypes.MyAssert(jd.FieldHistorySegment == nil)
 					}
 				}
 				if len(jd.RegisterSegment) > 0 {
 					if debug {
-						MyAssert(registers.size == node.BeforeRegisterSize, "%v, %v", registers.size, node.BeforeRegisterSize)
+						cmptypes.MyAssert(registers.size == node.BeforeRegisterSize, "%v, %v", registers.size, node.BeforeRegisterSize)
 					}
 					registers.AppendSegment(node.BeforeRegisterSize, jd.RegisterSegment)
 				}
@@ -2631,15 +2593,15 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				if jNode != nil {
 					node = jNode.OpNode
 					if debug {
-						MyAssert(jd.Dest == nil)
+						cmptypes.MyAssert(jd.Dest == nil)
 					}
 				} else if jd.Dest != nil {
 					node = jd.Dest
 				}
 
 				if debug {
-					MyAssert(registers.size == node.BeforeRegisterSize)
-					MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
 				}
 			}
 		}
@@ -2669,7 +2631,7 @@ func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Stat
 
 	node := pNode.Next
 	if pNode.Op.IsGuard() {
-		MyAssert(guardKey != nil)
+		cmptypes.MyAssert(guardKey != nil)
 		node = pNode.GuardedNext[guardKey]
 	}
 
@@ -2728,13 +2690,13 @@ type JumpInserter struct {
 	tt                      *TraceTrie
 	aNodeFJds               []*FieldNodeJumpDef
 	round                   *cache.PreplayResult
-	refNodes                []ISRefCountNode
+	refNodes                []cmptypes.ISRefCountNode
 	newNodeCount            uint
 }
 
 func NewJumpInserter(tt *TraceTrie, trace *STrace, currentNodes []*SNode, round *cache.PreplayResult) *JumpInserter {
 
-	nodeIndexToAccountValue := GetNodeIndexToAccountSnapMapping(trace, round.ReadDeps)
+	nodeIndexToAccountValue := GetNodeIndexToAccountSnapMapping(trace, round.ReadDepSeq)
 	j := &JumpInserter{
 		//registers:               NewRegisterFile(trace.RegisterFileSize),
 		//accountHistory:          NewRegisterFile(uint(len(trace.ANodeSet))),
@@ -2764,7 +2726,7 @@ func (j *JumpInserter) ExecuteStats(startIndex, endIndex uint) {
 	}
 }
 
-func (j *JumpInserter) AddRefNode(node ISRefCountNode) {
+func (j *JumpInserter) AddRefNode(node cmptypes.ISRefCountNode) {
 	j.refNodes = append(j.refNodes, node)
 	if node.GetRefCount() == 0 {
 		j.newNodeCount++
@@ -2779,7 +2741,7 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 
 	for _, nodeIndex := range j.trace.RLNodeIndices {
 		node := j.snodes[nodeIndex]
-		MyAssert(node.Op.isLoadOp || node.Op.isReadOp)
+		cmptypes.MyAssert(node.Op.isLoadOp || node.Op.isReadOp)
 		s := j.trace.Stats[nodeIndex]
 		var aVId, fVId uint
 		if node.IsANode {
@@ -2787,7 +2749,7 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 			var ok bool
 			if node.Op.isLoadOp {
 				aval, ok = j.nodeIndexToAccountValue[node.Seq]
-				MyAssert(ok)
+				cmptypes.MyAssert(ok)
 			} else {
 				aval = s.output.val
 			}
@@ -2797,7 +2759,7 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 				tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aval, aVId)
 			}
 		} else {
-			MyAssert(node.Op.isLoadOp)
+			cmptypes.MyAssert(node.Op.isLoadOp)
 			aVId = accountHistory.Get(node.AccountIndex).(uint)
 			if tt.DebugOut != nil {
 				tt.DebugOut("AccountVID for %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aVId)
@@ -2838,8 +2800,8 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 		fSrc.Exit = snodes[1]
 		tt.FieldHead = fSrc
 	} else {
-		MyAssert(fSrc.LRNode == snodes[0])
-		MyAssert(fSrc.Exit == snodes[1])
+		cmptypes.MyAssert(fSrc.LRNode == snodes[0])
+		cmptypes.MyAssert(fSrc.Exit == snodes[1])
 	}
 	j.AddRefNode(fSrc)
 
@@ -2869,7 +2831,7 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 			fDes = NewFieldSearchTrieNode(desNode)
 			fDes.Exit = snodes[desNode.Seq+1]
 			jd.Dest = fDes
-			MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySegment == nil)
+			cmptypes.MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySegment == nil)
 			jd.RegisterSnapshot = j.registers.Slice(0, desNode.BeforeRegisterSize).ToRegisterFileSnapshot()
 		} else {
 			if tt.DebugOut != nil {
@@ -2880,9 +2842,9 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 			}
 			fDes = jd.Dest
 			if tt.DebugOut != nil {
-				MyAssert(fDes.LRNode == desNode)
-				MyAssert(fDes.Exit == snodes[desNode.Seq+1])
-				MyAssert(jd.FieldHistorySegment == nil)
+				cmptypes.MyAssert(fDes.LRNode == desNode)
+				cmptypes.MyAssert(fDes.Exit == snodes[desNode.Seq+1])
+				cmptypes.MyAssert(jd.FieldHistorySegment == nil)
 				jd.RegisterSnapshot.AssertSnapshotEqual(j.registers.Slice(0, desNode.BeforeRegisterSize).ToRegisterFileSnapshot())
 			}
 		}
@@ -2910,7 +2872,7 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 				if fDes.LRNode.Op.isReadOp || fDes.LRNode.Op.isStoreOp {
 					break
 				}
-				MyAssert(fDes.LRNode.Op.isLoadOp)
+				cmptypes.MyAssert(fDes.LRNode.Op.isLoadOp)
 				srcAddr := fSrc.LRNode.Statement.inputs[0].BAddress()
 				desAddr := fDes.LRNode.Statement.inputs[0].BAddress()
 				if srcAddr != desAddr {
@@ -2918,9 +2880,9 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 				}
 			}
 			dJd := fNodeJds[di]
-			MyAssert(dJd.Dest == fDes)
+			cmptypes.MyAssert(dJd.Dest == fDes)
 			rsnap := dJd.RegisterSnapshot
-			MyAssert(rsnap != nil)
+			cmptypes.MyAssert(rsnap != nil)
 			fieldSeg := j.fieldHistroy.Slice(fSrc.LRNode.FieldIndex, uint(di)+1)
 
 			aVId := j.accountHistory.Get(fSrc.LRNode.AccountIndex).(uint)
@@ -2934,7 +2896,7 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 						aVId, fieldSeg)
 				}
 				jd.Dest = fDes
-				MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySegment == nil)
+				cmptypes.MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySegment == nil)
 				jd.RegisterSnapshot = rsnap
 				jd.FieldHistorySegment = fieldSeg
 			} else {
@@ -2943,7 +2905,7 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 						fSrc.LRNode.Statement.SimpleNameStringWithRegisterAnnotation(registerMapping),
 						fDes.LRNode.Statement.SimpleNameStringWithRegisterAnnotation(registerMapping),
 						aVId, fieldSeg)
-					MyAssert(jd.Dest == fDes)
+					cmptypes.MyAssert(jd.Dest == fDes)
 					jd.RegisterSnapshot.AssertSnapshotEqual(rsnap)
 					jd.FieldHistorySegment.AssertEqual(fieldSeg)
 				}
@@ -2972,8 +2934,8 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 		aSrc.Exit = fnodes[0]
 		tt.AccountHead = aSrc
 	} else {
-		MyAssert(aSrc.LRNode == snodes[0])
-		MyAssert(aSrc.Exit == fnodes[0])
+		cmptypes.MyAssert(aSrc.LRNode == snodes[0])
+		cmptypes.MyAssert(aSrc.Exit == fnodes[0])
 	}
 	j.AddRefNode(aSrc)
 
@@ -2998,12 +2960,12 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 				exitIndex = uint(len(fnodes) - 1)
 			}
 			aDes.Exit = fnodes[exitIndex]
-			MyAssert(aDes.Exit.LRNode == desNode)
+			cmptypes.MyAssert(aDes.Exit.LRNode == desNode)
 			jd.Dest = aDes
-			MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySnapshot == nil)
-			MyAssert(j.aNodeFJds[i+1].Dest == aDes.Exit)
+			cmptypes.MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySnapshot == nil)
+			cmptypes.MyAssert(j.aNodeFJds[i+1].Dest == aDes.Exit)
 			jd.RegisterSnapshot = j.aNodeFJds[i+1].RegisterSnapshot
-			MyAssert(jd.RegisterSnapshot != nil)
+			cmptypes.MyAssert(jd.RegisterSnapshot != nil)
 			endIndex := aDes.LRNode.FieldIndex
 			if aDes.LRNode.Op.isStoreOp {
 				endIndex = j.fieldHistroy.size
@@ -3017,12 +2979,12 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 					aVId)
 			}
 			aDes = jd.Dest
-			MyAssert(aDes.LRNode == desNode)
+			cmptypes.MyAssert(aDes.LRNode == desNode)
 			exitIndex := desNode.FieldIndex - 1
 			if desNode.Op.isStoreOp {
 				exitIndex = uint(len(fnodes) - 1)
 			}
-			MyAssert(aDes.Exit == fnodes[exitIndex])
+			cmptypes.MyAssert(aDes.Exit == fnodes[exitIndex])
 			if tt.DebugOut != nil {
 				jd.RegisterSnapshot.AssertSnapshotEqual(j.registers.Slice(0, jd.RegisterSnapshot.size).ToRegisterFileSnapshot())
 			}
@@ -3038,8 +3000,8 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 		j.AddRefNode(aSrc)
 		j.AddRefNode(jd)
 		if i == len(targetNodes)-1 {
-			MyAssert(aDes.LRNode.Op.isStoreOp)
-			MyAssert(aDes.LRNode.Seq == j.trace.FirstStoreNodeIndex)
+			cmptypes.MyAssert(aDes.LRNode.Op.isStoreOp)
+			cmptypes.MyAssert(aDes.LRNode.Seq == j.trace.FirstStoreNodeIndex)
 			if j.newNodeCount > beforeNewNodeCount {
 				aDes.Rounds = append(aDes.Rounds, j.round)
 			}
@@ -3062,9 +3024,9 @@ func (j *JumpInserter) SetupOpJumpLane() {
 	// set up OpLJump for Non-A-Load
 	for _, nodeIndex := range j.trace.RLNodeIndices {
 		node := snodes[nodeIndex]
-		MyAssert(node.IsRLNode)
+		cmptypes.MyAssert(node.IsRLNode)
 		if !node.IsANode {
-			MyAssert(node.Op.isLoadOp)
+			cmptypes.MyAssert(node.Op.isLoadOp)
 			jn := node.JumpHead
 			if jn == nil {
 				jn = NewOpSearchTrieNode(node)
@@ -3079,17 +3041,17 @@ func (j *JumpInserter) SetupOpJumpLane() {
 				if tt.DebugOut != nil {
 					tt.DebugOut("OldOpLaneLAJumpNode of %v on AIndex %v\n",
 						node.Statement.SimpleNameStringWithRegisterAnnotation(rMap), jn.VIndices)
-					MyAssert(jn.OpNode == node)
-					MyAssert(jn.IsAccountJump == true)
-					MyAssert(len(jn.VIndices) == 1)
-					MyAssert(jn.VIndices[0] == node.AccountIndex)
+					cmptypes.MyAssert(jn.OpNode == node)
+					cmptypes.MyAssert(jn.IsAccountJump == true)
+					cmptypes.MyAssert(len(jn.VIndices) == 1)
+					cmptypes.MyAssert(jn.VIndices[0] == node.AccountIndex)
 				}
 			}
 
 			aKey, aOk := GetOpJumKey(j.accountHistory, jn.VIndices)
 			if DEBUG_TRACER {
-				MyAssert(aOk)
-				MyAssert(aKey != EMPTY_JUMP_KEY)
+				cmptypes.MyAssert(aOk)
+				cmptypes.MyAssert(aKey != EMPTY_JUMP_KEY)
 			}
 			jd, newCreated := jn.GetOrCreateMapJumpDef(aKey)
 			j.AddRefNode(jn)
@@ -3120,7 +3082,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 				aIndices := aDeps[start:end]
 				aKey, aOk := GetOpJumKey(j.accountHistory, aIndices)
 				if DEBUG_TRACER {
-					MyAssert(aOk)
+					cmptypes.MyAssert(aOk)
 				}
 				var aNode *OpSearchTrieNode
 				if newCreated {
@@ -3139,11 +3101,11 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					}
 					aNode = jd.Next
 					if DEBUG_TRACER {
-						MyAssert(aNode != nil)
-						MyAssert(aNode.IsAccountJump == true)
+						cmptypes.MyAssert(aNode != nil)
+						cmptypes.MyAssert(aNode.IsAccountJump == true)
 						AssertUArrayEqual(aNode.VIndices, aIndices)
-						MyAssert(jd.FieldHistorySegment == nil)
-						MyAssert(jd.RegisterSegment == nil)
+						cmptypes.MyAssert(jd.FieldHistorySegment == nil)
+						cmptypes.MyAssert(jd.RegisterSegment == nil)
 					}
 				}
 				jd, newCreated = aNode.GetOrCreateMapJumpDef(aKey)
@@ -3165,7 +3127,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 
 			desNode := snodes[nodeIndex+1]
 			for {
-				MyAssert(desNode == snodes[desNode.Seq])
+				cmptypes.MyAssert(desNode == snodes[desNode.Seq])
 				if desNode.Op.isStoreOp {
 					break
 				}
@@ -3186,9 +3148,9 @@ func (j *JumpInserter) SetupOpJumpLane() {
 				}
 				jd.Next = nil
 				jd.Dest = desNode
-				MyAssert(node.OutputRegisterIndex != 0)
+				cmptypes.MyAssert(node.OutputRegisterIndex != 0)
 				jd.RegisterSegment = j.registers.Slice(node.OutputRegisterIndex, desNode.BeforeRegisterSize)
-				MyAssert(node.FieldIndex != 0)
+				cmptypes.MyAssert(node.FieldIndex != 0)
 				jd.FieldHistorySegment = j.fieldHistroy.Slice(node.FieldIndex, desNode.BeforeFieldHistorySize)
 			} else {
 				if tt.DebugOut != nil {
@@ -3196,27 +3158,27 @@ func (j *JumpInserter) SetupOpJumpLane() {
 						node.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 						desNode.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 						aKey[:1])
-					MyAssert(jd.Next == nil)
-					MyAssert(jd.Dest == desNode)
+					cmptypes.MyAssert(jd.Next == nil)
+					cmptypes.MyAssert(jd.Dest == desNode)
 					jd.RegisterSegment.AssertEqual(j.registers.Slice(node.OutputRegisterIndex, desNode.BeforeRegisterSize))
 					jd.FieldHistorySegment.AssertEqual(j.fieldHistroy.Slice(node.FieldIndex, desNode.BeforeFieldHistorySize))
 				}
 			}
 
 			if len(aNodes) > 0 {
-				MyAssert(len(node.FieldDependenciesExcludingSelfAccount) > 0)
+				cmptypes.MyAssert(len(node.FieldDependenciesExcludingSelfAccount) > 0)
 				if aNodes[0].Exit == nil {
 					jd = &OpNodeJumpDef{}
 					for _, n := range aNodes {
-						MyAssert(n.Exit == nil)
+						cmptypes.MyAssert(n.Exit == nil)
 						n.Exit = jd
 					}
 				} else {
 					firstExist := aNodes[0].Exit
-					MyAssert(firstExist != nil)
+					cmptypes.MyAssert(firstExist != nil)
 					for _, n := range aNodes[1:] {
 						if n.Exit != nil {
-							MyAssert(n.Exit == firstExist)
+							cmptypes.MyAssert(n.Exit == firstExist)
 						} else {
 							n.Exit = firstExist
 						}
@@ -3235,7 +3197,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					fIndices := fDeps[start:end]
 					fKey, fOk := GetOpJumKey(j.fieldHistroy, fIndices)
 					if DEBUG_TRACER {
-						MyAssert(fOk)
+						cmptypes.MyAssert(fOk)
 					}
 					var fNode *OpSearchTrieNode
 					if newCreated {
@@ -3253,11 +3215,11 @@ func (j *JumpInserter) SetupOpJumpLane() {
 								i, node.Statement.SimpleNameStringWithRegisterAnnotation(rMap), fIndices)
 						}
 						fNode = jd.Next
-						MyAssert(fNode != nil)
-						MyAssert(fNode.IsAccountJump == false)
+						cmptypes.MyAssert(fNode != nil)
+						cmptypes.MyAssert(fNode.IsAccountJump == false)
 						AssertUArrayEqual(fNode.VIndices, fIndices)
-						MyAssert(jd.FieldHistorySegment == nil)
-						MyAssert(jd.RegisterSegment == nil)
+						cmptypes.MyAssert(jd.FieldHistorySegment == nil)
+						cmptypes.MyAssert(jd.RegisterSegment == nil)
 					}
 					jd, newCreated = fNode.GetOrCreateMapJumpDef(fKey)
 					if newCreated {
@@ -3286,9 +3248,9 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					}
 					jd.Next = nil
 					jd.Dest = desNode
-					MyAssert(node.OutputRegisterIndex != 0)
+					cmptypes.MyAssert(node.OutputRegisterIndex != 0)
 					jd.RegisterSegment = j.registers.Slice(node.OutputRegisterIndex, node.OutputRegisterIndex+1)
-					MyAssert(node.FieldIndex != 0)
+					cmptypes.MyAssert(node.FieldIndex != 0)
 					jd.FieldHistorySegment = j.fieldHistroy.Slice(node.FieldIndex, node.FieldIndex+1)
 				} else {
 					if tt.DebugOut != nil {
@@ -3296,8 +3258,8 @@ func (j *JumpInserter) SetupOpJumpLane() {
 							node.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 							desNode.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 							aKey[:1])
-						MyAssert(jd.Next == nil)
-						MyAssert(jd.Dest == desNode)
+						cmptypes.MyAssert(jd.Next == nil)
+						cmptypes.MyAssert(jd.Dest == desNode)
 						jd.RegisterSegment.AssertEqual(j.registers.Slice(node.OutputRegisterIndex, node.OutputRegisterIndex+1))
 						jd.FieldHistorySegment.AssertEqual(j.fieldHistroy.Slice(node.FieldIndex, node.FieldIndex+1))
 					}
@@ -3314,14 +3276,14 @@ func (j *JumpInserter) SetupOpJumpLane() {
 	for i, nodeIndex := range jumpStations[:len(jumpStations)-1] {
 		targetNodeIndex := jumpStations[i+1]
 		targetNode := snodes[targetNodeIndex]
-		MyAssert(targetNodeIndex > nodeIndex)
-		MyAssert(targetNode.IsRLNode || targetNode.Op.isStoreOp)
-		MyAssert(targetNode == snodes[targetNode.Seq])
+		cmptypes.MyAssert(targetNodeIndex > nodeIndex)
+		cmptypes.MyAssert(targetNode.IsRLNode || targetNode.Op.isStoreOp)
+		cmptypes.MyAssert(targetNode == snodes[targetNode.Seq])
 		if targetNodeIndex-nodeIndex == 1 {
 			continue
 		}
 		jumpSrc := snodes[nodeIndex]
-		MyAssert(jumpSrc.IsRLNode)
+		cmptypes.MyAssert(jumpSrc.IsRLNode)
 		for {
 			// find out JumpSrc
 			for {
@@ -3329,7 +3291,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 				if jumpSrc == targetNode {
 					break
 				}
-				MyAssert(!jumpSrc.IsRLNode)
+				cmptypes.MyAssert(!jumpSrc.IsRLNode)
 				if jumpSrc.IsJSPNode {
 					break
 				}
@@ -3338,7 +3300,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			if jumpSrc == targetNode {
 				break
 			}
-			MyAssert(!jumpSrc.IsRLNode && jumpSrc.IsJSPNode)
+			cmptypes.MyAssert(!jumpSrc.IsRLNode && jumpSrc.IsJSPNode)
 
 			// create OpFJumps
 			nodeBudget += 5 // allocate 5 nodes budget for the FJumps of each JSP
@@ -3347,7 +3309,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			jd := &OpNodeJumpDef{} // head.Exit
 			if jumpSrc.JumpHead != nil {
 				jd = jumpSrc.JumpHead.Exit
-				MyAssert(jd != nil)
+				cmptypes.MyAssert(jd != nil)
 			}
 			j.AddRefNode(jd)
 			newCreatedJd := false
@@ -3382,12 +3344,12 @@ func (j *JumpInserter) SetupOpJumpLane() {
 								jdFromNode.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 								jumpDes.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 								jdFromFIndices, jdFromFKey[:len(jdFromFIndices)])
-							MyAssert(jd.FieldHistorySegment == nil)
+							cmptypes.MyAssert(jd.FieldHistorySegment == nil)
 							jd.RegisterSegment.AssertEqual(j.registers.Slice(jdFromNode.BeforeRegisterSize, jumpDes.BeforeRegisterSize))
 							if jumpDes == targetNode {
-								MyAssert(jd.Next == nil)
-								MyAssert(jd.Dest != nil)
-								MyAssert(jd.Dest == targetNode, "%v", jd.Dest.Statement.SimpleNameStringWithRegisterAnnotation(rMap))
+								cmptypes.MyAssert(jd.Next == nil)
+								cmptypes.MyAssert(jd.Dest != nil)
+								cmptypes.MyAssert(jd.Dest == targetNode, "%v", jd.Dest.Statement.SimpleNameStringWithRegisterAnnotation(rMap))
 							}
 						}
 					}
@@ -3406,7 +3368,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					fIndices := newFDeps[start:end]
 					fKey, fOk := GetOpJumKey(j.fieldHistroy, fIndices)
 					if DEBUG_TRACER {
-						MyAssert(fOk)
+						cmptypes.MyAssert(fOk)
 					}
 					fjn := jd.Next
 					if fjn == nil {
@@ -3434,12 +3396,12 @@ func (j *JumpInserter) SetupOpJumpLane() {
 						}
 						fNodeSeq++
 						AssertUArrayEqual(fjn.VIndices, fIndices)
-						MyAssert(fjn.IsAccountJump == false)
-						MyAssert(fjn.OpNode == jumpDes)
+						cmptypes.MyAssert(fjn.IsAccountJump == false)
+						cmptypes.MyAssert(fjn.OpNode == jumpDes)
 					}
 
 					if _, ok := nodeIndexToFJumpNodes[jumpDes.Seq]; !ok {
-						MyAssert(i == 0)
+						cmptypes.MyAssert(i == 0)
 						nodeIndexToFJumpNodes[jumpDes.Seq] = fjn // record the first fjump node for each snode
 					}
 
@@ -3461,7 +3423,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					fDeps = fRet
 				}
 
-				MyAssert(snodes[jumpDes.Seq] == jumpDes)
+				cmptypes.MyAssert(snodes[jumpDes.Seq] == jumpDes)
 				jumpDes = snodes[jumpDes.Seq+1]
 			}
 
@@ -3506,11 +3468,11 @@ func (j *JumpInserter) SetupOpJumpLane() {
 								jdFromNode.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 								jumpDes.Statement.SimpleNameStringWithRegisterAnnotation(rMap),
 								jdFromAIndices, jdFromAKey[:len(jdFromAIndices)])
-							MyAssert(jd.FieldHistorySegment == nil)
+							cmptypes.MyAssert(jd.FieldHistorySegment == nil)
 							jd.RegisterSegment.AssertEqual(j.registers.Slice(jdFromNode.BeforeRegisterSize, jumpDes.BeforeRegisterSize))
 							if jumpDes == targetNode {
-								MyAssert(jd.Next == nil)
-								MyAssert(jd.Dest == targetNode)
+								cmptypes.MyAssert(jd.Next == nil)
+								cmptypes.MyAssert(jd.Dest == targetNode)
 							}
 						}
 					}
@@ -3529,7 +3491,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					aIndices := newADeps[start:end]
 					aKey, aOk := GetOpJumKey(j.accountHistory, aIndices)
 					if DEBUG_TRACER {
-						MyAssert(aOk)
+						cmptypes.MyAssert(aOk)
 					}
 					ajn := jd.Next
 					if ajn == nil {
@@ -3545,8 +3507,8 @@ func (j *JumpInserter) SetupOpJumpLane() {
 
 						fjn, ok := nodeIndexToFJumpNodes[jumpDes.Seq]
 						if ok {
-							MyAssert(fjn.OpNode == jumpDes)
-							MyAssert(fjn.IsAccountJump == false)
+							cmptypes.MyAssert(fjn.OpNode == jumpDes)
+							cmptypes.MyAssert(fjn.IsAccountJump == false)
 							ajn.Exit = &OpNodeJumpDef{Next: fjn}
 						}
 						jd.Next = ajn
@@ -3565,13 +3527,13 @@ func (j *JumpInserter) SetupOpJumpLane() {
 						}
 						aNodeSeq++
 						AssertUArrayEqual(ajn.VIndices, aIndices)
-						MyAssert(ajn.IsAccountJump == true)
-						MyAssert(ajn.OpNode == jumpDes)
+						cmptypes.MyAssert(ajn.IsAccountJump == true)
+						cmptypes.MyAssert(ajn.OpNode == jumpDes)
 						if ajn.Exit != nil {
 							fjn, ok := nodeIndexToFJumpNodes[jumpDes.Seq]
-							MyAssert(ok)
-							MyAssert(ajn.Exit.Next == fjn)
-							MyAssert(fjn.OpNode == jumpDes)
+							cmptypes.MyAssert(ok)
+							cmptypes.MyAssert(ajn.Exit.Next == fjn)
+							cmptypes.MyAssert(fjn.OpNode == jumpDes)
 						}
 					}
 
@@ -3593,7 +3555,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					aDeps = aRet
 				}
 
-				MyAssert(snodes[jumpDes.Seq] == jumpDes)
+				cmptypes.MyAssert(snodes[jumpDes.Seq] == jumpDes)
 				jumpDes = snodes[jumpDes.Seq+1]
 			}
 
@@ -3607,7 +3569,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 
 func (j *JumpInserter) SetupRoundMapping() {
 	node := j.snodes[j.trace.FirstStoreNodeIndex]
-	MyAssert(node.Op.isStoreOp)
+	cmptypes.MyAssert(node.Op.isStoreOp)
 	node.roundResults.SetupRoundMapping(j.registers, j.accountHistory, j.fieldHistroy, j.round, j.tt.DebugOut)
 }
 

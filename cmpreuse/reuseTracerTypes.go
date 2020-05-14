@@ -2,6 +2,7 @@ package cmpreuse
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -556,9 +557,9 @@ func (v *Variable) GetDataBig(start, size *Variable) *Variable {
 
 	if constStartAndSize && sizeU64 > 0 && noPadding {
 		if cells, ok = v.tracer.byteArrayOriginCells[v]; ok {
-			MyAssert(uint64(len(cells)) == vSize)
+			cmptypes.MyAssert(uint64(len(cells)) == vSize)
 			_, sok := v.tracer.byteArrayCachedSize[v]
-			MyAssert(sok)
+			cmptypes.MyAssert(sok)
 
 			singleVariableMatch := true
 			for i := uint64(0); i < sizeU64; i++ {
@@ -579,7 +580,7 @@ func (v *Variable) GetDataBig(start, size *Variable) *Variable {
 					vArray := v.ByteArray()
 					for i, a := range ret.ByteArray() {
 						b := vArray[uint64(i)+startU64]
-						MyAssert(a == b)
+						cmptypes.MyAssert(a == b)
 					}
 					return ret
 				}
@@ -592,20 +593,20 @@ func (v *Variable) GetDataBig(start, size *Variable) *Variable {
 	}
 	if !ret.IsConst() && ok && constStartAndSize && vSize > 0 && noPadding {
 		newCells := cells[startU64 : startU64+sizeU64]
-		MyAssert(len(newCells) == len(ret.ByteArray()))
+		cmptypes.MyAssert(len(newCells) == len(ret.ByteArray()))
 
 		if oldCells, ok := v.tracer.byteArrayOriginCells[ret]; !ok {
 			v.tracer.byteArrayOriginCells[ret] = newCells
 		} else {
-			MyAssert(len(oldCells) == len(newCells))
+			cmptypes.MyAssert(len(oldCells) == len(newCells))
 			for i, oldCell := range oldCells {
 				cell := newCells[i]
 				if oldCell == nil {
-					MyAssert(cell == nil)
+					cmptypes.MyAssert(cell == nil)
 				} else {
-					MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
+					cmptypes.MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
 						ret.Name(), i, oldCell.variable.Name(), cell.variable.Name())
-					MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
+					cmptypes.MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
 						ret.Name(), i, oldCell.variable.Name(), oldCell.offset, cell.offset)
 				}
 			}
@@ -621,7 +622,7 @@ func (v *Variable) LenByteArray() *Variable {
 	//	return v.tracer.ConstVar(new(big.Int).SetInt64(int64(len(v.ByteArray()))))
 	//}
 	if size, ok := v.tracer.byteArrayCachedSize[v]; ok {
-		MyAssert(size.IsConst())
+		cmptypes.MyAssert(size.IsConst())
 		return size
 	}
 	return v.tracer.Trace(OP_LenByteArray, nil, v)
@@ -963,8 +964,8 @@ func (s *Statement) getInputNameList(registerMapping *map[uint32]uint) string {
 	inputNames := make([]string, 0, len(s.inputs))
 	if s.op == OP_ConcatBytes {
 		inputNames = append(inputNames, s.inputs[0].Name()) // len
-		MyAssert(len(s.inputs) >= 1)
-		MyAssert((len(s.inputs)-1)%3 == 0)
+		cmptypes.MyAssert(len(s.inputs) >= 1)
+		cmptypes.MyAssert((len(s.inputs)-1)%3 == 0)
 
 		inputs := s.inputs[1:]
 		for i := 0; i < len(inputs); i += 3 {
@@ -1225,14 +1226,14 @@ func (m *TracerMem) Set(offsetVar, sizeVar, byteArrayValueVariable *Variable) {
 		if cells, ok := m.tracer.byteArrayOriginCells[byteArrayValueVariable]; ok {
 			valueLen := uint64(len(cells))
 			bArray := byteArrayValueVariable.ByteArray()
-			MyAssert(valueLen == uint64(len(bArray)))
+			cmptypes.MyAssert(valueLen == uint64(len(bArray)))
 			for i := offset; i < offset+size && i < offset+valueLen; i++ {
 				cell := cells[i-offset]
 				m.store[i] = cell
 				if cell != nil {
-					MyAssert(bArray[i-offset] == cell.variable.ByteArray()[cell.offset])
+					cmptypes.MyAssert(bArray[i-offset] == cell.variable.ByteArray()[cell.offset])
 				} else {
-					MyAssert(bArray[i-offset] == 0)
+					cmptypes.MyAssert(bArray[i-offset] == 0)
 				}
 			}
 		} else {
@@ -1255,7 +1256,7 @@ func (m *TracerMem) Set32(offsetVar, bigIntVal *Variable) {
 
 	bytesVar := bigIntVal.BigIntTo32Bytes()
 	byteLen := uint64(len(bytesVar.ByteArray()))
-	MyAssert(byteLen == 32)
+	cmptypes.MyAssert(byteLen == 32)
 	for i := uint64(0); i < byteLen; i++ {
 		m.store[offset+i] = newMemByteCell(bytesVar, i)
 	}

@@ -105,34 +105,37 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds *lru.Cache `json:"-"`
-	// deprecated
-	RWrecords *lru.Cache `json:"-"`
-	// deprecated
-	ReadDeps     *lru.Cache `json:"-"`
+	Rounds       *lru.Cache `json:"-"`
 	RWRecordTrie *cmptypes.PreplayResTrie
 	ReadDepTree  *cmptypes.PreplayResTrie
 	MixTree      *cmptypes.PreplayResTrie
 	DeltaTree    *cmptypes.PreplayResTrie
 	TraceTrie    cmptypes.ITracerTrie
+
+	// deprecated
+	RWrecords *lru.Cache `json:"-"`
+	// deprecated
+	ReadDeps *lru.Cache `json:"-"`
 }
 
 // PreplayResult record one round result
 type PreplayResult struct {
 	// Basic Info
-	TxHash   common.Hash `json:"txHash"`
-	RoundID  uint64      `json:"roundId"` // RoundID Info
-	GasPrice *big.Int    `json:"gasPrice"`
+	TxHash   common.Hash       `json:"txHash"`
+	RoundID  uint64            `json:"roundId"` // RoundID Info
+	GasPrice *big.Int          `json:"gasPrice"`
+	TxResID  *cmptypes.TxResID `json:"-"`
 
 	// Main Result
-	Receipt       *types.Receipt  `json:"receipt"`
-	RWrecord      *RWRecord       `json:"rwrecord"`
-	WObjects      state.ObjectMap `json:"wobjects"`
-	Timestamp     uint64          `json:"timestamp"` // Generation Time
-	TimestampNano uint64          `json:"timestampNano"`
+	Receipt        *types.Receipt      `json:"receipt"`
+	RWrecord       *RWRecord           `json:"rwrecord"`
+	WObjects       state.ObjectMap     `json:"wobjects"`
+	AccountChanges cmptypes.TxResIDMap `json:"changes"`   // the written address changedby
+	Timestamp      uint64              `json:"timestamp"` // Generation Time
+	TimestampNano  uint64              `json:"timestampNano"`
 
 	BasedBlockHash common.Hash              `json:"basedBlock"`
-	ReadDeps       []*cmptypes.AddrLocValue `json:"deps"`
+	ReadDepSeq     []*cmptypes.AddrLocValue `json:"deps"`
 	// fastCheck info
 	FormerTxs []common.Hash `json:"formerTxs"`
 
@@ -147,6 +150,10 @@ type PreplayResult struct {
 	Filled int64
 
 	Trace cmptypes.ISTrace
+}
+
+func (r *PreplayResult) GetRoundId() uint64 {
+	return r.RoundID
 }
 
 type WStateDelta struct {
@@ -741,7 +748,7 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 
 // SetMainResult set the result for a tx
 func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap,
-	readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
+	accChanges cmptypes.TxResIDMap, readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
 	r.FillBigIntPool()
 
 	if receipt == nil || rwRecord == nil {
@@ -753,7 +760,8 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 
 	round.RWrecord = rwRecord
 	round.Receipt = receipt
-	round.ReadDeps = readDeps
+	round.ReadDepSeq = readDeps
+	round.AccountChanges = accChanges
 
 	nowTime := time.Now()
 	round.WObjects = wobjects
@@ -832,7 +840,7 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 	//defer txPreplay.Mu.Unlock()
 
 	if isNoDep {
-		//readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(preBlockHash)
+		//readDep, ok := txPreplay.PreplayResults.ReadDepSeq.Get(preBlockHash)
 		readDep := &ReadDep{
 			BasedBlockHash: preBlockHash,
 			IsNoDep:        isNoDep,
@@ -842,13 +850,13 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 	} else {
 		// TODO: handle tx with depended txs ; key might be blockhash + txhash
 		// key := preBlockHash + preTxHashes
-		//readDep, ok := txPreplay.PreplayResults.ReadDeps.Get(key)
+		//readDep, ok := txPreplay.PreplayResults.ReadDepSeq.Get(key)
 		//if !ok {
 		//	readDep = &ReadDep{
 		//		BasedBlockHash: preBlockHash,
 		//		IsNoDep:        isNoDep,
 		//	}
-		//	txPreplay.PreplayResults.ReadDeps.Add(key, readDep)
+		//	txPreplay.PreplayResults.ReadDepSeq.Add(key, readDep)
 		//} else {
 		//	curReadDep := readDep.(*ReadDep)
 		//	curReadDep.BasedBlockHash = preBlockHash

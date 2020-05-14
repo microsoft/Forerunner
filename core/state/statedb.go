@@ -634,13 +634,27 @@ func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txHash c
 	}
 }
 
-func (s *StateDB) UpdateAccountChangedByMap(dirties ObjectMap, txHash common.Hash, roundId uint64, coinbase *common.Address) {
-	txRes := cmptypes.NewTxResID(txHash, roundId)
+func (s *StateDB) UpdateAccountChangedByMap(dirties ObjectMap, txRes *cmptypes.TxResID, coinbase *common.Address) {
 	for addr := range dirties {
 		s.UpdateAccountChanged(addr, txRes)
 	}
 	if coinbase != nil {
 		s.UpdateAccountChanged(*coinbase, txRes)
+	}
+}
+
+func (s *StateDB) UpdateAccountChangedByMap2(dirties cmptypes.TxResIDMap, txRes *cmptypes.TxResID, coinbase *common.Address) {
+	for addr := range dirties {
+		s.UpdateAccountChanged(addr, txRes)
+	}
+	if coinbase != nil {
+		s.UpdateAccountChanged(*coinbase, txRes)
+	}
+}
+
+func (s *StateDB) ApplyAccountChanged(changes cmptypes.TxResIDMap) {
+	for addr := range changes {
+		s.UpdateAccountChanged(addr, changes[addr])
 	}
 }
 

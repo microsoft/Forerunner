@@ -542,12 +542,13 @@ type ConfigWapper struct {
 type ConfigWapper2 struct {
 	P2P Config
 }
+const MonitorInterval = 10 * time.Minute
 
 func (srv *Server) monitorWebConfig() {
 	srv.log.Info("Start to monitor the node config from web")
 	defer srv.loopWG.Done()
 
-	monitorTicker := time.NewTicker(10 * time.Minute)
+	monitorTicker := time.NewTicker(MonitorInterval)
 
 monitoring:
 	for {
@@ -556,12 +557,22 @@ monitoring:
 			srv.log.Debug("start monitor the web config")
 			newCfg := ConfigWapper{}
 			err := loadWebConfig(srv.ANConfigUrl, &newCfg)
+			alliedNodeCount := 0
 			if err == nil {
 				for _, newAlliedNode := range newCfg.Node.P2P.AlliedNodes {
-					srv.log.Info("allied nodes", "node", newAlliedNode.String())
 					srv.addallied <- newAlliedNode
 				}
+				alliedNodeCount = len(newCfg.Node.P2P.AlliedNodes)
 			}
+
+			peers := srv.Peers()
+			alliedPeerCount := 0
+			for _, p:= range peers{
+				if p.Allied(){
+					alliedPeerCount++
+				}
+			}
+			log.Info("Peer Statics", "totalPeer", len(peers),"alliedPeer", alliedPeerCount, "totalAlliedNodes", alliedNodeCount)
 		case <-srv.quit:
 			monitorTicker.Stop()
 			break monitoring
@@ -804,7 +815,7 @@ running:
 			break running
 
 		case n := <-srv.addallied: // add new type of nodes, by zx
-			srv.log.Info("Adding allied node", "node", n)
+			srv.log.Trace("Adding allied node", "node", n)
 			// Allied node is both static node and trusted node
 			dialstate.addStatic(n)
 			trusted[n.ID()] = true

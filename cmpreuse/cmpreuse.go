@@ -50,7 +50,6 @@ func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.
 		defer c.ReuseDone.Done()
 	}
 
-
 	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, c.IsAborted, true, cfg)
 
 	if status.BaseStatus == cmptypes.Hit && c.TryAbortCounterpart() {
@@ -248,29 +247,33 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
 			//use account level update instead of :
-			//reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), 0, &header.Coinbase)
 			hitAddrIndex := 0
-			curtxRes := cmptypes.NewTxResID(tx.Hash(), 0)
-			reusedTxRes := cmptypes.NewTxResID(tx.Hash(), round.RoundID)
-			for addr := range round.WObjects {
-				if hitAddrIndex < len(reuseStatus.MixHitStatus.DepHitAddr) && addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
+			curtxResId := cmptypes.NewDefaultTxResID(tx.Hash())
+			//reusedTxRes := cmptypes.NewTxResID(tx.Hash(), round.RoundID)
+			for addr := range round.AccountChanges {
+				if hitAddrIndex < len(reuseStatus.MixHitStatus.DepHitAddr) &&
+					addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
 					hitAddrIndex++
 					if addr == header.Coinbase {
-						reuseDB.UpdateAccountChanged(addr, curtxRes)
+						reuseDB.UpdateAccountChanged(addr, curtxResId)
 					} else {
-						reuseDB.UpdateAccountChanged(addr, reusedTxRes)
+						reuseDB.UpdateAccountChanged(addr, round.AccountChanges[addr])
 					}
 				} else {
-					reuseDB.UpdateAccountChanged(addr, curtxRes)
+					reuseDB.UpdateAccountChanged(addr, curtxResId)
 				}
 			}
-		} else {
-			roundId := uint64(0)
-			if reuseStatus.BaseStatus == cmptypes.Hit && (reuseStatus.HitType == cmptypes.DepHit || (reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit)) &&
-				msg.From() != header.Coinbase && (msg.To() == nil || *msg.To() != header.Coinbase) {
-				roundId = round.RoundID
+
+		} else if reuseStatus.BaseStatus == cmptypes.Hit &&
+			(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
+			//roundId = round.RoundID
+			reuseDB.ApplyAccountChanged(round.AccountChanges)
+			if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
+				reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.NewDefaultTxResID(tx.Hash()))
 			}
-			reuseDB.UpdateAccountChangedByMap(round.WObjects, tx.Hash(), roundId, &header.Coinbase)
+		} else {
+			curtxResId := cmptypes.NewDefaultTxResID(tx.Hash())
+			reuseDB.UpdateAccountChangedByMap2(round.AccountChanges, curtxResId, &header.Coinbase)
 		}
 
 		reuseDB.Update()

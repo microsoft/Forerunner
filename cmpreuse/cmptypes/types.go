@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 )
 
 type Field int
@@ -25,14 +26,14 @@ const (
 	PreBlockHash  // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance //8
-	Nonce //9
-	CodeHash //10
-	Exist // 11
-	Empty // 12
-	Code // 13
-	Storage // 14
-	CommittedStorage //15
+	Balance           //8
+	Nonce             //9
+	CodeHash          //10
+	Exist             // 11
+	Empty             // 12
+	Code              // 13
+	Storage           // 14
+	CommittedStorage  //15
 
 	// Dep info
 	Dependence  //16
@@ -94,13 +95,14 @@ func IsStateField(field Field) bool {
 }
 
 type ReuseStatus struct {
-	BaseStatus   ReuseBaseStatus
-	HitType      HitType
-	MissType     MissType
-	MixHitStatus *MixHitStatus
-	MissNode     *PreplayResTrieNode
-	MissValue    interface{}
-	AbortStage   AbortStage
+	BaseStatus        ReuseBaseStatus
+	HitType           HitType
+	MissType          MissType
+	MixHitStatus      *MixHitStatus
+	MissNode          *PreplayResTrieNode
+	MissValue         interface{}
+	AbortStage        AbortStage
+	TraceTrieHitAddrs TxResIDMap
 }
 
 type MixHitStatus struct {
@@ -204,6 +206,10 @@ type RecordHolder interface {
 	GetPreplayRes() interface{}
 }
 
+type IRound interface {
+	GetRoundId() uint64
+}
+
 type TxResID struct {
 	Txhash  *common.Hash `json:"tx"`
 	RoundID uint64       `json:"rID"`
@@ -214,6 +220,10 @@ type TxResID struct {
 
 func NewTxResID(txHash common.Hash, roundID uint64) *TxResID {
 	return &TxResID{Txhash: &txHash, RoundID: roundID, hasHash: false}
+}
+
+func NewDefaultTxResID(txHash common.Hash) *TxResID {
+	return &TxResID{Txhash: &txHash, RoundID: 0, hasHash: true, hash: &txHash}
 }
 
 func (t *TxResID) Hash() *common.Hash {
@@ -307,6 +317,7 @@ func GetBytes(v interface{}) []byte {
 }
 
 type ChangedMap map[common.Address]*ChangedBy
+type TxResIDMap map[common.Address]*TxResID
 
 func (cm ChangedMap) Copy() ChangedMap {
 	newCM := make(map[common.Address]*ChangedBy)
@@ -368,20 +379,173 @@ func NewReadDetail() *ReadDetail {
 	}
 }
 
-type PreplayResTrieNode struct {
-	Children map[interface{}]*PreplayResTrieNode // value => child node
-	NodeType *AddrLocation
-	//QuickChild  *PreplayResTrieNode
-	DetailChild *PreplayResTrieNode
-	IsLeaf      bool
-	RWRecord    RecordHolder
-	Round       interface{} // TODO: XXX
+func MyAssert(b bool, params ...interface{}) {
+	if !b {
+		msg := ""
+		if len(params) > 0 {
+			msg = fmt.Sprintf(params[0].(string), params[1:]...)
+		}
+		panic(msg)
+	}
 }
 
-//type RWTrieHolder interface {
-//	Insert(record RecordHolder)
-//	Search(db interface{}, bc interface{}, header *types.Header) (*PreplayResTrieNode, bool)
-//}
+type ISRefCountNode interface {
+	GetRefCount() uint
+	AddRef() uint                // add a ref and return the new ref count
+	RemoveRef(value interface{}) // remove a ref
+}
+
+type SRefCount struct {
+	refCount uint
+}
+
+func (rf *SRefCount) GetRefCount() uint {
+	return rf.refCount
+}
+
+func (rf *SRefCount) AddRef() uint {
+	rf.refCount++
+	return rf.refCount
+}
+
+func (rf *SRefCount) SRemoveRef() uint {
+	MyAssert(rf.refCount > 0)
+	rf.refCount--
+	return rf.refCount
+}
+
+type TrieRoundRefNodes struct {
+	RefNodes []ISRefCountNode
+	RoundID  uint64
+	Next     *TrieRoundRefNodes
+}
+
+type TrieRoundRef struct {
+	RoundRefNodesHead *TrieRoundRefNodes
+	RoundRefNodesTail *TrieRoundRefNodes
+	RoundRefCount     uint
+	TrieNodeCount     int64
+}
+
+func (rr *TrieRoundRef) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round IRound) {
+	if newNodeCount > 0 {
+		//for _, n := range refNodes {
+		//	rc := n.AddRef()
+		//	MyAssert(rc > 0)
+		//}
+
+		r := &TrieRoundRefNodes{
+			RefNodes: refNodes,
+			RoundID:  round.GetRoundId(),
+		}
+
+		rr.RoundRefCount++
+		rr.TrieNodeCount += int64(newNodeCount)
+		if rr.RoundRefNodesHead == nil {
+			MyAssert(rr.RoundRefNodesTail == nil)
+			//MyAssert(uint(len(refNodes)) == newNodeCount)
+			rr.RoundRefNodesHead = r
+			rr.RoundRefNodesTail = r
+		} else {
+			MyAssert(rr.RoundRefNodesTail.Next == nil)
+			rr.RoundRefNodesTail.Next = r
+			rr.RoundRefNodesTail = r
+		}
+		rr.GCRoundRefNodes()
+	}
+}
+
+func (rr *TrieRoundRef) GCRoundRefNodes() int64 {
+	MyAssert(rr.RoundRefNodesHead != nil && rr.RoundRefNodesTail != nil)
+	totalRemoved := int64(0)
+	if rr.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT) {
+
+		for i := 0; i < 1; i++ {
+			head := rr.RoundRefNodesHead
+			totalRemoved += rr.RemoveRoundRef(head)
+
+			rr.RoundRefNodesHead = head.Next
+		}
+	}
+	return totalRemoved
+}
+
+func (rr *TrieRoundRef) RemoveRoundRef(rf *TrieRoundRefNodes) int64 {
+	removedNodes := int64(0)
+	for _, n := range rf.RefNodes {
+		n.RemoveRef(rf.RoundID)
+		if n.GetRefCount() == 0 {
+			removedNodes++ // TODO
+		}
+	}
+	rr.RoundRefCount--
+	rr.TrieNodeCount -= removedNodes
+	MyAssert(rr.RoundRefCount >= 0)
+	MyAssert(rr.TrieNodeCount >= 0)
+	return removedNodes
+}
+
+type PreplayResTrieNode struct {
+	Value       interface{}                         // this value is the key in its parent
+	Children    map[interface{}]*PreplayResTrieNode // value => child node
+	NodeType    *AddrLocation
+	DetailChild *PreplayResTrieNode
+	Parent      *PreplayResTrieNode
+	IsLeaf      bool
+	Round       IRound
+
+	//SRefCount // RefCount in PreplayResTrieNode means the number of children nodes (including DetailChild)
+}
+
+func (p *PreplayResTrieNode) GetRefCount() uint {
+	res := 0
+	if p.Children != nil {
+		res += len(p.Children)
+	}
+	if p.DetailChild != nil {
+		res++
+	}
+	return uint(res)
+}
+
+// this function is useless
+func (p *PreplayResTrieNode) AddRef() uint{
+	return p.GetRefCount()
+}
+
+func (p *PreplayResTrieNode) deRefSelf() {
+	MyAssert(p.GetRefCount() == 0)
+	if p.Parent == nil {
+
+	} else {
+		if p.Value == nil {
+			// this is a detailChild
+			MyAssert(p == p.Parent.DetailChild)
+			p.Parent.DetailChild = nil
+		} else {
+			parent2child, ok := p.Parent.Children[p.Value]
+			MyAssert(ok)
+			MyAssert(p == parent2child)
+			delete(p.Parent.Children, p.Value)
+		}
+		p.Parent.RemoveRef(nil)
+	}
+}
+
+func (p *PreplayResTrieNode) RemoveRef(value interface{}) {
+	refCount := p.GetRefCount()
+
+	if p.IsLeaf {
+		roundId := value.(uint64)
+		MyAssert(roundId == p.Round.GetRoundId())
+		MyAssert(refCount == 0)
+		p.Round = nil
+	}
+
+	if refCount == 0 {
+		p.deRefSelf()
+	}
+}
 
 type PreplayResTrie struct {
 	Root      *PreplayResTrieNode
@@ -389,6 +553,7 @@ type PreplayResTrie struct {
 	LeafCount uint64 // rwset cound for detail trie. round count for dep tree and mix tree
 	RoundIds  map[uint64]bool
 	IsCleared bool
+	TrieRoundRef
 }
 
 func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {

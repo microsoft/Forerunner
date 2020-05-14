@@ -2,6 +2,7 @@ package cmpreuse
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"strconv"
 )
@@ -254,7 +255,7 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 		gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key")
 		if gk.Uint32() == 0 || isStore {
 			if isStore {
-				MyAssert(gk.Uint32() != 0, "read should be before store")
+				cmptypes.MyAssert(gk.Uint32() != 0, "read should be before store")
 			}
 			so.StateIDMVar = so.StateIDMVar.SetStateValueID(keyVar, keyVar.tracer.ConstVarWithName(valVar.id, "sID"+strconv.Itoa(int(valVar.id))))
 		}
@@ -262,17 +263,17 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 		if keyVar.IsConst() {
 			if _, ok := so.StateIDs.mapping[hashKey]; !ok || isStore {
 				if isStore {
-					MyAssert(ok, "read should be before store")
+					cmptypes.MyAssert(ok, "read should be before store")
 				}
 				so.StateIDs.mapping[hashKey] = valVar.id
 			}
 		} else {
-			MyAssert(so.StateIDMVar == nil)
+			cmptypes.MyAssert(so.StateIDMVar == nil)
 			so.StateIDMVar = keyVar.tracer.ConstVarWithName(so.StateIDs, "initSIDM")
 			gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key")
 			if gk.Uint32() == 0 || isStore {
 				if isStore {
-					MyAssert(gk.Uint32() != 0, "read should be before store")
+					cmptypes.MyAssert(gk.Uint32() != 0, "read should be before store")
 				}
 				so.StateIDMVar = so.StateIDMVar.SetStateValueID(keyVar, keyVar.tracer.ConstVarWithName(valVar.id, "sID"+strconv.Itoa(int(valVar.id))))
 			}
@@ -299,7 +300,7 @@ func (ws *TracerWorldState) guardAddr(addr common.Address, addrVar *Variable) {
 				ws.AddrIDs.mapping[addr] = addrVar.id
 			}
 		} else {
-			MyAssert(ws.AddrIDMVar == nil)
+			cmptypes.MyAssert(ws.AddrIDMVar == nil)
 			ws.AddrIDMVar = addrVar.tracer.ConstVarWithName(ws.AddrIDs, "initAIDM")
 			ak := ws.AddrIDMVar.GetAddrID(addrVar).NGuard("account_addr")
 			if ak.Uint32() == 0 {

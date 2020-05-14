@@ -623,7 +623,7 @@ func (rt *ReuseTracer) CellsToInputs(arrayLenVar_BigInt *Variable, cells []*MemB
 	inputs := make([]*Variable, 0, len(cells)/32+4)
 	inputs = append(inputs, arrayLenVar_BigInt)
 	if len(cells) == 0 {
-		MyAssert(arrayLenVar_BigInt.BigInt().Sign() == 0)
+		cmptypes.MyAssert(arrayLenVar_BigInt.BigInt().Sign() == 0)
 		return inputs
 	}
 	//MyAssert(len(cells) > 0)
@@ -689,7 +689,7 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 			v := inputs[1]
 			vLen := uint64(len(v.ByteArray()))
 			count := inputs[3].Uint64()
-			MyAssert(count == uint64(arrayLen))
+			cmptypes.MyAssert(count == uint64(arrayLen))
 			if count == vLen {
 				offsetFullCoverage = true
 			}
@@ -702,29 +702,29 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 		ret = cells[0].variable
 	} else {
 		ret = rt.TraceWithName(OP_ConcatBytes, nil, "[]byte", inputs...)
-		MyAssert(len(ret.ByteArray()) == len(cells))
+		cmptypes.MyAssert(len(ret.ByteArray()) == len(cells))
 		if !ret.IsConst() {
 			if oldCells, ok := rt.byteArrayOriginCells[ret]; !ok {
 				cellsCopy := make([]*MemByteCell, len(cells))
 				copy(cellsCopy, cells)
 				rt.byteArrayOriginCells[ret] = cellsCopy
 			} else {
-				MyAssert(len(oldCells) == len(cells))
+				cmptypes.MyAssert(len(oldCells) == len(cells))
 				for i, oldCell := range oldCells {
 					cell := cells[i]
 					if oldCell == nil {
-						MyAssert(cell == nil)
+						cmptypes.MyAssert(cell == nil)
 					} else {
-						MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
+						cmptypes.MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
 							ret.Name(), i, oldCell.variable.Name(), cell.variable.Name())
-						MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
+						cmptypes.MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
 							ret.Name(), i, oldCell.variable.Name(), oldCell.offset, cell.offset)
 					}
 				}
 			}
 		}
 	}
-	MyAssert(arrayLenVar_BigInt.IsConst())
+	cmptypes.MyAssert(arrayLenVar_BigInt.IsConst())
 	rt.byteArrayCachedSize[ret] = arrayLenVar_BigInt
 	return ret
 }
@@ -1712,7 +1712,7 @@ func (rt *ReuseTracer) guardBlockHashNum(numVar *Variable) {
 				rt.blockHashNumIDs.mapping[num] = numVar.id
 			}
 		} else {
-			MyAssert(rt.blockHashNumIDMVar == nil)
+			cmptypes.MyAssert(rt.blockHashNumIDMVar == nil)
 			rt.blockHashNumIDMVar = numVar.tracer.ConstVarWithName(rt.blockHashNumIDs, "initNIDM")
 			ak := rt.blockHashNumIDMVar.GetBlockHashNumID(numVar).NGuard("block_num")
 			if ak.Uint32() == 0 {

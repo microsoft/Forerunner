@@ -337,8 +337,8 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB,
-	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool) (*cache.PreplayResult,
-	*cmptypes.MixHitStatus, *cmptypes.PreplayResTrieNode, interface{}, bool, bool) {
+	header *types.Header, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cmpReuseChecking bool) (
+	*cache.PreplayResult, *cmptypes.MixHitStatus, *cmptypes.PreplayResTrieNode, interface{}, bool, bool) {
 	//txPreplay.Mu.Lock()
 	//defer txPreplay.Mu.Unlock()
 
@@ -353,36 +353,36 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			}
 			return nil, mixHitStatus, missNode, missValue, isAbort, false
 		}
-		//if cfg.MSRAVMSettings.CmpReuseChecking {
-		//	if !CheckRChain(res.RWrecord, bc, header) {
-		//		if isBlockProcess { // TODO: debug code
-		//			log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
-		//		}
-		//		br, _ := json.Marshal(res)
-		//		log.Warn("unmatch round ", "round", string(br))
-		//		panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
-		//
-		//	} else if !CheckRState(res.RWrecord, statedb, true) {
-		//		log.Warn("****************************************************")
-		//		SearchMixTree(trie, statedb, bc, header, abort, true)
-		//
-		//		br, _ := json.Marshal(res)
-		//		dab, _ := json.Marshal(mixHitStatus.DepHitAddrMap)
-		//		log.Warn("depcheck unmatch due to state info", "blockHash", header.Hash(), "blockprocess",
-		//			isBlockProcess, "txhash", txPreplay.TxHash.Hex(), "depMatchedAddr", string(dab), "round", string(br))
-		//
-		//		formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
-		//		log.Warn("former tx", "former txs", string(formertxsbs))
-		//
-		//		log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-		//		panic("depcheck unmatch due to state info: txhash=" + txPreplay.TxHash.Hex())
-		//
-		//	}
-		//}
+		if cmpReuseChecking {
+			if !CheckRChain(res.RWrecord, bc, header) {
+				if isBlockProcess { // TODO: debug code
+					log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
+				}
+				br, _ := json.Marshal(res)
+				log.Warn("unmatch round ", "round", string(br))
+				panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
+
+			} else if !CheckRState(res.RWrecord, statedb, true) {
+				log.Warn("****************************************************")
+				SearchMixTree(trie, statedb, bc, header, abort, true, isBlockProcess)
+
+				br, _ := json.Marshal(res)
+				dab, _ := json.Marshal(mixHitStatus.DepHitAddrMap)
+				log.Warn("depcheck unmatch due to state info", "blockHash", header.Hash(), "blockprocess",
+					isBlockProcess, "txhash", txPreplay.TxHash.Hex(), "depMatchedAddr", string(dab), "round", string(br))
+
+				formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
+				log.Warn("former tx", "former txs", string(formertxsbs))
+
+				log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+				panic("depcheck unmatch due to state info: txhash=" + txPreplay.TxHash.Hex())
+
+			}
+		}
 		if mixHitStatus.MixHitType == cmptypes.PartialHit {
 			// assert  len(mixHitStatus.DepHitAddr)>0
 			headUmatched := 0
-			for _, alv := range res.ReadDeps {
+			for _, alv := range res.ReadDepSeq {
 				if alv.AddLoc.Address == mixHitStatus.DepHitAddr[0] {
 					break
 				} else if alv.AddLoc.Field == cmptypes.Dependence {
@@ -393,7 +393,7 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			//if isBlockProcess {
 			//	if headUmatched == 1 {
 			//		statedbChanged := []*cmptypes.ChangedBy{}
-			//		for _, alv := range res.ReadDeps {
+			//		for _, alv := range res.ReadDepSeq {
 			//			if alv.AddLoc.Field == cmptypes.Dependence {
 			//				changed := statedb.GetTxDepByAccount(alv.AddLoc.Address)
 			//				statedbChanged = append(statedbChanged, changed)
@@ -444,7 +444,7 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 				log.Warn("former tx", "former txs", string(formertxsbs))
 
 				depMatch := true
-				for _, adv := range res.ReadDeps {
+				for _, adv := range res.ReadDepSeq {
 					if adv.AddLoc.Field != cmptypes.Dependence {
 						continue
 					}
@@ -531,8 +531,9 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (res *cache.PreplayResult, isAbort bool, ok bool) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
 	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
+	
 	if ok {
-		res := trieNode.RWRecord.GetPreplayRes().(*cache.PreplayResult)
+		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
 			return nil, false, false
 		}
@@ -551,7 +552,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 				log.Warn("former tx", "former txs", string(formertxsbs))
 
 				depMatch := true
-				for _, adv := range res.ReadDeps {
+				for _, adv := range res.ReadDepSeq {
 					if adv.AddLoc.Field != cmptypes.Dependence {
 						continue
 					}
@@ -639,7 +640,7 @@ func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc core.ChainConte
 	trie := txPreplay.PreplayResults.DeltaTree
 	trieNode, isAbort, ok := SearchTree(trie, db, bc, header, abort, false)
 	if ok {
-		res := trieNode.RWRecord.GetPreplayRes().(*cache.PreplayResult)
+		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
 			return nil, false, false
 		}
@@ -723,17 +724,18 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			sr.ApplyStores(abort)
+			isAbort, txResMap := sr.ApplyStores(abort)
+			if isAbort {
+				return
+			} else {
+				status.TraceTrieHitAddrs = txResMap
+			}
 		default:
 			panic("there is a unexpected hit type")
 		}
-		//if status.HitType == cmptypes.DeltaHit {
-		//	ApplyDeltaWithObj(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
-		//} else {
-		//	MixApplyObjState(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
-		//}
+
 	} else {
-		MyAssert(status.HitType != cmptypes.TraceHit)
+		cmptypes.MyAssert(status.HitType != cmptypes.TraceHit)
 		if status.HitType == cmptypes.DeltaHit {
 			ApplyDelta(statedb, round.RWrecord, abort)
 		} else {
@@ -795,7 +797,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	defer txPreplay.Mu.Unlock()
 
 	if status == nil {
-		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess)
+		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
 		if ok {
 			d0 = time.Since(t0)
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
@@ -868,7 +870,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				log.Warn("former tx", "former txs", string(formertxsbs))
 
 				depMatch := true
-				for _, adv := range round.ReadDeps {
+				for _, adv := range round.ReadDepSeq {
 					if adv.AddLoc.Field != cmptypes.Dependence {
 						continue
 					}
@@ -953,7 +955,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 			MissNode: missNode, MissValue: missValue}
 		return
 	}
-
 
 	if status.BaseStatus != cmptypes.Hit {
 		panic("Should be Hit!")
