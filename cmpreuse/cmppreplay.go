@@ -73,7 +73,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
 			reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
-			if false && trace != nil {
+			if trace != nil {
 				traceTrieStart := time.Now()
 				reuse.setTraceTrie(tx, txPreplay, round, trace)
 				cost := time.Since(traceTrieStart)
