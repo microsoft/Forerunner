@@ -831,10 +831,10 @@ var (
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "logdata", "insertchain")),
 	}
 
-	RatioFlag = cli.IntFlag{
-		Name:  "ratio",
-		Usage: "External ratio log configuration (default = 0)",
-		Value: 0,
+	DelayedBlockFlag = cli.IntFlag{
+		Name:  "delayedBlockStats",
+		Usage: "Collect stats about delayed blocks (default = 1, 0 to turn off, 2 for detailed info)",
+		Value: 1,
 	}
 
 	// MSRA New flag
@@ -1307,10 +1307,10 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 		cfg.DiscoveryV5 = false
 	}
 
-	if ctx.GlobalIsSet(RatioFlag.Name) {
-		cfg.Ratio = ctx.GlobalInt(RatioFlag.Name)
-	} else {
-		cfg.Ratio = 1
+	if ctx.GlobalIsSet(DelayedBlockFlag.Name) {
+		cfg.DelayedBlockStatsLevel = ctx.GlobalInt(DelayedBlockFlag.Name)
+	}else {
+		cfg.DelayedBlockStatsLevel = 1
 	}
 
 	// New flag

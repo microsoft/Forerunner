@@ -1570,9 +1570,8 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 			//addr = common.BigToAddress(registers.Get(n.InputRegisterIndices[0]).(*big.Int))
 			addr = env.BigToAddress(registers.Get(n.InputRegisterIndices[0]).(*big.Int))
 		}
-		changedBy := env.state.GetTxDepByAccountNoCopy(addr)
-		value := changedBy.Hash()
-		k := GetGuardKey(value)
+		changedBy := env.state.GetAccountSnapOrChangedBy(addr)
+		k := GetGuardKey(changedBy)
 		vid = n.AccountValueToID[k]
 	}
 
@@ -1689,7 +1688,7 @@ func GetBigIntGuardKey(bi *big.Int) interface{} {
 		var key [8]big.Word
 		copy(key[:], words)
 		return key
-	}else {
+	} else {
 		return ImmutableBytesToString(bi.Bytes())
 	}
 }
@@ -1776,7 +1775,10 @@ type TraceTrie struct {
 	PreAllocatedExecEnvs  []*ExecEnv
 	PreAllocatedHistory   []*RegisterFile
 	PreAllocatedRegisters []*RegisterFile
-	cmptypes.TrieRoundRef
+	RoundRefNodesHead     *cmptypes.TrieRoundRefNodes
+	RoundRefNodesTail     *cmptypes.TrieRoundRefNodes
+	RoundRefCount         uint
+	TrieNodeCount         int64
 }
 
 func NewTraceTrie(tx *types.Transaction) *TraceTrie {
@@ -1979,7 +1981,7 @@ var gcMutex sync.Mutex
 
 func (tt *TraceTrie) GCRoundRefNodes() {
 	cmptypes.MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
-	if tt.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT*2) {
+	if tt.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
 		//runtime.GC()
 		//m := new(runtime.MemStats)
 		//runtime.ReadMemStats(m)
@@ -2030,7 +2032,7 @@ func (tt *TraceTrie) RemoveRoundRef(rf *cmptypes.TrieRoundRefNodes) uint {
 	tt.RoundRefCount--
 	atomic.AddInt64(&tt.TrieNodeCount, -removedNodes)
 	cmptypes.MyAssert(tt.RoundRefCount >= 0)
-	cmptypes.MyAssert(tt.TrieNodeCount >= 0)
+	cmptypes.MyAssert(atomic.LoadInt64(&tt.TrieNodeCount) >= 0)
 	return uint(removedNodes)
 }
 
@@ -2061,7 +2063,7 @@ func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	return nil
 }
 
-func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) (bool,cmptypes.TxResIDMap){
+func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) (bool, cmptypes.TxResIDMap) {
 	cmptypes.MyAssert(r.node.Op.isStoreOp)
 	resMap := r.applyWObjects()
 	for n := r.node; !n.Op.IsVirtual(); n = n.Next {
@@ -2153,7 +2155,7 @@ func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
 
 			for _, round := range rounds {
 				if round != nil {
-					changed, fok :=  round.AccountChanges[addr]
+					changed, fok := round.AccountChanges[addr]
 					cmptypes.MyAssert(fok)
 					resMap[addr] = changed
 					obj := round.WObjects[addr]

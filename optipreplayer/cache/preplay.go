@@ -661,6 +661,11 @@ func (r *GlobalCache) GetTxPreplayLen() int {
 	return r.PreplayCache.Len()
 }
 
+func (r *GlobalCache) GetTotalNodeCount() int64 {
+	_, _, _, totalTrieNodeCount, totalMixTrieNodeCount, totalRWTrieNodeCount := r.GetTrieSizes()
+	return totalTrieNodeCount + totalMixTrieNodeCount + totalRWTrieNodeCount
+}
+
 // GetGasUsedResult return the cache of gas
 func (r *GlobalCache) GetGasUsedCache(sender common.Address, txn *types.Transaction) uint64 {
 	gasLimit := txn.Gas()
@@ -877,6 +882,27 @@ func (r *GlobalCache) AddTxPreplay(txPreplay *TxPreplay) {
 
 func (r *GlobalCache) ResizeTxPreplay(size int) int {
 	return r.PreplayCache.Resize(size)
+}
+
+func (c *GlobalCache) RemoveOldest() (int64, bool){
+	key, value, ok := c.PreplayCache.GetOldest()
+	if ok {
+		r := value.(*TxPreplay).PreplayResults
+		var nodeCount int64
+		if r.MixTree != nil {
+			nodeCount += r.MixTree.GetNodeCount()
+		}
+		if r.TraceTrie != nil {
+			nodeCount += r.TraceTrie.GetNodeCount()
+		}
+		if r.RWRecordTrie != nil {
+			nodeCount += r.RWRecordTrie.GetNodeCount()
+		}
+		c.PreplayCache.Remove(key)
+		return nodeCount, true
+	}else{
+		return 0, false
+	}
 }
 
 func (r *GlobalCache) RemoveTxPreplay(txn common.Hash) {

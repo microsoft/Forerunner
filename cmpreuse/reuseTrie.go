@@ -88,16 +88,16 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 
 func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
 
-	if blockNumber > trie.LatestBN {
-		trie.LatestBN = blockNumber
-		if trie.LeafCount > TreeCleanThreshold {
-			trie.Clear()
-		}
-	}
-
-	if trie.LeafCount > MaxTreeCleanThreshold {
-		trie.Clear()
-	}
+	//if blockNumber > trie.LatestBN {
+	//	trie.LatestBN = blockNumber
+	//	if trie.LeafCount > TreeCleanThreshold {
+	//		trie.Clear()
+	//	}
+	//}
+	//
+	//if trie.LeafCount > MaxTreeCleanThreshold {
+	//	trie.Clear()
+	//}
 
 	newNodeCount := uint(0)
 	isNew := false
@@ -120,9 +120,9 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		currentNode.IsLeaf = true
 		currentNode.Round = round
 		trie.LeafCount += 1
-		newLeaves := make([]cmptypes.ISRefCountNode, 1)
+		newLeaves := make([]*cmptypes.PreplayResTrieNode, 1)
 		newLeaves[0] = currentNode
-		trie.TrackRoundRefNodes(newLeaves, newNodeCount, round)
+		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
 	}
 	trie.RoundIds[round.RoundID] = true
 }
@@ -135,16 +135,16 @@ func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.
 // return true is this round is inserted. false for this round is a repeated round
 func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) bool {
 
-	if blockNumber > trie.LatestBN {
-		trie.LatestBN = blockNumber
-		if trie.LeafCount > TreeCleanThreshold {
-			trie.Clear()
-		}
-	}
-
-	if trie.LeafCount > MaxTreeCleanThreshold {
-		trie.Clear()
-	}
+	//if blockNumber > trie.LatestBN {
+	//	trie.LatestBN = blockNumber
+	//	if trie.LeafCount > TreeCleanThreshold {
+	//		trie.Clear()
+	//	}
+	//}
+	//
+	//if trie.LeafCount > MaxTreeCleanThreshold {
+	//	trie.Clear()
+	//}
 
 	currentNode := trie.Root
 
@@ -227,20 +227,20 @@ func SearchAccDep(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Chai
 const FixedDepCheckCount = 4
 
 func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
-	var newLeaves []cmptypes.ISRefCountNode
+	var newLeaves []*cmptypes.PreplayResTrieNode
 	newLeavesPtr := &newLeaves
 	newNodeCount := new(uint)
 
-	if blockNumber > trie.LatestBN {
-		trie.LatestBN = blockNumber
-		if trie.LeafCount > TreeCleanThreshold {
-			trie.Clear()
-		}
-	}
-
-	if trie.LeafCount > MaxTreeCleanThreshold {
-		trie.Clear()
-	}
+	//if blockNumber > trie.LatestBN {
+	//	trie.LatestBN = blockNumber
+	//	if trie.LeafCount > TreeCleanThreshold {
+	//		trie.Clear()
+	//	}
+	//}
+	//
+	//if trie.LeafCount > MaxTreeCleanThreshold {
+	//	trie.Clear()
+	//}
 
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 
@@ -256,12 +256,12 @@ func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, bl
 	trie.LeafCount += 1
 	trie.RoundIds[round.RoundID] = true
 
-	trie.TrackRoundRefNodes(*newLeavesPtr, *newNodeCount, round)
+	trie.TrackRoundNodes(*newLeavesPtr, *newNodeCount, round)
 }
 
 func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDepSeq []*cmptypes.AddrLocValue, dIndex int,
 	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	round *cache.PreplayResult, newLeaves *[]cmptypes.ISRefCountNode, newNodeCount *uint) {
+	round *cache.PreplayResult, newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint) {
 
 	if rIndex >= len(readDepSeq) {
 		for _, detailalv := range detailSeq[dIndex:] {
@@ -322,6 +322,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 
 		if currentNode.DetailChild == nil {
 			currentNode.DetailChild = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode), Parent: currentNode}
+			*newNodeCount = *newNodeCount + 1
 		}
 
 		insertDetail2MixTree(currentNode.DetailChild, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit+1, round, newLeaves, newNodeCount)
@@ -332,7 +333,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 
 func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDep []*cmptypes.AddrLocValue, dIndex int,
 	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	round *cache.PreplayResult, newLeaves *[]cmptypes.ISRefCountNode, newNodeCount *uint) {
+	round *cache.PreplayResult, newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint) {
 
 	if dIndex >= len(detailSeq) {
 		if currentNode.IsLeaf {
@@ -610,14 +611,15 @@ func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc 
 		position := addrLoc.Loc.(common.Hash)
 		return statedb.GetCommittedState(addr, position)
 	case cmptypes.Dependence:
-		var value interface{}
-		changedBy, ok := statedb.AccountChangedBy[addr]
-		if ok {
-			value = changedBy.Hash()
-		} else {
-			value = *statedb.GetAccountSnap(addr)
-		}
-		return value
+		return statedb.GetAccountSnapOrChangedBy(addr)
+		//var value interface{}
+		//changedBy, ok := statedb.AccountChangedBy[addr]
+		//if ok {
+		//	value = changedBy.Hash()
+		//} else {
+		//	value = *statedb.GetAccountSnap(addr)
+		//}
+		//return value
 	case cmptypes.MinBalance:
 		return statedb.GetBalance(addr).Cmp(addrLoc.Loc.(*big.Int)) > 0
 	default:

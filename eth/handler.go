@@ -79,7 +79,7 @@ type ProtocolManager struct {
 	blockchain *core.BlockChain
 	maxPeers   int
 
-	ratio int
+	delayedBlockStatsLevel int
 	// channel and LRU cache for ratio logging
 	msgHashCache  *lru.Cache
 	msgBlockCache *lru.Cache
@@ -266,9 +266,9 @@ func (pm *ProtocolManager) removePeer(id string) {
 	}
 }
 
-func (pm *ProtocolManager) Start(maxPeers int, ratio int) {
+func (pm *ProtocolManager) Start(maxPeers int, delayedBlockStatsLevel int) {
 	pm.maxPeers = maxPeers
-	pm.ratio = ratio
+	pm.delayedBlockStatsLevel = delayedBlockStatsLevel
 
 	// broadcast transactions
 	pm.txsCh = make(chan core.NewTxsEvent, txChanSize)
@@ -284,9 +284,9 @@ func (pm *ProtocolManager) Start(maxPeers int, ratio int) {
 	go pm.txsyncLoop()
 
 	// start ratio loggers
-	if pm.ratio == 1 {
-		log.Info("ProtocolManager ratioer is started")
-		go pm.ratioer()
+	if pm.delayedBlockStatsLevel > 0 {
+		log.Info("ProtocolManager delayed block collection is started")
+		go pm.collectDelayedBlocks()
 	}
 }
 
@@ -315,19 +315,19 @@ func (pm *ProtocolManager) Stop() {
 	log.Info("Ethereum protocol stopped")
 }
 
-func (pm *ProtocolManager) ratioer() {
-	if pm.ratio == 0 {
-		log.Info("ProtocolManager ratio is set closed by user")
+func (pm *ProtocolManager) collectDelayedBlocks() {
+	if pm.delayedBlockStatsLevel == 0 {
+		log.Info("ProtocolManager delayed block collection is disabled by user")
 		return
 	}
-	log.Info("ProtocolManager ratio start")
+	log.Info("ProtocolManager delayed block collection start")
 	pm.msgHashCache, _ = lru.New(300000)
 	pm.msgBlockCache, _ = lru.New(300000)
 	pm.msgTimerCache, _ = lru.New(300000)
 
 	pm.msgHashCh = make(chan HashesMsg, 30000)
 	pm.msgBlockCh = make(chan BlockMsg, 30000)
-	go pm.recoder()
+	go pm.processBlockMsgs()
 
 	pm.msgMinute = &Count{
 		firstReceivedHash:  int64(0),
@@ -358,7 +358,7 @@ func (pm *ProtocolManager) logPerMinute() {
 		if pm.msgMinute.Total() == int64(0) {
 			continue
 		}
-		log.Info("ProtocolManager in logger 10 minutes",
+		log.Info("Delayed blocks in 10 minutes",
 			"first received block", pm.msgMinute.firstReceivedBlock,
 			"first received block ratio", float64(pm.msgMinute.firstReceivedBlock)/float64(pm.msgMinute.Total()),
 			"first received hash", pm.msgMinute.firstReceivedHash,
@@ -378,7 +378,7 @@ func (pm *ProtocolManager) logPerHour() {
 		if pm.msgHour.Total() == int64(0) {
 			continue
 		}
-		log.Info("ProtocolManager in logger 1 hour",
+		log.Info("Delayed blocks in 1 hour",
 			"first received block", pm.msgHour.firstReceivedBlock,
 			"first received block ratio", float64(pm.msgHour.firstReceivedBlock)/float64(pm.msgHour.Total()),
 			"first received hash", pm.msgHour.firstReceivedHash,
@@ -398,7 +398,7 @@ func (pm *ProtocolManager) logPerDay() {
 		if pm.msgDay.Total() == int64(0) {
 			continue
 		}
-		log.Info("ProtocolManager in logger 1 day",
+		log.Info("Delayed blocks in 1 day",
 			"first received block", pm.msgDay.firstReceivedBlock,
 			"first received block ratio", float64(pm.msgDay.firstReceivedBlock)/float64(pm.msgDay.Total()),
 			"first received hash", pm.msgDay.firstReceivedHash,
@@ -444,62 +444,70 @@ func (pm *ProtocolManager) timer(hash string) {
 			pm.msgMinute.firstReceivedBlock++
 			pm.msgHour.firstReceivedBlock++
 			pm.msgDay.firstReceivedBlock++
-			log.Info("ProtocolManager first received block in timer",
-				"block receivedAt", blockMsg.ReceivedAt.String(),
-				"block peer", blockMsg.Peer.id,
-				"block hash", blockMsg.Request.Block.Hash().String(),
-				"block number", blockMsg.Request.Block.Number().String(),
-				"block TD", blockMsg.Request.TD.String(),
-				"hash receivedAt", hashMsg.ReceivedAt.String(),
-				"hash peer", hashMsg.Peer.id,
-				"hash hash", hashMsg.Announce.Hash.String(),
-				"hash number", hashMsg.Announce.Number,
-				"trueHead", trueHead.String(),
-				"trueTD", trueTD.String(),
-				"block before", hashReceivedAt.Sub(BlockReceivedAt).String())
+			if pm.delayedBlockStatsLevel > 1 {
+				log.Info("ProtocolManager first received block in timer",
+					"block receivedAt", blockMsg.ReceivedAt.String(),
+					"block peer", blockMsg.Peer.id,
+					"block hash", blockMsg.Request.Block.Hash().String(),
+					"block number", blockMsg.Request.Block.Number().String(),
+					"block TD", blockMsg.Request.TD.String(),
+					"hash receivedAt", hashMsg.ReceivedAt.String(),
+					"hash peer", hashMsg.Peer.id,
+					"hash hash", hashMsg.Announce.Hash.String(),
+					"hash number", hashMsg.Announce.Number,
+					"trueHead", trueHead.String(),
+					"trueTD", trueTD.String(),
+					"block before", hashReceivedAt.Sub(BlockReceivedAt).String())
+			}
 		} else {
 			pm.msgMinute.firstReceivedHash++
 			pm.msgHour.firstReceivedHash++
 			pm.msgDay.firstReceivedHash++
-			log.Info("ProtocolManager first received hash in timer",
-				"block receivedAt", blockMsg.ReceivedAt.String(),
-				"block peer", blockMsg.Peer.id,
-				"block hash", blockMsg.Request.Block.Hash().String(),
-				"block number", blockMsg.Request.Block.Number().String(),
-				"block TD", blockMsg.Request.TD.String(),
-				"hash receivedAt", hashMsg.ReceivedAt.String(),
-				"hash peer", hashMsg.Peer.id,
-				"hash hash", hashMsg.Announce.Hash.String(),
-				"hash number", hashMsg.Announce.Number,
-				"trueHead", trueHead.String(),
-				"trueTD", trueTD.String(),
-				"hash before", BlockReceivedAt.Sub(hashReceivedAt).String())
+			if pm.delayedBlockStatsLevel > 1 {
+				log.Info("ProtocolManager first received hash in timer",
+					"block receivedAt", blockMsg.ReceivedAt.String(),
+					"block peer", blockMsg.Peer.id,
+					"block hash", blockMsg.Request.Block.Hash().String(),
+					"block number", blockMsg.Request.Block.Number().String(),
+					"block TD", blockMsg.Request.TD.String(),
+					"hash receivedAt", hashMsg.ReceivedAt.String(),
+					"hash peer", hashMsg.Peer.id,
+					"hash hash", hashMsg.Announce.Hash.String(),
+					"hash number", hashMsg.Announce.Number,
+					"trueHead", trueHead.String(),
+					"trueTD", trueTD.String(),
+					"hash before", BlockReceivedAt.Sub(hashReceivedAt).String())
+			}
 		}
 	} else if okHash {
 		pm.msgMinute.onlyReceivedHash++
 		pm.msgHour.onlyReceivedHash++
 		pm.msgDay.onlyReceivedHash++
-		log.Info("ProtocolManager only received hash in timer",
-			"hash receivedAt", hashMsg.ReceivedAt.String(),
-			"hash peer", hashMsg.Peer.id,
-			"hash hash", hashMsg.Announce.Hash.String(),
-			"hash number", hashMsg.Announce.Number)
+		if pm.delayedBlockStatsLevel > 1 {
+			log.Info("ProtocolManager only received hash in timer",
+				"hash receivedAt", hashMsg.ReceivedAt.String(),
+				"hash peer", hashMsg.Peer.id,
+				"hash hash", hashMsg.Announce.Hash.String(),
+				"hash number", hashMsg.Announce.Number)
+		}
 	} else {
 		pm.msgMinute.onlyReceivedBlock++
 		pm.msgHour.onlyReceivedBlock++
 		pm.msgDay.onlyReceivedBlock++
-		log.Info("ProtocolManager only received block in timer",
-			"block receivedAt", blockMsg.ReceivedAt.String(),
-			"block peer", blockMsg.Peer.id,
-			"block hash", blockMsg.Request.Block.Hash().String(),
-			"block number", blockMsg.Request.Block.Number().String(),
-			"block TD", blockMsg.Request.TD.String(),
-			"trueHead", trueHead.String(),
-			"trueTD", trueTD.String())
+		if pm.delayedBlockStatsLevel > 1 {
+			log.Info("ProtocolManager only received block in timer",
+				"block receivedAt", blockMsg.ReceivedAt.String(),
+				"block peer", blockMsg.Peer.id,
+				"block hash", blockMsg.Request.Block.Hash().String(),
+				"block number", blockMsg.Request.Block.Number().String(),
+				"block TD", blockMsg.Request.TD.String(),
+				"trueHead", trueHead.String(),
+				"trueTD", trueTD.String())
+		}
 	}
 }
 
-func (pm *ProtocolManager) recoder() {
+func (pm *ProtocolManager) processBlockMsgs() {
 	for {
 		select {
 		case msg := <-pm.msgHashCh:
@@ -934,7 +942,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
 
-		if pm.ratio == 1 {
+		if pm.delayedBlockStatsLevel > 0 {
 			go func() {
 				pm.msgHashCh <- HashesMsg{
 					Announces:  announces,
@@ -971,7 +979,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		request.Block.ReceivedAt = msg.ReceivedAt
 		request.Block.ReceivedFrom = p
 
-		if pm.ratio == 1 {
+		if pm.delayedBlockStatsLevel > 0 {
 			go func() {
 				pm.msgBlockCh <- BlockMsg{
 					Request:    request,

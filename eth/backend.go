@@ -212,7 +212,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	var cmpr *cmpreuse.Cmpreuse
 	var msracache *cache.GlobalCache
 
-	msracache = cache.NewGlobalCache(60*6, 60*6000, 6000, config.MSRAVMSettings.LogRoot)
+	msracache = cache.NewGlobalCache(60*6, 60*6000, int(float64(config.TxPool.GlobalSlots) * 1.5), config.MSRAVMSettings.LogRoot)
 	msracache.Synced = eth.Synced
 	if vmConfig.MSRAVMSettings.CmpReuse || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
@@ -639,7 +639,7 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 		s.frame.SetFeatureFlag(srvr.EnableFeature)
 	}
 
-	ratio := srvr.Ratio
+	delayedBlockStatsLevel := srvr.DelayedBlockStatsLevel
 
 	// Figure out a max peers count based on the server limits
 	maxPeers := srvr.MaxPeers
@@ -650,7 +650,7 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 		maxPeers -= s.config.LightPeers
 	}
 	// Start the networking layer and the light server if requested
-	s.protocolManager.Start(maxPeers, ratio)
+	s.protocolManager.Start(maxPeers, delayedBlockStatsLevel)
 	if s.lesServer != nil {
 		s.lesServer.Start(srvr)
 	}

@@ -2,3 +2,4 @@ package config
 
 
 const TXN_PREPLAY_ROUND_LIMIT = 6
+const CACHE_NODE_COUNT_LIMIT = 10 * 1000 * 1000

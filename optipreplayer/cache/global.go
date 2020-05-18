@@ -108,7 +108,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.TxPackageCache, _ = lru.New(tSize)
 	g.TxEnqueueCache, _ = lru.New(tSize)
 
-	g.PreplayCache, _ = lru.New(pSize * 2)
+	g.PreplayCache, _ = lru.New(pSize)
 	g.PreplayCacheSize = pSize
 	g.PreplayRoundID = 1
 	g.PreplayTimestamp = uint64(time.Now().Unix())
@@ -148,7 +148,7 @@ func (r *GlobalCache) FillBigIntPool() {
 }
 
 func (r *GlobalCache) GetTrieSizes() (cachedTxCount int, cachedTxWithTraceCount int,
-	maxTrieNodeCount int64, totalTrieNodeCount int64) {
+	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64) {
 		txHashes := r.PreplayCache.Keys()
 		cachedTxCount = len(txHashes)
 		cachedTxWithTraceCount = 0
@@ -166,6 +166,14 @@ func (r *GlobalCache) GetTrieSizes() (cachedTxCount int, cachedTxWithTraceCount 
 					if nc > maxTrieNodeCount {
 						maxTrieNodeCount = nc
 					}
+				}
+				mt := tp.PreplayResults.MixTree
+				if mt != nil {
+					totalMixTrieNodeCount += mt.GetNodeCount()
+				}
+				rwt := tp.PreplayResults.RWRecordTrie
+				if rwt != nil {
+					totalRWTrieNodeCount += rwt.GetNodeCount()
 				}
 			}
 		}

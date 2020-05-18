@@ -1855,6 +1855,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		cache.ResetLogVar(len(block.Transactions()))
 		bc.MSRACache.Pause()
 		bc.Warmuper.Pause()
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+		beforeTotalGCNum := memStats.NumGC
+		beforeTotalPausedNs := memStats.PauseTotalNs
 		substart := time.Now()
 		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
 			bp := types.NewParallelBloomProcessor()
@@ -1863,6 +1867,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
 		cache.Process = time.Since(substart)
+
+		runtime.ReadMemStats(&memStats)
+		afterTotalGCNum := memStats.NumGC
+		afterTotalPausedNs := memStats.PauseTotalNs
 
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -1980,19 +1988,24 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
-		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount := bc.MSRACache.GetTrieSizes()
+		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount, totalMixTrieNodeCount, totalRWTrieNodeCount := bc.MSRACache.GetTrieSizes()
 		log.Info("Read memory statistics",
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
 			"HeapIdle", common.StorageSize(m.HeapIdle),
 			"HeapInuse", common.StorageSize(m.HeapInuse),
 			"NextGC", common.StorageSize(m.NextGC),
-			"NnmGC", m.NumGC,
+			"NumGC", m.NumGC,
+			"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
+			"PauseMsInProcess", fmt.Sprintf("%.2f", float64(afterTotalPausedNs-beforeTotalPausedNs)/1000000.0),
 			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
 			"cachedTxCount", cachedTxCount,
 			"tracedTxCount", cachedTxWithTraceCount,
 			"maxTraceNodeCount", maxTrieNodeCount,
 			"totalTraceNodeCount", totalTrieNodeCount,
+			"totalMixNodeCount", totalMixTrieNodeCount,
+			"totalRWNodeCount", totalRWTrieNodeCount,
+			"totalNodeCount", totalTrieNodeCount+totalMixTrieNodeCount+totalRWTrieNodeCount,
 		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones

@@ -277,18 +277,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				if rt.IsExternalTransfer {
 					trace = nil // do not process external transfer
 				}
-				//log.Info(summary)
-				//_trie, ok := txTraceTries.Get(tx.Hash())
-				//if !ok {
-				//	_trie = NewTraceTrie(tx, nil)
-				//	txTraceTries.Add(tx.Hash(), _trie)
-				//}
-				//trie := _trie.(*TraceTrie)
-				//
-				//trie.WriteOut = debugOut
-				//trie.InsertTrace(trace)
-
-				// sample tx trace for monitoring purpose
 			}
 			atomic.AddUint64(&ReuseTracerTracedTxCount, 1)
 

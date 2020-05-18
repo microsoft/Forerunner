@@ -307,7 +307,11 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), orderMap, task.txns, currentState,
 		p.trigger, nil, false, true, true)
 
-	executor.EnableReuseTracer = true
+	neededPreplayCount := new(big.Int)
+	neededPreplayCount.Mul(task.orderCount, new(big.Int).SetInt64(int64(task.chainFactor)))
+	if task.isChainDep() || neededPreplayCount.Cmp(new(big.Int).SetInt64(int64(config.TXN_PREPLAY_ROUND_LIMIT))) > 0 {
+		executor.EnableReuseTracer = true
+	}
 
 	executor.RoundID = p.globalCache.NewRoundID()
 

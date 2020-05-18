@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
+	"sync/atomic"
 )
 
 type Field int
@@ -420,69 +421,10 @@ type TrieRoundRefNodes struct {
 	Next     *TrieRoundRefNodes
 }
 
-type TrieRoundRef struct {
-	RoundRefNodesHead *TrieRoundRefNodes
-	RoundRefNodesTail *TrieRoundRefNodes
-	RoundRefCount     uint
-	TrieNodeCount     int64
-}
-
-func (rr *TrieRoundRef) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round IRound) {
-	if newNodeCount > 0 {
-		//for _, n := range refNodes {
-		//	rc := n.AddRef()
-		//	MyAssert(rc > 0)
-		//}
-
-		r := &TrieRoundRefNodes{
-			RefNodes: refNodes,
-			RoundID:  round.GetRoundId(),
-		}
-
-		rr.RoundRefCount++
-		rr.TrieNodeCount += int64(newNodeCount)
-		if rr.RoundRefNodesHead == nil {
-			MyAssert(rr.RoundRefNodesTail == nil)
-			//MyAssert(uint(len(refNodes)) == newNodeCount)
-			rr.RoundRefNodesHead = r
-			rr.RoundRefNodesTail = r
-		} else {
-			MyAssert(rr.RoundRefNodesTail.Next == nil)
-			rr.RoundRefNodesTail.Next = r
-			rr.RoundRefNodesTail = r
-		}
-		rr.GCRoundRefNodes()
-	}
-}
-
-func (rr *TrieRoundRef) GCRoundRefNodes() int64 {
-	MyAssert(rr.RoundRefNodesHead != nil && rr.RoundRefNodesTail != nil)
-	totalRemoved := int64(0)
-	if rr.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT) {
-
-		for i := 0; i < 1; i++ {
-			head := rr.RoundRefNodesHead
-			totalRemoved += rr.RemoveRoundRef(head)
-
-			rr.RoundRefNodesHead = head.Next
-		}
-	}
-	return totalRemoved
-}
-
-func (rr *TrieRoundRef) RemoveRoundRef(rf *TrieRoundRefNodes) int64 {
-	removedNodes := int64(0)
-	for _, n := range rf.RefNodes {
-		n.RemoveRef(rf.RoundID)
-		if n.GetRefCount() == 0 {
-			removedNodes++ // TODO
-		}
-	}
-	rr.RoundRefCount--
-	rr.TrieNodeCount -= removedNodes
-	MyAssert(rr.RoundRefCount >= 0)
-	MyAssert(rr.TrieNodeCount >= 0)
-	return removedNodes
+type PreplayResTrieRoundNodes struct {
+	LeafNodes []*PreplayResTrieNode
+	RoundID   uint64
+	Next      *PreplayResTrieRoundNodes
 }
 
 type PreplayResTrieNode struct {
@@ -497,7 +439,7 @@ type PreplayResTrieNode struct {
 	//SRefCount // RefCount in PreplayResTrieNode means the number of children nodes (including DetailChild)
 }
 
-func (p *PreplayResTrieNode) GetRefCount() uint {
+func (p *PreplayResTrieNode) GetChildrenCount() uint {
 	res := 0
 	if p.Children != nil {
 		res += len(p.Children)
@@ -509,14 +451,11 @@ func (p *PreplayResTrieNode) GetRefCount() uint {
 }
 
 // this function is useless
-func (p *PreplayResTrieNode) AddRef() uint{
-	return p.GetRefCount()
-}
-
-func (p *PreplayResTrieNode) deRefSelf() {
-	MyAssert(p.GetRefCount() == 0)
+func (p *PreplayResTrieNode) removeSelf() (removed int) {
+	MyAssert(p.GetChildrenCount() == 0)
+	removed = 1
 	if p.Parent == nil {
-
+		MyAssert(false, "remove ophan!")
 	} else {
 		if p.Value == nil {
 			// this is a detailChild
@@ -528,12 +467,13 @@ func (p *PreplayResTrieNode) deRefSelf() {
 			MyAssert(p == parent2child)
 			delete(p.Parent.Children, p.Value)
 		}
-		p.Parent.RemoveRef(nil)
+		removed += p.Parent.RemoveRecursivelyIfNoChildren(nil)
 	}
+	return
 }
 
-func (p *PreplayResTrieNode) RemoveRef(value interface{}) {
-	refCount := p.GetRefCount()
+func (p *PreplayResTrieNode) RemoveRecursivelyIfNoChildren(value interface{}) (removed int) {
+	refCount := p.GetChildrenCount()
 
 	if p.IsLeaf {
 		roundId := value.(uint64)
@@ -543,8 +483,9 @@ func (p *PreplayResTrieNode) RemoveRef(value interface{}) {
 	}
 
 	if refCount == 0 {
-		p.deRefSelf()
+		removed = p.removeSelf()
 	}
+	return
 }
 
 type PreplayResTrie struct {
@@ -553,7 +494,64 @@ type PreplayResTrie struct {
 	LeafCount uint64 // rwset cound for detail trie. round count for dep tree and mix tree
 	RoundIds  map[uint64]bool
 	IsCleared bool
-	TrieRoundRef
+	RoundRefNodesHead *PreplayResTrieRoundNodes
+	RoundRefNodesTail *PreplayResTrieRoundNodes
+	RoundRefCount     uint
+	TrieNodeCount     int64
+}
+
+func (tt *PreplayResTrie) GetNodeCount() int64 {
+	return atomic.LoadInt64(&tt.TrieNodeCount)
+}
+
+func (rr *PreplayResTrie) TrackRoundNodes(refNodes []*PreplayResTrieNode, newNodeCount uint, round IRound) {
+	if newNodeCount > 0 {
+		r := &PreplayResTrieRoundNodes{
+			LeafNodes: refNodes,
+			RoundID:   round.GetRoundId(),
+		}
+
+		rr.RoundRefCount++
+		atomic.AddInt64(&rr.TrieNodeCount, int64(newNodeCount))
+		if rr.RoundRefNodesHead == nil {
+			MyAssert(rr.RoundRefNodesTail == nil)
+			//MyAssert(uint(len(refNodes)) == newNodeCount)
+			rr.RoundRefNodesHead = r
+			rr.RoundRefNodesTail = r
+		} else {
+			MyAssert(rr.RoundRefNodesTail.Next == nil)
+			rr.RoundRefNodesTail.Next = r
+			rr.RoundRefNodesTail = r
+		}
+		rr.GCRoundNodes()
+	}
+}
+
+func (rr *PreplayResTrie) GCRoundNodes() int64 {
+	MyAssert(rr.RoundRefNodesHead != nil && rr.RoundRefNodesTail != nil)
+	totalRemoved := int64(0)
+	if rr.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+
+		for i := 0; i < 1; i++ {
+			head := rr.RoundRefNodesHead
+			totalRemoved += rr.RemoveRoundNodes(head)
+
+			rr.RoundRefNodesHead = head.Next
+		}
+	}
+	return totalRemoved
+}
+
+func (rr *PreplayResTrie) RemoveRoundNodes(rf *PreplayResTrieRoundNodes) int64 {
+	removedNodes := int64(0)
+	for _, n := range rf.LeafNodes {
+		removedNodes += int64(n.RemoveRecursivelyIfNoChildren(rf.RoundID))
+	}
+	rr.RoundRefCount--
+	atomic.AddInt64(&(rr.TrieNodeCount), -removedNodes)
+	MyAssert(rr.RoundRefCount >= 0)
+	MyAssert(atomic.LoadInt64(&(rr.TrieNodeCount)) >= 0)
+	return removedNodes
 }
 
 func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {

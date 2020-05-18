@@ -211,7 +211,7 @@ var (
 		utils.DataLoggerDirTxpoolSnapFlag,
 		utils.DataLoggerDirTxpoolIOFlag,
 		utils.DataLoggerDirInsertchainFlag,
-		utils.RatioFlag,
+		utils.DelayedBlockFlag,
 		utils.PreplayFlag,
 		utils.FeatureFlag,
 		utils.ReuseVerifierFlag,

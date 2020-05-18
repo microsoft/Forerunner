@@ -679,15 +679,13 @@ func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy 
 	return changed.Copy()
 }
 
-func (s *StateDB) GetTxDepByAccountNoCopy(address common.Address) *cmptypes.ChangedBy {
+func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) interface{} {
 	changed, ok := s.AccountChangedBy[address]
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
-		changed = cmptypes.NewChangedBy2(accSnap)
-		s.AccountChangedBy[address] = changed
+		return *accSnap
 	}
-	// TODO: just return Hash
-	return changed
+	return changed.Hash()
 }
 
 func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {

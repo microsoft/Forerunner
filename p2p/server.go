@@ -183,7 +183,7 @@ type Config struct {
 	// Logger is a custom logger to use with the p2p.Server.
 	Logger log.Logger `toml:",omitempty"`
 
-	Ratio int `toml:",omitempty"`
+	DelayedBlockStatsLevel int `toml:",omitempty"`
 
 	// Enable Preplay
 	EnablePreplay bool `toml:",omitempty"`

@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -29,37 +30,51 @@ func NewListener(eth Backend) *Listener {
 		txPool:   eth.TxPool(),
 	}
 
-	go listener.blockLoop()
+	go listener.cacheEvictionLoop()
 	go listener.commitLoop()
 
 	return listener
 }
 
-func (l *Listener) blockLoop() {
+func (l *Listener) cacheEvictionLoop() {
 	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
 	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
 	defer chainHeadSub.Unsubscribe()
 
-	var lastRemove, lastCheapRemove, lastSize int
+	var removed, oldRemoved, newSize int
 	for {
 		currentBlock := (<-chainHeadCh).Block
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
-		nowSize := l.globalCache.GetTxPreplayLen()
-		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
-			"last remove", fmt.Sprintf("%d(%d)", lastRemove, lastCheapRemove), "last size", lastSize, "add", nowSize-lastSize, "now", nowSize)
+		oldSize := l.globalCache.GetTxPreplayLen()
+		totalNodeCount := l.globalCache.GetTotalNodeCount()
+		inc := oldSize - newSize
 
 		l.removeBefore(currentBlock.NumberU64() - 6)
-		if l.globalCache.GetTxPreplayLen() > l.globalCache.PreplayCacheSize/2 {
+		if l.globalCache.GetTotalNodeCount() > config.CACHE_NODE_COUNT_LIMIT { // todo: CACHE_NODE_COUNT_LIMIT should be a parameter
 			l.removeBefore(currentBlock.NumberU64() - 2)
 		}
 		saveSize := l.globalCache.GetTxPreplayLen()
-		l.globalCache.ResizeTxPreplay(l.globalCache.PreplayCacheSize)
-		l.globalCache.ResizeTxPreplay(l.globalCache.PreplayCacheSize * 2)
 
-		lastSize = l.globalCache.GetTxPreplayLen()
-		lastCheapRemove = saveSize - lastSize
-		lastRemove = nowSize - lastSize
+		nodesCountToEvict := l.globalCache.GetTotalNodeCount() - config.CACHE_NODE_COUNT_LIMIT
+		for nodesCountToEvict > 0 {
+			removed, ok := l.globalCache.RemoveOldest()
+			if ok {
+				nodesCountToEvict -= removed
+			}else{
+				break
+			}
+		}
+
+		newSize = l.globalCache.GetTxPreplayLen()
+		oldRemoved = saveSize - newSize
+		removed = oldSize - newSize
+
+		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
+			"removed", fmt.Sprintf("%d(%d)", removed, oldRemoved),
+			"newSize", newSize, "newNodeCount", l.globalCache.GetTotalNodeCount(),
+			"oldSize", oldSize, "inc", inc, "oldNodeCount", totalNodeCount,
+			)
 	}
 }
 
