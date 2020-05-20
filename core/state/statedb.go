@@ -627,8 +627,7 @@ func (s *StateDB) UpdateAccountByJournal(txHash common.Hash, roundId uint64) {
 	}
 }
 
-func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txHash common.Hash, roundId uint64) {
-	txRes := cmptypes.NewTxResID(txHash, roundId)
+func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txRes *cmptypes.TxResID) {
 	for _, addr := range dirties {
 		s.UpdateAccountChanged(addr, txRes)
 	}
@@ -1164,8 +1163,9 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 	}
 
 	snap, err := s.trie.TryGet(address[:])
-	if err != nil {
-		panic(err.Error())
+	if err != nil { // this address does not exist
+		//panic(err.Error())
+		return &cmptypes.AccountSnap{}
 	}
 	return cmptypes.BytesToAccountSnap(snap)
 }

@@ -223,9 +223,12 @@ func NewTxResID(txHash common.Hash, roundID uint64) *TxResID {
 	return &TxResID{Txhash: &txHash, RoundID: roundID, hasHash: false}
 }
 
+// Deprecated
 func NewDefaultTxResID(txHash common.Hash) *TxResID {
 	return &TxResID{Txhash: &txHash, RoundID: 0, hasHash: true, hash: &txHash}
 }
+
+var DEFAULT_TXRESID = &TxResID{hasHash:true, hash:&common.Hash{}}
 
 func (t *TxResID) Hash() *common.Hash {
 	if t.hasHash {

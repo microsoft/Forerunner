@@ -62,6 +62,13 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			round.Trace = trace
 		}
 
+		//// XXX FIXME
+		//if len(rwrecord.WState) != len(wobjects){
+		//	roundjs, _ := json.Marshal(round)
+		//	log.Error("unmatched written address", "round", string(roundjs))
+		//	panic("")
+		//}
+
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
 		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
@@ -298,12 +305,12 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				accChanges = make(cmptypes.TxResIDMap, len(oldAccChanged))
 				// update which accounts changed by this tx into statedb
 				//reusedTxRes := reuseRound.TxResID
-				hitAddrIndex := 0
-				for addr := range oldAccChanged {
-					if hitAddrIndex < len(reuseStatus.MixHitStatus.DepHitAddr) && addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
-						statedb.UpdateAccountChanged(addr, oldAccChanged[addr])
-						accChanges[addr] = oldAccChanged[addr]
-						hitAddrIndex++
+
+				for addr, oldChange := range oldAccChanged {
+					if _, ok:= reuseStatus.MixHitStatus.DepHitAddrMap[addr]; ok {
+						statedb.UpdateAccountChanged(addr, oldChange)
+						accChanges[addr] = oldChange
+
 					} else {
 						statedb.UpdateAccountChanged(addr, curTxRes)
 						accChanges[addr] = curTxRes
@@ -314,27 +321,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				wobjects = reuseRound.WObjects
 				accChanges = reuseRound.AccountChanges
 				statedb.ApplyAccountChanged(accChanges)
-			} else if reuseStatus.HitType == cmptypes.TraceHit {
-				readDeps = updateNewReadDepSeq(statedb, reuseRound.ReadDepSeq)
-				wobjects = statedb.RWRecorder().WObjectDump()
-				accChanges = make(cmptypes.TxResIDMap, len(reuseRound.AccountChanges))
-				if reuseStatus.TraceTrieHitAddrs != nil {
-					for addr := range reuseRound.AccountChanges {
-						reusedChange, ok := reuseStatus.TraceTrieHitAddrs[addr]
-						if ok{
-							accChanges[addr] = reusedChange
-							statedb.UpdateAccountChanged(addr, reusedChange)
-						}else{
-							accChanges[addr] = curTxRes
-							statedb.UpdateAccountChanged(addr, curTxRes)
-						}
-					}
-				} else {
-					for addr := range reuseRound.AccountChanges {
-						accChanges[addr] = curTxRes
-						statedb.UpdateAccountChanged(addr, curTxRes)
-					}
-				}
 			} else {
 				// all detail hit or delta hit
 				readDeps = updateNewReadDepSeq(statedb, reuseRound.ReadDepSeq)
@@ -347,8 +333,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				}
 			}
 		} else {
-			accChanges = make(cmptypes.TxResIDMap, len(wobjects))
-			for addr := range wobjects {
+			accChanges = make(cmptypes.TxResIDMap, len(rwrecord.WState))
+			for addr := range rwrecord.WState {
 				accChanges[addr] = curTxRes
 				statedb.UpdateAccountChanged(addr, curTxRes)
 			}

@@ -2102,6 +2102,19 @@ func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
 	resMap := make(cmptypes.TxResIDMap)
 	for _, si := range r.storeInfo.StoreAccountIndices {
 		aVId := r.accountHistory.Get(si).(uint)
+		var addr common.Address
+		addrOrRId := r.storeInfo.AccountIndexToAddressOrRId[si]
+		switch a_rid := addrOrRId.(type) {
+		case common.Address:
+			addr = a_rid
+		case uint:
+			addr = common.BigToAddress(r.registers.Get(a_rid).(*big.Int))
+		default:
+			panic(fmt.Sprintf("Unknow type %v", reflect.TypeOf(addrOrRId).Name()))
+		}
+
+		resMap[addr] = cmptypes.DEFAULT_TXRESID
+
 		if aVId != 0 {
 			if !accountLaneHit {
 				ar := r.storeInfo.StoreAccountIndexToAVIdToRoundMapping[si]
@@ -2142,29 +2155,22 @@ func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
 				continue
 			}
 
-			var addr common.Address
-			addrOrRId := r.storeInfo.AccountIndexToAddressOrRId[si]
-			switch a_rid := addrOrRId.(type) {
-			case common.Address:
-				addr = a_rid
-			case uint:
-				addr = common.BigToAddress(r.registers.Get(a_rid).(*big.Int))
-			default:
-				panic(fmt.Sprintf("Unknow type %v", reflect.TypeOf(addrOrRId).Name()))
-			}
-
+			isAccountChangeSet := false
 			for _, round := range rounds {
 				if round != nil {
-					changed, fok := round.AccountChanges[addr]
-					cmptypes.MyAssert(fok)
-					resMap[addr] = changed
+					if !isAccountChangeSet {
+						changed, fok := round.AccountChanges[addr]
+						cmptypes.MyAssert(fok)
+						resMap[addr] = changed
+						isAccountChangeSet = true
+					}
 					obj := round.WObjects[addr]
 					if obj != nil {
 						if r.debugOut != nil {
 							r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n", round.RoundID, si, aVId, addr.Hex())
 						}
 						round.WObjects[addr] = nil
-						r.env.state.ApplyStateObject(obj) // TODO
+						r.env.state.ApplyStateObject(obj)
 						r.accountIndexToAppliedWObject[si] = true
 						break
 					}

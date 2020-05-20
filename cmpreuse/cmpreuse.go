@@ -247,32 +247,38 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
 			//use account level update instead of :
-			hitAddrIndex := 0
-			curtxResId := cmptypes.NewDefaultTxResID(tx.Hash())
-			//reusedTxRes := cmptypes.NewTxResID(tx.Hash(), round.RoundID)
-			for addr := range round.AccountChanges {
-				if hitAddrIndex < len(reuseStatus.MixHitStatus.DepHitAddr) &&
-					addr == reuseStatus.MixHitStatus.DepHitAddr[hitAddrIndex] {
-					hitAddrIndex++
-					if addr == header.Coinbase {
-						reuseDB.UpdateAccountChanged(addr, curtxResId)
-					} else {
-						reuseDB.UpdateAccountChanged(addr, round.AccountChanges[addr])
-					}
+			curtxResId := cmptypes.DEFAULT_TXRESID
+			for addr, change := range round.AccountChanges {
+				if _, ok := reuseStatus.MixHitStatus.DepHitAddrMap[addr]; ok && header.Coinbase != addr {
+					reuseDB.UpdateAccountChanged(addr, change)
 				} else {
 					reuseDB.UpdateAccountChanged(addr, curtxResId)
 				}
 			}
-
+			reuseDB.UpdateAccountChanged(header.Coinbase, curtxResId)
 		} else if reuseStatus.BaseStatus == cmptypes.Hit &&
 			(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
-			//roundId = round.RoundID
 			reuseDB.ApplyAccountChanged(round.AccountChanges)
-			if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
-				reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.NewDefaultTxResID(tx.Hash()))
+			//if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
+			//	reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+			//}
+			reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit {
+			if reuseStatus.TraceTrieHitAddrs != nil {
+				for addr, reusedChange := range reuseStatus.TraceTrieHitAddrs {
+					if reusedChange == nil {
+						statedb.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
+					} else {
+						statedb.UpdateAccountChanged(addr, reusedChange)
+					}
+				}
+				reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+			} else {
+				panic("can not find the TraceTrieHitAddrs")
 			}
+
 		} else {
-			curtxResId := cmptypes.NewDefaultTxResID(tx.Hash())
+			curtxResId := cmptypes.DEFAULT_TXRESID
 			reuseDB.UpdateAccountChangedByMap2(round.AccountChanges, curtxResId, &header.Coinbase)
 		}
 
@@ -294,7 +300,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		t1 := time.Now()
 		// XXX
-		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), tx.Hash(), 0)
+		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), cmptypes.DEFAULT_TXRESID)
 
 		applyDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))

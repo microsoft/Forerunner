@@ -965,6 +965,11 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		return
 	}
 
+	if isBlockProcess && cfg.MSRAVMSettings.CmpReuseChecking{
+		sjs, _ := json.Marshal(status)
+		log.Info("status", "tx", tx.Hash().Hex(), "status", string(sjs))
+	}
+
 	t1 := time.Now()
 	reuse.setStateDB(bc, author, statedb, header, tx, round, status, sr, abort)
 	d1 = time.Since(t1)
