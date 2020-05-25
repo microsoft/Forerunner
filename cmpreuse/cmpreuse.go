@@ -309,3 +309,124 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		return receipt, realApplyErr, reuseStatus // real apply first
 	}
 }
+
+
+func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller,
+	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
+	pMsg *types.Message, signer types.Signer) (*types.Receipt,
+	error, *cmptypes.ReuseStatus, time.Duration, time.Duration) {
+
+	if statedb.IsRWMode() || !statedb.IsShared() {
+		panic("ReuseTransaction can only be used for process and statedb must be shared and not be RW mode.")
+	}
+
+	var msg types.Message
+	if pMsg != nil {
+		msg = *pMsg
+	} else {
+		var err error
+		if signer == nil {
+			signer = types.MakeSigner(config, header.Number)
+		}
+		msg, err = tx.AsMessage(signer)
+		if err != nil {
+			return nil, err, &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail}, 0, 0
+		}
+	}
+
+	reuseGp, reuseDB := *gp, statedb
+	applyGp, applyDB := *gp, reuseDB.GetPair()
+
+	controller.Reset()
+
+	var gasUsed uint64
+	var failed bool
+	var realApplyErr error
+
+	reuseStart := time.Now()
+	reuseStatus, round := reuse.tryReuseTransaction(bc, author, &reuseGp, reuseDB, header, getHashFunc, precompiles, tx, controller, blockPre, cfg)
+	reuseDuration := time.Since(reuseStart)
+
+	controller.Reset()
+	applyStart := time.Now()
+	gasUsed, failed, realApplyErr = reuse.tryRealApplyTransaction(config, bc, author, &applyGp, applyDB, header, cfg, controller, msg)
+	applyDuration := time.Since(applyStart)
+
+
+	if  round != nil {
+		waitReuse := time.Since(reuseStart)
+
+		t0 := time.Now()
+		receipt := reuse.finalise(config, reuseDB, header, tx, usedGas, round.Receipt.GasUsed, round.RWrecord.Failed, msg)
+		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
+
+		waitStart := time.Now()
+		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
+
+		t1 := time.Now()
+
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+			//use account level update instead of :
+			curtxResId := cmptypes.DEFAULT_TXRESID
+			for addr, change := range round.AccountChanges {
+				if _, ok := reuseStatus.MixHitStatus.DepHitAddrMap[addr]; ok && header.Coinbase != addr {
+					reuseDB.UpdateAccountChanged(addr, change)
+				} else {
+					reuseDB.UpdateAccountChanged(addr, curtxResId)
+				}
+			}
+			reuseDB.UpdateAccountChanged(header.Coinbase, curtxResId)
+		} else if reuseStatus.BaseStatus == cmptypes.Hit &&
+			(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
+			reuseDB.ApplyAccountChanged(round.AccountChanges)
+			//if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
+			//	reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+			//}
+			reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit {
+			if reuseStatus.TraceTrieHitAddrs != nil {
+				for addr, reusedChange := range reuseStatus.TraceTrieHitAddrs {
+					if reusedChange == nil {
+						statedb.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
+					} else {
+						statedb.UpdateAccountChanged(addr, reusedChange)
+					}
+				}
+				reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
+			} else {
+				panic("can not find the TraceTrieHitAddrs")
+			}
+
+		} else {
+			curtxResId := cmptypes.DEFAULT_TXRESID
+			reuseDB.UpdateAccountChangedByMap2(round.AccountChanges, curtxResId, &header.Coinbase)
+		}
+
+		reuseDB.Update()
+		cache.Update = append(cache.Update, time.Since(t1))
+
+		*gp = reuseGp
+		return receipt, nil, reuseStatus, reuseDuration, applyDuration // reuse first
+	} else {
+		cache.WaitRealApply = append(cache.WaitRealApply, time.Since(applyStart))
+
+		t0 := time.Now()
+		var receipt *types.Receipt
+		if realApplyErr == nil {
+			receipt = reuse.finaliseByRealapply(config, applyDB, header, tx, usedGas, gasUsed, failed, msg)
+		}
+		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
+
+		t1 := time.Now()
+		// XXX
+		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), cmptypes.DEFAULT_TXRESID)
+
+		applyDB.Update()
+		cache.Update = append(cache.Update, time.Since(t1))
+
+		*gp = applyGp
+		return receipt, realApplyErr, reuseStatus, reuseDuration, applyDuration // real apply first
+	}
+}

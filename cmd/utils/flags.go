@@ -784,6 +784,10 @@ var (
 		Name:  "cmpreuse.check",
 		Usage: "Enable computation reuse dirty write checking",
 	}
+	CmpResuePerfTestFlag = cli.BoolFlag{
+		Name:  "cmpreuse.perf",
+		Usage: "Enable perf testing for reuse and realapply",
+	}
 	CmpResueLogFlag = cli.BoolFlag{
 		Name:  "cmpreuse.log",
 		Usage: "Enable computation reuse result logging",
@@ -1739,6 +1743,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		LogRoot:             "/datadrive/reuse",
 		CmpReuse:            ctx.GlobalBool(CmpResueEnabledFlag.Name),
 		CmpReuseChecking:    ctx.GlobalBool(CmpResueCheckFlag.Name),
+		CmpReusePerfTest:    ctx.GlobalBool(CmpResuePerfTestFlag.Name),
 		CmpReuseLogging:     ctx.GlobalBool(CmpResueLogFlag.Name),
 		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
 		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),

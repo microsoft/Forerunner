@@ -310,19 +310,29 @@ func ApplyWObjects(statedb *state.StateDB, rw *cache.RWRecord, wobject state.Obj
 	}
 }
 
-func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobject state.ObjectMap, mixStatus *cmptypes.MixHitStatus, abort func() bool) {
+func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord,
+	wobjectRefs cache.WObjectWeakRefMap,
+	txPreplay *cache.TxPreplay,
+	mixStatus *cmptypes.MixHitStatus, abort func() bool) {
 	var suicideAddr []common.Address
-	for addr, object := range wobject {
+	for addr, wstate := range rw.WState {
 		if abort() {
 			return
 		}
+
+		objectApplied := false
 		_, depHit := mixStatus.DepHitAddrMap[addr]
-		if object != nil && depHit {
-			statedb.ApplyStateObject(object)
-			wobject[addr] = nil
-		} else {
-			wstate, ok := rw.WState[addr]
-			if ok && ApplyWState(statedb, addr, wstate) {
+		if depHit {
+			if wref, refOk := wobjectRefs.GetMatchedRef(addr, txPreplay); refOk {
+				if objectHolder, hOk := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hOk {
+					statedb.ApplyStateObject(objectHolder.Obj)
+					objectApplied = true
+				}
+			}
+		}
+
+		if !objectApplied {
+			if ApplyWState(statedb, addr, wstate) {
 				suicideAddr = append(suicideAddr, addr)
 			}
 		}
@@ -711,7 +721,7 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 
 // setStateDB use RW to update stateDB, add logs, benefit miner and deduct gas from the pool
 func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, statedb *state.StateDB, header *types.Header,
-	tx *types.Transaction, round *cache.PreplayResult, status *cmptypes.ReuseStatus, sr *TraceTrieSearchResult, abort func() bool) {
+	tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, status *cmptypes.ReuseStatus, sr *TraceTrieSearchResult, abort func() bool) {
 	if status.BaseStatus != cmptypes.Hit {
 		panic("wrong call")
 	}
@@ -722,9 +732,9 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.TrieHit:
 			ApplyWStates(statedb, round.RWrecord, abort)
 		case status.HitType == cmptypes.MixHit:
-			MixApplyObjState(statedb, round.RWrecord, round.WObjects, status.MixHitStatus, abort)
+			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixHitStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			isAbort, txResMap := sr.ApplyStores(abort)
+			isAbort, txResMap := sr.ApplyStores(txPreplay, abort)
 			if isAbort {
 				return
 			} else {
@@ -815,7 +825,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 
 			if sr != nil && sr.hit {
 				d0 = time.Since(t0)
-				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit}
+				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit,
+					TraceHitStatus: sr.TraceHitStatus}
 				round = sr.GetAnyRound()
 			} else if sr != nil && sr.aborted {
 				d0 = time.Since(t0)
@@ -971,7 +982,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 
 	t1 := time.Now()
-	reuse.setStateDB(bc, author, statedb, header, tx, round, status, sr, abort)
+	reuse.setStateDB(bc, author, statedb, header, tx, txPreplay, round, status, sr, abort)
 	d1 = time.Since(t1)
 	return
 }
+

@@ -571,13 +571,45 @@ func AllocateVirtualRegisterForNonConstVariables(stats []*Statement) (registerMa
 	return
 }
 
+type ISRefCountNode interface {
+	GetRefCount() uint
+	AddRef() uint                // add a ref and return the new ref count
+	RemoveRef(value interface{}) // remove a ref
+}
+
+type SRefCount struct {
+	refCount uint
+}
+
+func (rf *SRefCount) GetRefCount() uint {
+	return rf.refCount
+}
+
+func (rf *SRefCount) AddRef() uint {
+	rf.refCount++
+	return rf.refCount
+}
+
+func (rf *SRefCount) SRemoveRef() uint {
+	cmptypes.MyAssert(rf.refCount > 0)
+	rf.refCount--
+	return rf.refCount
+}
+
+type TrieRoundRefNodes struct {
+	RefNodes []ISRefCountNode
+	RoundID  uint64
+	Round    *cache.PreplayResult
+	Next     *TrieRoundRefNodes
+}
+
 type AccountNodeJumpDef struct {
 	Dest                 *AccountSearchTrieNode
 	RegisterSnapshot     *RegisterFile
 	FieldHistorySnapshot *RegisterFile
 	InJumpNode           *AccountSearchTrieNode
 	InJumpAVId           uint
-	cmptypes.SRefCount
+	SRefCount
 }
 
 func (jd *AccountNodeJumpDef) RemoveRef(roundID interface{}) {
@@ -596,7 +628,7 @@ type AccountSearchTrieNode struct {
 	JumpTable []*AccountNodeJumpDef
 	Exit      *FieldSearchTrieNode
 	Rounds    []*cache.PreplayResult
-	cmptypes.SRefCount
+	SRefCount
 	BigSize
 }
 
@@ -652,7 +684,7 @@ type FieldNodeJumpDef struct {
 	InJumpNode          *FieldSearchTrieNode
 	InJumpVId           uint
 	IsAJump             bool
-	cmptypes.SRefCount
+	SRefCount
 }
 
 func (jd *FieldNodeJumpDef) RemoveRef(roundID interface{}) {
@@ -676,7 +708,7 @@ type FieldSearchTrieNode struct {
 	AJumpTable []*FieldNodeJumpDef
 	FJumpTable []*FieldNodeJumpDef
 	Exit       *SNode
-	cmptypes.SRefCount
+	SRefCount
 	BigSize
 }
 
@@ -745,7 +777,7 @@ type OpNodeJumpDef struct {
 	InJumpNode          *OpSearchTrieNode
 	InJumpKey           OpJumpKey
 	InJumpVId           uint
-	cmptypes.SRefCount
+	SRefCount
 }
 
 func (jd *OpNodeJumpDef) RemoveRef(roundID interface{}) {
@@ -792,7 +824,7 @@ type OpSearchTrieNode struct {
 	VIndices      []uint
 	JumpMap       map[OpJumpKey]*OpNodeJumpDef
 	JumpTable     []*OpNodeJumpDef
-	cmptypes.SRefCount
+	SRefCount
 	BigSize
 }
 
@@ -1368,7 +1400,7 @@ type SNode struct {
 	BeforeFieldHistorySize                 uint
 	BeforeAccounHistorySize                uint
 	roundResults                           *StoreInfo
-	cmptypes.SRefCount
+	SRefCount
 	BigSize
 }
 
@@ -1498,7 +1530,6 @@ func (n *SNode) RemoveRef(roundID interface{}) {
 		}
 	}
 	if n.roundResults != nil {
-
 		n.roundResults.ClearRound(roundID.(uint64))
 	}
 }
@@ -1775,9 +1806,9 @@ type TraceTrie struct {
 	PreAllocatedExecEnvs  []*ExecEnv
 	PreAllocatedHistory   []*RegisterFile
 	PreAllocatedRegisters []*RegisterFile
-	RoundRefNodesHead     *cmptypes.TrieRoundRefNodes
-	RoundRefNodesTail     *cmptypes.TrieRoundRefNodes
-	RoundRefCount         uint
+	RoundRefNodesHead     *TrieRoundRefNodes
+	RoundRefNodesTail     *TrieRoundRefNodes
+	RefedRoundCount       uint
 	TrieNodeCount         int64
 }
 
@@ -1914,7 +1945,7 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult) {
 		tt.DebugOut("InsertTrace\n")
 	}
 	currentTraceNodes := make([]*SNode, len(stats))
-	refNodes := make([]cmptypes.ISRefCountNode, len(stats))
+	refNodes := make([]ISRefCountNode, len(stats))
 	newNodeCount := uint(0)
 	for i, s := range stats {
 		n, gk = tt.insertStatement(n, gk, s, uint(i), trace)
@@ -1941,23 +1972,24 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult) {
 	tt.TrackRoundRefNodes(refNodes, newNodeCount+ji.newNodeCount, round)
 }
 
-func (tt *TraceTrie) TrackRoundRefNodes(refNodes []cmptypes.ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
+func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
 	if newNodeCount > 0 {
 		if tt.DebugOut != nil {
 			tt.DebugOut("NewRound %v: %v New trieNodes created, round node count: %v, total round count: %v, total trie node count:%v\n",
-				round.RoundID, newNodeCount, len(refNodes), tt.RoundRefCount, tt.TrieNodeCount)
+				round.RoundID, newNodeCount, len(refNodes), tt.RefedRoundCount, tt.TrieNodeCount)
 		}
 		for _, n := range refNodes {
 			rc := n.AddRef()
 			cmptypes.MyAssert(rc > 0)
 		}
 
-		r := &cmptypes.TrieRoundRefNodes{
+		r := &TrieRoundRefNodes{
 			RefNodes: refNodes,
 			RoundID:  round.RoundID,
+			Round:    round,
 		}
 
-		tt.RoundRefCount++
+		tt.RefedRoundCount++
 		atomic.AddInt64(&tt.TrieNodeCount, int64(newNodeCount))
 		if tt.RoundRefNodesHead == nil {
 			cmptypes.MyAssert(tt.RoundRefNodesTail == nil)
@@ -1969,7 +2001,7 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []cmptypes.ISRefCountNode, newN
 			tt.RoundRefNodesTail.Next = r
 			tt.RoundRefNodesTail = r
 		}
-		tt.GCRoundRefNodes()
+		tt.GCRoundNodes()
 	} else {
 		if tt.DebugOut != nil {
 			tt.DebugOut("RedundantRound %v: No New TrieNodes Created, %v existing nodes\n", round.RoundID, len(refNodes))
@@ -1979,9 +2011,22 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []cmptypes.ISRefCountNode, newN
 
 var gcMutex sync.Mutex
 
-func (tt *TraceTrie) GCRoundRefNodes() {
+func (tt *TraceTrie) GCRoundNodes() {
 	cmptypes.MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
-	if tt.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+	if tt.RefedRoundCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+		for i := 0; i < 1; i++ {
+			head := tt.RoundRefNodesHead
+			removed := tt.RemoveRoundRef(head)
+			if tt.DebugOut != nil {
+				tt.DebugOut("RemovedRound %v: %v trie nodes removed, %v trie nodes remain, %v rounds remain\n",
+					head.RoundID, removed, tt.TrieNodeCount, tt.RefedRoundCount)
+				if removed > 100000 {
+					log.Info(fmt.Sprintf("RemovedRound %v for tx %v: %v trie nodes removed, %v trie nodes remain, %v rounds remain",
+						head.RoundID, tt.Tx.Hash().Hex(), removed, tt.TrieNodeCount, tt.RefedRoundCount))
+				}
+			}
+			tt.RoundRefNodesHead = head.Next
+		}
 		//runtime.GC()
 		//m := new(runtime.MemStats)
 		//runtime.ReadMemStats(m)
@@ -1994,19 +2039,6 @@ func (tt *TraceTrie) GCRoundRefNodes() {
 		//	"NnmGC", m.NumGC,
 		//	"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
 		//)
-		for i := 0; i < 1; i++ {
-			head := tt.RoundRefNodesHead
-			removed := tt.RemoveRoundRef(head)
-			if tt.DebugOut != nil {
-				tt.DebugOut("RemovedRound %v: %v trie nodes removed, %v trie nodes remain, %v rounds remain\n",
-					head.RoundID, removed, tt.TrieNodeCount, tt.RoundRefCount)
-				if removed > 100000 {
-					log.Info(fmt.Sprintf("RemovedRound %v for tx %v: %v trie nodes removed, %v trie nodes remain, %v rounds remain",
-						head.RoundID, tt.Tx.Hash().Hex(), removed, tt.TrieNodeCount, tt.RoundRefCount))
-				}
-			}
-			tt.RoundRefNodesHead = head.Next
-		}
 		//runtime.GC()
 		//runtime.ReadMemStats(m)
 		//log.Info("-Read memory statistics",
@@ -2021,7 +2053,17 @@ func (tt *TraceTrie) GCRoundRefNodes() {
 	}
 }
 
-func (tt *TraceTrie) RemoveRoundRef(rf *cmptypes.TrieRoundRefNodes) uint {
+func (tt *TraceTrie) GetActiveRounds() []*cache.PreplayResult {
+	rounds := make([]*cache.PreplayResult, 0, tt.RefedRoundCount)
+	rr := tt.RoundRefNodesHead
+	for rr != nil {
+		rounds = append(rounds, rr.Round)
+		rr = rr.Next
+	}
+	return rounds
+}
+
+func (tt *TraceTrie) RemoveRoundRef(rf *TrieRoundRefNodes) uint {
 	removedNodes := int64(0)
 	for _, n := range rf.RefNodes {
 		n.RemoveRef(rf.RoundID)
@@ -2029,15 +2071,15 @@ func (tt *TraceTrie) RemoveRoundRef(rf *cmptypes.TrieRoundRefNodes) uint {
 			removedNodes++
 		}
 	}
-	tt.RoundRefCount--
+	tt.RefedRoundCount--
 	atomic.AddInt64(&tt.TrieNodeCount, -removedNodes)
-	cmptypes.MyAssert(tt.RoundRefCount >= 0)
+	cmptypes.MyAssert(tt.RefedRoundCount >= 0)
 	cmptypes.MyAssert(atomic.LoadInt64(&tt.TrieNodeCount) >= 0)
 	return uint(removedNodes)
 }
 
 type TraceTrieSearchResult struct {
-	node                         *SNode
+	Node                         *SNode
 	hit                          bool
 	aborted                      bool
 	registers                    *RegisterFile
@@ -2049,12 +2091,16 @@ type TraceTrieSearchResult struct {
 	accountLaneRounds            []*cache.PreplayResult
 	storeInfo                    *StoreInfo
 	accountIndexToAppliedWObject map[uint]bool
+	TotalJumps                   uint64
+	FailedJumps                  uint64
+	ExecutedNodes                uint64
+	TraceHitStatus               *cmptypes.TraceHitStatus
 }
 
 func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	cmptypes.MyAssert(r.hit)
-	cmptypes.MyAssert(r.node.Op.isStoreOp)
-	for _, round := range r.node.roundResults.rounds {
+	cmptypes.MyAssert(r.Node.Op.isStoreOp)
+	for _, round := range r.Node.roundResults.rounds {
 		if round != nil {
 			return round
 		}
@@ -2063,10 +2109,10 @@ func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	return nil
 }
 
-func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) (bool, cmptypes.TxResIDMap) {
-	cmptypes.MyAssert(r.node.Op.isStoreOp)
-	resMap := r.applyWObjects()
-	for n := r.node; !n.Op.IsVirtual(); n = n.Next {
+func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, abort func() bool) (bool, cmptypes.TxResIDMap) {
+	cmptypes.MyAssert(r.Node.Op.isStoreOp)
+	resMap := r.applyWObjects(txPreplay)
+	for n := r.Node; !n.Op.IsVirtual(); n = n.Next {
 		if abort() {
 			return true, nil
 		}
@@ -2093,7 +2139,7 @@ func (r *TraceTrieSearchResult) ApplyStores(abort func() bool) (bool, cmptypes.T
 	return false, resMap
 }
 
-func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
+func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay) cmptypes.TxResIDMap {
 	cmptypes.MyAssert(r.accountIndexToAppliedWObject == nil)
 	r.accountIndexToAppliedWObject = make(map[uint]bool)
 
@@ -2164,15 +2210,17 @@ func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
 						resMap[addr] = changed
 						isAccountChangeSet = true
 					}
-					obj := round.WObjects[addr]
-					if obj != nil {
-						if r.debugOut != nil {
-							r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n", round.RoundID, si, aVId, addr.Hex())
+					if wref, refOk := round.WObjectWeakRefs.GetMatchedRef(addr, txPreplay); refOk {
+						if objHolder, hok := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hok {
+							if r.debugOut != nil {
+								r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n",
+									round.RoundID, si, aVId, addr.Hex())
+							}
+							r.env.state.ApplyStateObject(objHolder.Obj)
+							r.accountIndexToAppliedWObject[si] = true
+							break
+
 						}
-						round.WObjects[addr] = nil
-						r.env.state.ApplyStateObject(obj)
-						r.accountIndexToAppliedWObject[si] = true
-						break
 					}
 				}
 			}
@@ -2181,6 +2229,15 @@ func (r *TraceTrieSearchResult) applyWObjects() cmptypes.TxResIDMap {
 	}
 
 	return resMap
+}
+
+func NewTraceHitStatusFromSearchResult(sr *TraceTrieSearchResult) *cmptypes.TraceHitStatus {
+	return &cmptypes.TraceHitStatus{
+		TotalNodes:    uint64(sr.Node.Seq) + 1,
+		ExecutedNodes: sr.ExecutedNodes,
+		TotalJumps:    sr.TotalJumps,
+		FailedJumps:   sr.FailedJumps,
+	}
 }
 
 func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
@@ -2212,10 +2269,11 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	var accountLaneRounds []*cache.PreplayResult
 	var aborted bool
+	var totalJumps, failedJumps, executedNodes uint64
 
 	defer func() {
 		result = &TraceTrieSearchResult{
-			node:              node,
+			Node:              node,
 			hit:               ok,
 			registers:         registers,
 			fieldHistory:      fieldHistory,
@@ -2226,6 +2284,12 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			storeInfo:         node.roundResults,
 			accountLaneRounds: accountLaneRounds,
 			aborted:           aborted,
+			TotalJumps:        totalJumps,
+			FailedJumps:       failedJumps,
+			ExecutedNodes:     executedNodes,
+		}
+		if ok {
+			result.TraceHitStatus = NewTraceHitStatusFromSearchResult(result)
 		}
 	}()
 
@@ -2249,7 +2313,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			cmptypes.MyAssert(newAccount)
 		}
 		jd := aNode.GetAJumpDef(aVId)
+		totalJumps++
 		if jd == nil {
+			failedJumps++
 			if debugOut != nil {
 				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 			}
@@ -2316,7 +2382,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 				cmptypes.MyAssert(!newAccount)
 			}
 			jd := fNode.GetAJumpDef(aVId)
+			totalJumps++
 			if jd == nil {
+				failedJumps++
 				if debugOut != nil {
 					debugOut("  FieldLane AJump Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 				}
@@ -2355,7 +2423,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			var fVal interface{}
 			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
 			jd := fNode.GetFJumpDef(fVId)
+			totalJumps++
 			if jd == nil {
+				failedJumps++
 				if debugOut != nil {
 					debugOut("  FieldLane FJump Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.FieldIndex, fVId)
 				}
@@ -2411,7 +2481,8 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			fCheckCount := 0
 			jNode := jHead
 			// try to jump
-			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut, fieldHistory, registers, fCheckCount, beforeJumpNode)
+			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut,
+				fieldHistory, registers, fCheckCount, beforeJumpNode, &totalJumps, &failedJumps)
 		}
 
 		// if jump failed, execute
@@ -2438,6 +2509,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			if node.IsRLNode {
 				_, fVal = node.LoadFieldValueID(env, registers, fieldHistory)
 			} else {
+				executedNodes++
 				fVal = node.Execute(env, registers)
 			}
 
@@ -2497,7 +2569,10 @@ func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 	return
 }
 
-func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int, accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}), fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode) *SNode {
+func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int,
+	accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}),
+	fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode,
+	pTotalJumps, pFailedJumps *uint64) *SNode {
 	for {
 		if debug {
 			cmptypes.MyAssert(jNode.OpNode == node)
@@ -2506,11 +2581,13 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 			aCheckCount += len(jNode.VIndices)
 
 			aKey, aOk := GetOpJumKey(accountHistory, jNode.VIndices)
+			*pTotalJumps++
 			var jd *OpNodeJumpDef
 			if aOk {
 				jd = jNode.GetMapJumpDef(&aKey)
 			}
 			if jd == nil {
+				*pFailedJumps++
 				if debugOut != nil {
 					debugOut("  OpLane ACheck Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(),
 						jNode.VIndices, aKey[:len(jNode.VIndices)])
@@ -2563,11 +2640,13 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 		} else {
 			fCheckCount += len(jNode.VIndices)
 			fKey, fOk := GetOpJumKey(fieldHistory, jNode.VIndices)
+			*pTotalJumps++
 			var jd *OpNodeJumpDef
 			if fOk {
 				jd = jNode.GetMapJumpDef(&fKey)
 			}
 			if jd == nil {
+				*pFailedJumps++
 				if debugOut != nil {
 					debugOut("  OpLane FCheck Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(),
 						jNode.VIndices, fKey[:len(jNode.VIndices)])
@@ -2698,7 +2777,7 @@ type JumpInserter struct {
 	tt                      *TraceTrie
 	aNodeFJds               []*FieldNodeJumpDef
 	round                   *cache.PreplayResult
-	refNodes                []cmptypes.ISRefCountNode
+	refNodes                []ISRefCountNode
 	newNodeCount            uint
 }
 
@@ -2734,7 +2813,7 @@ func (j *JumpInserter) ExecuteStats(startIndex, endIndex uint) {
 	}
 }
 
-func (j *JumpInserter) AddRefNode(node cmptypes.ISRefCountNode) {
+func (j *JumpInserter) AddRefNode(node ISRefCountNode) {
 	j.refNodes = append(j.refNodes, node)
 	if node.GetRefCount() == 0 {
 		j.newNodeCount++

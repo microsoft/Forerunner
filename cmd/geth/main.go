@@ -202,6 +202,7 @@ var (
 		utils.PreplayDirChainheadFlag,
 		utils.CmpResueEnabledFlag,
 		utils.CmpResueCheckFlag,
+		utils.CmpResuePerfTestFlag,
 		utils.CmpResueLogFlag,
 		utils.CmpResueLogDirFlag,
 		utils.CacheRecordEnabledFlag,

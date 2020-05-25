@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"io"
 	"math/big"
 	mrand "math/rand"
@@ -1988,7 +1989,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
-		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount, totalMixTrieNodeCount, totalRWTrieNodeCount := bc.MSRACache.GetTrieSizes()
+		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount,
+		totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
 		log.Info("Read memory statistics",
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
@@ -2005,7 +2007,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			"totalTraceNodeCount", totalTrieNodeCount,
 			"totalMixNodeCount", totalMixTrieNodeCount,
 			"totalRWNodeCount", totalRWTrieNodeCount,
+			"totalWObjectCount", totalWObjectCount,
+			"totalWObjectStorageSize", totalWObjectStorageSize,
 			"totalNodeCount", totalTrieNodeCount+totalMixTrieNodeCount+totalRWTrieNodeCount,
+			"totalWObjectSize", totalWObjectCount * config.WOBJECT_BASE_SIZE + totalWObjectStorageSize,
 		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones

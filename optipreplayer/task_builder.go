@@ -40,13 +40,13 @@ type TaskBuilder struct {
 	globalCache *cache.GlobalCache
 
 	// Package
-	packageType PackageType
-	originPool  TransactionPool
-	packagePool TransactionPool
-	removedTxn  bool
-	preplayPool TransactionPool
-	minerList   *MinerList
-	signer      types.Signer
+	packageType  PackageType
+	originPool   TransactionPool
+	packagePool  TransactionPool
+	removedTxn   bool
+	preplayPool  TransactionPool
+	minerList    *MinerList
+	signer       types.Signer
 	lastBaseline uint64
 	txnBaseline  uint64
 	txnDeadline  uint64
@@ -390,7 +390,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	} else {
 		b.txnBaseline = block.Time()
 	}
-	if b.packageType ==TYPE2 {
+	if b.packageType == TYPE2 {
 		b.txnDeadline = b.txnBaseline - leftwardsStep
 	} else {
 		b.txnDeadline = b.txnBaseline

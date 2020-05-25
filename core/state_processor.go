@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
+	"os"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -46,6 +47,13 @@ type TransactionApplier interface {
 		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller,
 		getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
 		tmsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
+
+	ReuseTransactionPerfTest(config *params.ChainConfig, bc ChainContext, author *common.Address,
+		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
+		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller,
+		getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
+		pMsg *types.Message, signer types.Signer) (*types.Receipt,
+		error, *cmptypes.ReuseStatus, time.Duration, time.Duration)
 
 	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -67,20 +75,24 @@ type TransactionApplier interface {
 //
 // StateProcessor implements Processor.
 type StateProcessor struct {
-	config            *params.ChainConfig                       // Chain configuration options
-	bc                *BlockChain                               // Canonical block chain
-	engine            consensus.Engine                          // Consensus engine used for block rewards
-	asyncProcessor    *types.SingleThreadSpinningAsyncProcessor // global processor
+	config         *params.ChainConfig                       // Chain configuration options
+	bc             *BlockChain                               // Canonical block chain
+	engine         consensus.Engine                          // Consensus engine used for block rewards
+	asyncProcessor *types.SingleThreadSpinningAsyncProcessor // global processor
+	logFile        *os.File
 }
 
 // NewStateProcessor initialises a new StateProcessor.
 func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consensus.Engine) *StateProcessor {
-	return &StateProcessor{
+	sp := &StateProcessor{
 		config:         config,
 		bc:             bc,
 		engine:         engine,
 		asyncProcessor: types.NewSingleThreadAsyncProcessor(),
 	}
+	f, _ := os.OpenFile("/tmp/perfLog.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
+	sp.logFile = f
+	return sp
 }
 
 type NoError struct {
@@ -133,7 +145,7 @@ func CmpStateDB(groundStatedb, statedb *state.StateDB, groundReceipt *types.Rece
 			gb, _ := json.Marshal(glog)
 			lb, _ := json.Marshal(rlog)
 			gs, ls := string(gb), string(lb)
-			if  gs != ls {
+			if gs != ls {
 				log.Info("Log diff", "index", i, "tx", tx.Hash().Hex(),
 					"status", fmt.Sprintf("%v", reuseStatus), "logIndex", i, "ground", gs, "our log", ls)
 				diff = true
@@ -257,7 +269,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		groundStatedb.SetRWMode(true)
 	}
-	if cfg.MSRAVMSettings.CmpReuseChecking {
+	if cfg.MSRAVMSettings.CmpReuseChecking || cfg.MSRAVMSettings.CmpReusePerfTest {
 		var err error
 		groundStatedb, err = state.New(p.bc.GetBlockByHash(block.ParentHash()).Root(), p.bc.stateCache)
 		if err != nil {
@@ -331,8 +343,53 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				pMsg = (*types.Message)(atomic.LoadPointer(&txMsgs[i]))
 			}
 
-			receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
-				tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+			if cfg.MSRAVMSettings.CmpReusePerfTest {
+				var reuseDuration, applyDuration time.Duration
+				receipt, err, reuseStatus, reuseDuration, applyDuration = p.bc.Cmpreuse.ReuseTransactionPerfTest(
+					p.config, p.bc, nil, gp, statedb, header,
+					tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+
+				groundStatedb.Prepare(tx.Hash(), block.Hash(), i)
+				_, _, groundApply, _ := ApplyTransactionPerfTest(p.config, p.bc, nil, groundGP, groundStatedb, header, tx, groundUsedGas, cfg)
+
+				reuseStr := reuseStatus.BaseStatus.String()
+				txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+				confirmationDelaySecond := 0.0
+
+				if txListen != nil && txListen.ListenTimeNano < blockPre.ListenTimeNano {
+					confirmationDelayNano := blockPre.ListenTimeNano - txListen.ListenTimeNano
+					confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
+				} else {
+					reuseStr = "NoListen"
+				}
+
+				if reuseStatus.BaseStatus == cmptypes.Hit {
+					reuseStr += "-" + reuseStatus.HitType.String()
+					if reuseStatus.HitType == cmptypes.MixHit {
+						reuseStr += "-" + reuseStatus.MixHitStatus.MixHitType.String()
+					}
+					if reuseStatus.HitType == cmptypes.TraceHit {
+						reuseStr += "-" + reuseStatus.TraceHitStatus.String()
+					}
+				}
+				txHash := tx.Hash().Hex()
+				rd := reuseDuration.Microseconds()
+				ad := applyDuration.Microseconds()
+				gad := groundApply.Microseconds()
+				gu := receipt.GasUsed
+				sar := float64(applyDuration) / float64(reuseDuration)
+				sgr := float64(groundApply) / float64(reuseDuration)
+				sga := float64(groundApply) / float64(applyDuration)
+				go func() {
+					result := fmt.Sprintf("[%s] CmpReusePerf tx %v delay %.1f reuse %v apply %v groundApply %v rs %v gas %v speedup-g/a %v speedup-a/r %v speedup-g/r %v\n",
+						time.Now().Format("01-02|15:04:05.000"), txHash, confirmationDelaySecond, rd, ad, gad, reuseStr, gu, sga, sar, sgr)
+					p.logFile.WriteString(result)
+				}()
+			} else {
+
+				receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
+					tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+			}
 			reuseResult = append(reuseResult, reuseStatus)
 			if reuseStatus.BaseStatus == cmptypes.Unknown {
 				statedb.UnknownTxs = append(statedb.UnknownTxs, tx)
@@ -401,26 +458,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Second*30 {
 			log.Info("Long execution", "tx", tx.Hash(), "index", i, "status", reuseResult[len(reuseResult)-1])
 		}
-		//if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Millisecond {
-		//	context := []interface{}{
-		//		"transactionIndex", i,
-		//		"reuseStatus", reuseResult[len(reuseResult)-1],
-		//	}
-		//	if reuseResult[i].BaseStatus == cmptypes.Hit {
-		//		lastIndex := len(cache.WaitReuse) - 1
-		//		context = append(context, "waitReuse", common.PrettyDuration(cache.WaitReuse[lastIndex]),
-		//			"getRW(cnt)", fmt.Sprintf("%s(%d)",
-		//				common.PrettyDuration(cache.GetRW[lastIndex]), cache.RWCmpCnt[lastIndex]),
-		//			"setDB", common.PrettyDuration(cache.SetDB[lastIndex]))
-		//	} else {
-		//		lastIndex := len(cache.WaitRealApply) - 1
-		//		context = append(context, "waitRealApply", common.PrettyDuration(cache.WaitRealApply[lastIndex]),
-		//			"realApply", common.PrettyDuration(cache.RunTx[lastIndex]))
-		//	}
-		//	context = append(context, "updatePair", common.PrettyDuration(cache.Update[len(cache.Update)-1]),
-		//		"txFinalize", common.PrettyDuration(cache.TxFinalize[len(cache.TxFinalize)-1]))
-		//	log.Info("Apply new transaction", context...)
-		//}
 	}
 	if cfg.MSRAVMSettings.CmpReuse {
 		statedb.MergeDelta()
@@ -492,4 +529,58 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	receipt.TransactionIndex = uint(statedb.TxIndex())
 
 	return receipt, err
+}
+
+func ApplyTransactionPerfTest(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB,
+	header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error, time.Duration, time.Duration) {
+	applyStart := time.Now()
+	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
+	if err != nil {
+		return nil, err, 0, 0
+	}
+	// Create a new context to be used in the EVM environment
+	context := NewEVMContext(msg, header, bc, author)
+	// Create a new environment which holds all relevant information
+	// about the transaction and calling mechanisms.
+	vmenv := vm.NewEVM(context, statedb, config, cfg)
+	// Apply the transaction to the current state (included in the env)
+
+	_, gas, failed, err := ApplyMessage(vmenv, msg, gp)
+	applyDuration := time.Since(applyStart)
+	if err != nil {
+		return nil, err, applyDuration, 0
+	}
+	finaliseStart := time.Now()
+	// Update the state with pending changes
+	var root []byte
+	if config.IsByzantium(header.Number) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(config.IsEIP158(header.Number)).Bytes()
+	}
+	*usedGas += gas
+
+	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
+	// based on the eip phase, we're passing whether the root touch-delete accounts.
+	receipt := types.NewReceipt(root, failed, *usedGas)
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = gas
+	// if the transaction created a contract, store the creation address in the receipt.
+	if msg.To() == nil {
+		receipt.ContractAddress = crypto.CreateAddress(vmenv.Context.Origin, tx.Nonce())
+	}
+	// Set the receipt logs and create a bloom for filtering
+	receipt.Logs = statedb.GetLogs(tx.Hash())
+	if statedb.BloomProcessor != nil {
+		statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	} else {
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	}
+
+	receipt.BlockHash = statedb.BlockHash()
+	receipt.BlockNumber = header.Number
+	receipt.TransactionIndex = uint(statedb.TxIndex())
+	finaliseDuration := time.Since(finaliseStart)
+
+	return receipt, err, applyDuration, finaliseDuration
 }

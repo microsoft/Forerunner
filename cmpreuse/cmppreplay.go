@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/hashicorp/golang-lru"
 	"math/rand"
 	"runtime/debug"
 	"sync"
@@ -154,8 +153,24 @@ func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
 	return txPreplay
 }
 
-var txTraceTries, _ = lru.New(3000) // make(map[common.Hash] *TraceTrie)
+//var txTraceTries, _ = lru.New(3000) // make(map[common.Hash] *TraceTrie)
 var traceMutex sync.Mutex
+
+func GetWObjectsFromWObjectWeakRefs(cache *cache.GlobalCache, refs cache.WObjectWeakRefMap) state.ObjectMap {
+	objMap := make(state.ObjectMap)
+	for addr, wref := range refs {
+		txPreplay := cache.GetTxPreplay(wref.TxHash)
+		if txPreplay != nil && txPreplay.Timestamp == wref.Timestamp {
+			if txPreplay.PreplayResults != nil {
+				if objHolder, ok := txPreplay.PreplayResults.GetHolder(wref); ok {
+					cmptypes.MyAssert(objHolder.ObjID == wref.ObjectID)
+					objMap[addr] = objHolder.Obj
+				}
+			}
+		}
+	}
+	return objMap
+}
 
 // PreplayTransaction attempts to preplay a transaction to the given state
 // database and uses the input parameters for its environment. It returns
@@ -318,7 +333,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				}
 			} else if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
 				readDeps = reuseRound.ReadDepSeq
-				wobjects = reuseRound.WObjects
+				wobjects = GetWObjectsFromWObjectWeakRefs(reuse.MSRACache, reuseRound.WObjectWeakRefs)
 				accChanges = reuseRound.AccountChanges
 				statedb.ApplyAccountChanged(accChanges)
 			} else {

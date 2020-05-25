@@ -25,13 +25,13 @@ const (
 type ColdTask struct {
 	root             common.Hash
 	contentForDb     map[common.Address]map[common.Hash]struct{}
-	contentForObject state.ObjectListMap
+	contentForObject cache.WObjectWeakRefListMap
 }
 
 type ObjWarmupTask struct {
-	root    common.Hash
-	objects state.ObjectList
-	storage map[common.Hash]struct{}
+	root          common.Hash
+	objectHolders state.ObjectHolderList
+	storage       map[common.Hash]struct{}
 }
 
 type StatedbBox struct {
@@ -40,7 +40,7 @@ type StatedbBox struct {
 	processedForDb map[common.Address]map[common.Hash]struct{}
 	dbWarmupCh     chan *ColdTask
 
-	wobjectPool     state.ObjectPool
+	wobjectRefPool  cache.WObjectWeakRefPool
 	prepareForObj   map[common.Address]map[common.Hash]struct{}
 	processedForObj map[common.Address]map[common.Hash]struct{}
 
@@ -186,7 +186,8 @@ func (w *Warmuper) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
 			if w.root != task.root {
 				continue
 			}
-			for _, wobject := range task.objects {
+			for _, holder := range task.objectHolders {
+				wobject := holder.Obj
 				db := wobject.GetDatabase()
 				for key := range task.storage {
 					wobject.GetCommittedState(db, key)
@@ -230,7 +231,7 @@ func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transac
 		return
 	}
 	addrMap := make(map[common.Address]map[common.Hash]struct{})
-	objectListMap := make(state.ObjectListMap)
+	objectRefListMap := make(cache.WObjectWeakRefListMap)
 	for _, tx := range executionOrder {
 		txPreplay := w.chain.MSRACache.GetTxPreplay(tx.Hash())
 		if txPreplay == nil {
@@ -253,21 +254,21 @@ func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transac
 				}
 			}
 		}
-		for address, object := range round.WObjects {
-			if object == nil {
-				continue
-			}
-			objectListMap[address] = append(objectListMap[address], object)
+		for address, object := range round.WObjectWeakRefs {
+			//if object == nil {
+			//	continue
+			//}
+			objectRefListMap[address] = append(objectRefListMap[address], object)
 		}
 	}
-	if len(addrMap) == 0 && len(objectListMap) == 0 {
+	if len(addrMap) == 0 && len(objectRefListMap) == 0 {
 		return
 	}
 	go func() {
 		task := &ColdTask{
 			root:             root,
 			contentForDb:     addrMap,
-			contentForObject: objectListMap,
+			contentForObject: objectRefListMap,
 		}
 		w.coldQueue <- task
 	}()
@@ -315,6 +316,27 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 	}()
 }
 
+func (w *Warmuper) getObjectHolder(wref *cache.WObjectWeakReference) *state.ObjectHolder {
+	txPreplay := w.GlobalCache.GetTxPreplay(wref.TxHash)
+	if txPreplay != nil && txPreplay.Timestamp == wref.Timestamp {
+		if holder, hok := txPreplay.PreplayResults.GetHolder(wref); hok {
+			return holder
+		}
+	}
+	return nil
+}
+
+func (w *Warmuper) getObjectHolderList(wrefList cache.WObjectWeakRefList) state.ObjectHolderList {
+	holderList := make(state.ObjectHolderList, 0, len(wrefList))
+	for _, wref := range wrefList {
+		holder := w.getObjectHolder(wref)
+		if holder != nil {
+			holderList = append(holderList, holder)
+		}
+	}
+	return holderList
+}
+
 func (w *Warmuper) commitNewWork(task *ColdTask) {
 	box := w.getOrNewStatedbBox(task.root)
 	if box == nil {
@@ -342,9 +364,9 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 
 				groupId := address[0] % objSubgroupSize
 				w.objWarmupChList[groupId] <- &ObjWarmupTask{
-					root:    task.root,
-					objects: box.wobjectPool.GetObjectList(address),
-					storage: deltaStorage,
+					root:          task.root,
+					objectHolders: w.getObjectHolderList(box.wobjectRefPool.GetWObjectWeakRefList(address)),
+					storage:       deltaStorage,
 				}
 			} else {
 				if _, ok := box.prepareForObj[address]; !ok {
@@ -356,11 +378,16 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 			}
 		}
 	}
-	for address, objectList := range task.contentForObject {
-		newObjectList := make(state.ObjectList, 0, len(objectList))
-		for _, obj := range objectList {
-			if !box.wobjectPool.IsObjectInPool(address, obj) {
-				newObjectList = append(newObjectList, obj)
+	for address, objectRefList := range task.contentForObject {
+		newObjectRefList := make(cache.WObjectWeakRefList, 0, len(objectRefList))
+		newObjectHolderList := make(state.ObjectHolderList, 0, len(objectRefList))
+		for _, objRef := range objectRefList {
+			if !box.wobjectRefPool.IsObjectRefInPool(address, objRef) {
+				newObjectRefList = append(newObjectRefList, objRef)
+				holder := w.getObjectHolder(objRef)
+				if holder != nil {
+					newObjectHolderList = append(newObjectHolderList, holder)
+				}
 			}
 		}
 		if _, ok := box.processedForObj[address]; !ok {
@@ -380,8 +407,8 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 				}
 			}
 		} else {
-			for _, wobject := range newObjectList {
-				for key := range wobject.GetOriginStorage() {
+			for _, holder := range newObjectHolderList {
+				for key := range holder.Obj.GetOriginStorage() {
 					if _, ok := baseStorage[key]; !ok {
 						deltaStorage[key] = struct{}{}
 						baseStorage[key] = struct{}{}
@@ -397,17 +424,17 @@ func (w *Warmuper) commitNewWork(task *ColdTask) {
 		}
 
 		w.objWarmupChList[groupId] <- &ObjWarmupTask{
-			root:    task.root,
-			objects: box.wobjectPool.GetObjectList(address),
-			storage: deltaStorage,
+			root:          task.root,
+			objectHolders: w.getObjectHolderList(box.wobjectRefPool.GetWObjectWeakRefList(address)),
+			storage:       deltaStorage,
 		}
 		w.objWarmupChList[groupId] <- &ObjWarmupTask{
-			root:    task.root,
-			objects: newObjectList,
-			storage: baseStorageCpy,
+			root:          task.root,
+			objectHolders: newObjectHolderList,
+			storage:       baseStorageCpy,
 		}
 
-		box.wobjectPool.AddObjectList(address, newObjectList)
+		box.wobjectRefPool.AddWObjectWeakRefList(address, newObjectRefList)
 	}
 }
 
@@ -431,7 +458,7 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 			statedbList:     [dbListSize]*state.StateDB{statedb, statedb.Copy()},
 			processedForDb:  make(map[common.Address]map[common.Hash]struct{}),
 			dbWarmupCh:      make(chan *ColdTask, warmupQueueSize),
-			wobjectPool:     state.NewObjectPool(),
+			wobjectRefPool:  cache.NewWObjectWeakRefPool(),
 			prepareForObj:   make(map[common.Address]map[common.Hash]struct{}),
 			processedForObj: make(map[common.Address]map[common.Hash]struct{}),
 			valid:           true,

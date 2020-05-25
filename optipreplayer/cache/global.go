@@ -90,7 +90,7 @@ type GlobalCache struct {
 	Synced func() bool
 
 	// global bigIntPool
-	BigIntPool []*big.Int
+	BigIntPool      []*big.Int
 	BigIntPoolMutex sync.Mutex
 }
 
@@ -147,38 +147,53 @@ func (r *GlobalCache) FillBigIntPool() {
 	}
 }
 
-func (r *GlobalCache) GetTrieSizes() (cachedTxCount int, cachedTxWithTraceCount int,
-	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64) {
-		txHashes := r.PreplayCache.Keys()
-		cachedTxCount = len(txHashes)
-		cachedTxWithTraceCount = 0
-		maxTrieNodeCount = 0
-		totalTrieNodeCount = 0
-		for _, key := range txHashes {
-			p, _ := r.PreplayCache.Peek(key)
-			if p != nil {
-				tp := p.(*TxPreplay)
-				t := tp.PreplayResults.TraceTrie
-				if t != nil {
-					cachedTxWithTraceCount++
-					nc := t.GetNodeCount()
-					totalTrieNodeCount += nc
-					if nc > maxTrieNodeCount {
-						maxTrieNodeCount = nc
-					}
-				}
-				mt := tp.PreplayResults.MixTree
-				if mt != nil {
-					totalMixTrieNodeCount += mt.GetNodeCount()
-				}
-				rwt := tp.PreplayResults.RWRecordTrie
-				if rwt != nil {
-					totalRWTrieNodeCount += rwt.GetNodeCount()
+func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithTraceCount int,
+	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64,
+	wobjectCount uint64, wobjectStorageSize uint64) {
+	txHashes := r.PreplayCache.Keys()
+	cachedTxCount = len(txHashes)
+	cachedTxWithTraceCount = 0
+	maxTrieNodeCount = 0
+	totalTrieNodeCount = 0
+	for _, key := range txHashes {
+		p, _ := r.PreplayCache.Peek(key)
+		if p != nil {
+			tp := p.(*TxPreplay)
+			wc, sc := tp.PreplayResults.GetWObjectSize()
+			wobjectCount += wc
+			wobjectStorageSize += sc
+			t := tp.PreplayResults.TraceTrie
+			if t != nil {
+				cachedTxWithTraceCount++
+				nc := t.GetNodeCount()
+				totalTrieNodeCount += nc
+				if nc > maxTrieNodeCount {
+					maxTrieNodeCount = nc
 				}
 			}
+			mt := tp.PreplayResults.MixTree
+			if mt != nil {
+				totalMixTrieNodeCount += mt.GetNodeCount()
+			}
+			rwt := tp.PreplayResults.RWRecordTrie
+			if rwt != nil {
+				totalRWTrieNodeCount += rwt.GetNodeCount()
+			}
 		}
-		return
+	}
+	return
 
+}
+
+func (r *GlobalCache) GCWObjects() () {
+	txHashes := r.PreplayCache.Keys()
+	for _, key := range txHashes {
+		p, _ := r.PreplayCache.Peek(key)
+		if p != nil {
+			tp := p.(*TxPreplay)
+			tp.PreplayResults.GCWObjects()
+		}
+	}
 }
 
 // ResetGlobalCache reset the global cache size
@@ -409,3 +424,79 @@ func (r *GlobalCache) GetGround(hash common.Hash) *SimpleResult {
 
 	return ground
 }
+
+type WObjectWeakReference struct {
+	TxHash    common.Hash  `json:"txHash"`
+	Address   common.Address `json:"address"`
+	Timestamp time.Time `json:"timestamp"`
+	ObjectID  uintptr `json:"objectID"`
+	RoundID   uint64 `json:"roundID"`
+}
+
+func NewWObjectWeakReference(txHash common.Hash, address common.Address,
+	timestamp time.Time, objId uintptr, roundID uint64) *WObjectWeakReference {
+	return &WObjectWeakReference{
+		TxHash:    txHash,
+		Address:   address,
+		Timestamp: timestamp,
+		ObjectID:  objId,
+		RoundID: roundID,
+	}
+}
+
+type WObjectWeakRefMap map[common.Address]*WObjectWeakReference
+
+func (wrm WObjectWeakRefMap) GetMatchedRef(addr common.Address, txPreplay *TxPreplay) (*WObjectWeakReference, bool) {
+	if ref, rok := wrm[addr]; rok && ref.Timestamp == txPreplay.Timestamp {
+		return ref, rok
+	}
+	return nil, false
+}
+
+const stateObjectLen = 100
+
+type WObjectWeakRefList []*WObjectWeakReference
+type WObjectWeakRefListMap map[common.Address]WObjectWeakRefList
+
+type WObjectWeakRefPool struct {
+	objMap map[common.Address]*lru.Cache
+}
+
+func NewWObjectWeakRefPool() WObjectWeakRefPool {
+	return WObjectWeakRefPool{
+		objMap: make(map[common.Address]*lru.Cache),
+	}
+}
+
+func (m WObjectWeakRefPool) GetWObjectWeakRefList(addr common.Address) WObjectWeakRefList {
+	list := make([]*WObjectWeakReference, 0, stateObjectLen)
+	if cache, ok := m.objMap[addr]; ok {
+		for _, rawObj := range cache.Keys() {
+			list = append(list, rawObj.(*WObjectWeakReference))
+		}
+	}
+	return list
+}
+
+func (m WObjectWeakRefPool) IsObjectRefInPool(addr common.Address, object *WObjectWeakReference) bool {
+	if cache, ok := m.objMap[addr]; ok {
+		return cache.Contains(object)
+	} else {
+		return false
+	}
+}
+
+func (m WObjectWeakRefPool) AddWObjectWeakRefList(addr common.Address, newObjList WObjectWeakRefList) {
+	if _, ok := m.objMap[addr]; !ok {
+		m.objMap[addr], _ = lru.New(stateObjectLen)
+	}
+	cache := m.objMap[addr]
+	for _, obj := range newObjList {
+		if cache.Contains(obj) {
+			cache.Get(obj)
+			continue
+		}
+		cache.Add(obj, struct{}{})
+	}
+}
+

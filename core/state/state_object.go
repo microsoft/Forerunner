@@ -20,15 +20,13 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
-	"github.com/hashicorp/golang-lru"
-	"io"
-	"math/big"
-	"time"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
+	"io"
+	"math/big"
+	"time"
 )
 
 var emptyCodeHash = crypto.Keccak256(nil)
@@ -72,49 +70,28 @@ func newDeltaObject() *deltaObject {
 
 const stateObjectLen = 10
 
-type ObjectList []*stateObject
 type ObjectMap map[common.Address]*stateObject
-type ObjectListMap map[common.Address]ObjectList
-type ObjectPool struct {
-	objMap map[common.Address]*lru.Cache
-}
 
-func NewObjectPool() ObjectPool {
-	return ObjectPool{
-		objMap: make(map[common.Address]*lru.Cache),
-	}
+type ObjectHolder struct {
+	Obj     *stateObject
+	ObjID   uintptr
 }
+type ObjectHolderList []*ObjectHolder
 
-func (m ObjectPool) GetObjectList(addr common.Address) ObjectList {
-	list := make([]*stateObject, 0, stateObjectLen)
-	if cache, ok := m.objMap[addr]; ok {
-		for _, rawObj := range cache.Keys() {
-			list = append(list, rawObj.(*stateObject))
-		}
-	}
-	return list
-}
-
-func (m ObjectPool) IsObjectInPool(addr common.Address, object *stateObject) bool {
-	if cache, ok := m.objMap[addr]; ok {
-		return cache.Contains(object)
-	} else {
-		return false
+func NewObjectHolder(obj *stateObject, objID uintptr) *ObjectHolder {
+	return &ObjectHolder{
+		Obj:     obj,
+		ObjID:   objID,
 	}
 }
 
-func (m ObjectPool) AddObjectList(addr common.Address, newObjList ObjectList) {
-	if _, ok := m.objMap[addr]; !ok {
-		m.objMap[addr], _ = lru.New(stateObjectLen)
+type ObjectHolderMap map[uintptr]*ObjectHolder
+
+func (hm ObjectHolderMap) GetAndDelete(key uintptr) (holder *ObjectHolder, hok bool) {
+	if holder, hok = hm[key]; hok {
+		delete(hm, key)
 	}
-	cache := m.objMap[addr]
-	for _, obj := range newObjList {
-		if cache.Contains(obj) {
-			cache.Get(obj)
-			continue
-		}
-		cache.Add(obj, struct{}{})
-	}
+	return
 }
 
 // stateObject represents an Ethereum account which is being modified.

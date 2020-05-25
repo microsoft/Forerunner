@@ -45,9 +45,9 @@ type Config struct {
 }
 
 type MSRAVMConfig struct {
-	Silent   bool
-	LogRoot  string
-	CmpReuse bool
+	Silent              bool
+	LogRoot             string
+	CmpReuse            bool
 	CmpReuseChecking    bool
 	CmpReuseLogging     bool
 	CmpReuseLoggingDir  string
@@ -67,6 +67,7 @@ type MSRAVMConfig struct {
 	EmulateFromBlock     uint64
 	EmulateFile          string
 	EnableReuseTracer    bool
+	CmpReusePerfTest     bool
 }
 
 func (p *MSRAVMConfig) IsPrintRecord() bool {

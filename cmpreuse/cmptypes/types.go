@@ -22,22 +22,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit  // 6
+	GasLimit // 6
 
-	PreBlockHash  // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
+	PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance           //8
-	Nonce             //9
-	CodeHash          //10
-	Exist             // 11
-	Empty             // 12
-	Code              // 13
-	Storage           // 14
-	CommittedStorage  //15
+	Balance          //8
+	Nonce            //9
+	CodeHash         //10
+	Exist            // 11
+	Empty            // 12
+	Code             // 13
+	Storage          // 14
+	CommittedStorage //15
 
 	// Dep info
-	Dependence  //16
+	Dependence //16
 
 	// Write State
 	DirtyStorage
@@ -100,6 +100,7 @@ type ReuseStatus struct {
 	HitType           HitType
 	MissType          MissType
 	MixHitStatus      *MixHitStatus
+	TraceHitStatus    *TraceHitStatus
 	MissNode          *PreplayResTrieNode
 	MissValue         interface{}
 	AbortStage        AbortStage
@@ -111,6 +112,17 @@ type MixHitStatus struct {
 	DepHitAddr         []common.Address
 	DepHitAddrMap      map[common.Address]interface{}
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
+}
+
+type TraceHitStatus struct {
+	TotalNodes    uint64
+	ExecutedNodes uint64
+	TotalJumps    uint64
+	FailedJumps   uint64
+}
+
+func (th *TraceHitStatus) String() string {
+	return fmt.Sprintf("E/N: %v %v F/J: %v %v", th.ExecutedNodes, th.TotalNodes, th.FailedJumps, th.TotalJumps)
 }
 
 func (s ReuseStatus) String() string {
@@ -174,6 +186,20 @@ const (
 	TraceHit
 )
 
+func (s HitType) String() string {
+	switch s {
+	case TrieHit:
+		return "Trie"
+	case MixHit:
+		return "Mix"
+	case DeltaHit:
+		return "Delta"
+	case TraceHit:
+		return "Trace"
+	}
+	return ""
+}
+
 type MixHitType int
 
 const (
@@ -182,6 +208,20 @@ const (
 	PartialHit
 	NotMixHit
 )
+
+func (m MixHitType) String() string {
+	switch m {
+	case AllDepHit:
+		return "AllDep"
+	case AllDetailHit:
+		return "AllDetail"
+	case PartialHit:
+		return "Partial"
+	case NotMixHit:
+		return "NotMix"
+	}
+	return ""
+}
 
 type MissType int
 
@@ -228,7 +268,7 @@ func NewDefaultTxResID(txHash common.Hash) *TxResID {
 	return &TxResID{Txhash: &txHash, RoundID: 0, hasHash: true, hash: &txHash}
 }
 
-var DEFAULT_TXRESID = &TxResID{hasHash:true, hash:&common.Hash{}}
+var DEFAULT_TXRESID = &TxResID{hasHash: true, hash: &common.Hash{}}
 
 func (t *TxResID) Hash() *common.Hash {
 	if t.hasHash {
@@ -393,40 +433,10 @@ func MyAssert(b bool, params ...interface{}) {
 	}
 }
 
-type ISRefCountNode interface {
-	GetRefCount() uint
-	AddRef() uint                // add a ref and return the new ref count
-	RemoveRef(value interface{}) // remove a ref
-}
-
-type SRefCount struct {
-	refCount uint
-}
-
-func (rf *SRefCount) GetRefCount() uint {
-	return rf.refCount
-}
-
-func (rf *SRefCount) AddRef() uint {
-	rf.refCount++
-	return rf.refCount
-}
-
-func (rf *SRefCount) SRemoveRef() uint {
-	MyAssert(rf.refCount > 0)
-	rf.refCount--
-	return rf.refCount
-}
-
-type TrieRoundRefNodes struct {
-	RefNodes []ISRefCountNode
-	RoundID  uint64
-	Next     *TrieRoundRefNodes
-}
-
 type PreplayResTrieRoundNodes struct {
 	LeafNodes []*PreplayResTrieNode
 	RoundID   uint64
+	Round     IRound
 	Next      *PreplayResTrieRoundNodes
 }
 
@@ -492,11 +502,11 @@ func (p *PreplayResTrieNode) RemoveRecursivelyIfNoChildren(value interface{}) (r
 }
 
 type PreplayResTrie struct {
-	Root      *PreplayResTrieNode
-	LatestBN  uint64
-	LeafCount uint64 // rwset cound for detail trie. round count for dep tree and mix tree
-	RoundIds  map[uint64]bool
-	IsCleared bool
+	Root              *PreplayResTrieNode
+	LatestBN          uint64
+	LeafCount         uint64 // rwset cound for detail trie. round count for dep tree and mix tree
+	RoundIds          map[uint64]bool
+	IsCleared         bool
 	RoundRefNodesHead *PreplayResTrieRoundNodes
 	RoundRefNodesTail *PreplayResTrieRoundNodes
 	RoundRefCount     uint
@@ -512,6 +522,7 @@ func (rr *PreplayResTrie) TrackRoundNodes(refNodes []*PreplayResTrieNode, newNod
 		r := &PreplayResTrieRoundNodes{
 			LeafNodes: refNodes,
 			RoundID:   round.GetRoundId(),
+			Round:     round,
 		}
 
 		rr.RoundRefCount++
@@ -528,6 +539,16 @@ func (rr *PreplayResTrie) TrackRoundNodes(refNodes []*PreplayResTrieNode, newNod
 		}
 		rr.GCRoundNodes()
 	}
+}
+
+func (tt *PreplayResTrie) GetActiveIRounds() []IRound {
+	rounds := make([]IRound, 0, tt.RoundRefCount)
+	rr := tt.RoundRefNodesHead
+	for rr != nil {
+		rounds = append(rounds, rr.Round)
+		rr = rr.Next
+	}
+	return rounds
 }
 
 func (rr *PreplayResTrie) GCRoundNodes() int64 {

@@ -47,16 +47,21 @@ func (l *Listener) cacheEvictionLoop() {
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
 		oldSize := l.globalCache.GetTxPreplayLen()
-		totalNodeCount := l.globalCache.GetTotalNodeCount()
+		startNodeCount, startWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
 		inc := oldSize - newSize
 
 		l.removeBefore(currentBlock.NumberU64() - 6)
-		if l.globalCache.GetTotalNodeCount() > config.CACHE_NODE_COUNT_LIMIT { // todo: CACHE_NODE_COUNT_LIMIT should be a parameter
+
+		nodeCountAfterSmallRemove, _ := l.globalCache.GetTotalNodeCountAndWObjectSize()
+		if nodeCountAfterSmallRemove > config.CACHE_NODE_COUNT_LIMIT { // todo: CACHE_NODE_COUNT_LIMIT should be a parameter
 			l.removeBefore(currentBlock.NumberU64() - 2)
 		}
+		l.globalCache.GCWObjects()
 		saveSize := l.globalCache.GetTxPreplayLen()
 
-		nodesCountToEvict := l.globalCache.GetTotalNodeCount() - config.CACHE_NODE_COUNT_LIMIT
+		nodeCountAfterBigRemove, _ := l.globalCache.GetTotalNodeCountAndWObjectSize()
+
+		nodesCountToEvict := nodeCountAfterBigRemove - config.CACHE_NODE_COUNT_LIMIT
 		for nodesCountToEvict > 0 {
 			removed, ok := l.globalCache.RemoveOldest()
 			if ok {
@@ -70,10 +75,12 @@ func (l *Listener) cacheEvictionLoop() {
 		oldRemoved = saveSize - newSize
 		removed = oldSize - newSize
 
+		endNodeCount, endWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
+
 		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
 			"removed", fmt.Sprintf("%d(%d)", removed, oldRemoved),
-			"newSize", newSize, "newNodeCount", l.globalCache.GetTotalNodeCount(),
-			"oldSize", oldSize, "inc", inc, "oldNodeCount", totalNodeCount,
+			"newSize", newSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
+			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
 			)
 	}
 }
