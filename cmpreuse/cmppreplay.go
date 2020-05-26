@@ -223,12 +223,14 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 		cmptypes.MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 
+		var saveFlag bool
 		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
-			statedb.SetEnableWObject(false)
+			saveFlag = statedb.IsAllowObjCopy()
+			statedb.SetAllowObjCopy(false)
 		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
 		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
-			statedb.SetEnableWObject(true)
+			statedb.SetAllowObjCopy(saveFlag)
 		}
 		rwrecord = reuseRound.RWrecord
 		trace = reuseRound.Trace.(*STrace)

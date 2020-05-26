@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,17 +21,7 @@ type PackageType int
 
 const (
 	TYPE0 PackageType = iota
-	TYPE1
-	TYPE2
 )
-
-func (t PackageType) packageRatio() []int {
-	if t == TYPE2 {
-		return []int{0, 1}
-	} else {
-		return []int{0}
-	}
-}
 
 type TransactionPool map[common.Address]types.Transactions
 
@@ -102,9 +93,7 @@ func (p TransactionPool) copy() TransactionPool {
 	newPool := make(TransactionPool, len(p))
 	for addr, txns := range p {
 		newPool[addr] = make(types.Transactions, len(txns))
-		for i, txn := range txns {
-			newPool[addr][i] = txn
-		}
+		copy(newPool[addr], txns)
 	}
 	return newPool
 }
@@ -127,9 +116,8 @@ func (p TransactionPool) filter(check func(sender common.Address, tx *types.Tran
 	for from, txns := range p {
 		for _, txn := range txns {
 			if check(from, txn) {
-				cpy := make(types.Transactions, txns.Len())
-				copy(cpy, txns)
-				p2[from] = cpy
+				p2[from] = make(types.Transactions, txns.Len())
+				copy(p2[from], txns)
 				break
 			}
 		}
@@ -511,31 +499,41 @@ type OrderAndHeader struct {
 }
 
 type TxnGroup struct {
-	hash common.Hash
-	txns TransactionPool
+	// Core content in txn group
+	hash    common.Hash
+	txnPool TransactionPool
+	txnList [][]byte
 	*RWRecord
 
+	// Just as its name
 	valid int32
 
-	preplayCount   int
-	finishPreplay  map[common.Hash]int
-	failPreplay    map[common.Hash][]string
-	preplayCountMu sync.RWMutex
-	priority       int
+	// Constant information during preplay, access without lock
+	parent       *types.Block
+	txnCount     int
+	chainFactor  int
+	orderCount   *big.Int
+	startList    []int
+	subpoolList  []TransactionPool
+	basicPreplay bool
+	addrNotCopy  map[common.Address]struct{}
 
-	parent *types.Block
+	// Update after every preplay, access with lock
+	preplayMu       sync.RWMutex
+	preplayCount    int
+	preplayFinish   map[common.Hash]int
+	preplayFail     map[common.Hash][]string
+	preplayOrderLog []TxnOrder
+	preplayTimeLog  []uint64
+	priority        int
+	isPriorityConst bool
 
-	txnCount    int
-	chainFactor int
-	orderCount  *big.Int
-
-	startList          []int
-	subpoolList        []TransactionPool
+	// Use for produce order and header
 	nextInList         []map[common.Address]int
 	nextOrderAndHeader chan OrderAndHeader // order and header read from this channel is read-only
 
-	preplayHistory []TxnOrder
-	timeHistory    []uint64
+	// Use for return round ID
+	roundIDCh chan uint64
 }
 
 func (g *TxnGroup) setInvalid() {
@@ -550,52 +548,75 @@ func (g *TxnGroup) isValid() bool {
 	return atomic.LoadInt32(&g.valid) == 1
 }
 
-func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult) {
-	g.preplayCountMu.Lock()
-	defer g.preplayCountMu.Unlock()
+func (g *TxnGroup) defaultInit(parent *types.Block, basicPreplay bool) {
+	atomic.StoreInt32(&g.valid, 1)
+	g.parent = parent
+	g.txnCount = g.txnPool.size()
+	g.chainFactor = 1
+	g.orderCount = new(big.Int).SetInt64(1)
+	g.basicPreplay = basicPreplay
+	g.addrNotCopy = make(map[common.Address]struct{})
+	g.preplayFinish = make(map[common.Hash]int)
+	g.preplayFail = make(map[common.Hash][]string)
+}
+
+func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult, orderAndHeader OrderAndHeader) {
+	g.preplayMu.Lock()
+	defer g.preplayMu.Unlock()
 
 	g.preplayCount++
-	for _, txns := range g.txns {
+	for _, txns := range g.txnPool {
 		for _, txn := range txns {
 			if result, ok := resultMap[txn.Hash()]; ok {
 				if result.Status == "will in" {
-					g.finishPreplay[txn.Hash()]++
+					g.preplayFinish[txn.Hash()]++
 				} else {
-					g.failPreplay[txn.Hash()] = append(g.failPreplay[txn.Hash()], fmt.Sprintf("%s:%s", result.Status, result.Reason))
+					g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], fmt.Sprintf("%s:%s", result.Status, result.Reason))
 				}
 			} else {
-				g.failPreplay[txn.Hash()] = append(g.failPreplay[txn.Hash()], "Nil result map in executor")
+				g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], "Nil result map in executor")
 			}
 		}
+	}
+	g.preplayOrderLog = append(g.preplayOrderLog, orderAndHeader.order)
+	g.preplayTimeLog = append(g.preplayTimeLog, orderAndHeader.header.time)
+	if !g.isPriorityConst {
+		g.priority = g.preplayCount * g.txnCount
 	}
 }
 
 func (g *TxnGroup) getPreplayCount() int {
-	g.preplayCountMu.RLock()
-	defer g.preplayCountMu.RUnlock()
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
 
 	return g.preplayCount
 }
 
 func (g *TxnGroup) haveTxnFinished(txn common.Hash) bool {
-	g.preplayCountMu.RLock()
-	defer g.preplayCountMu.RUnlock()
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
 
-	return g.finishPreplay[txn] > 0
+	return g.preplayFinish[txn] > 0
 }
 
-func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
-	subPool := g.subpoolList[subpoolIndex]
-	nextIn := g.nextInList[subpoolIndex]
-	for from, txns := range subPool {
-		if nextIn[from] < len(txns) {
-			return false
-		}
-	}
-	return true
+func (g *TxnGroup) getTxnFailReason(txn common.Hash) string {
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
+
+	return strings.Join(g.preplayFail[txn], ",")
+}
+
+func (g *TxnGroup) getFirstPreplayOrder() TxnOrder {
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
+
+	return g.preplayOrderLog[0]
 }
 
 func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, bool) {
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
+
 	orderBeforeSize := len(orderBefore)
 	groundOrderMap := make(map[common.Hash]struct{}, len(groundOrder))
 	for _, txn := range groundOrder {
@@ -603,7 +624,7 @@ func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, boo
 	}
 
 	snapMiss := true
-	for _, order := range g.preplayHistory {
+	for _, order := range g.preplayOrderLog {
 		if len(order) < orderBeforeSize {
 			panic("Detect missing txn but not find in before process")
 		}
@@ -623,7 +644,7 @@ func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, boo
 		return false, false
 	}
 
-	for _, order := range g.preplayHistory {
+	for _, order := range g.preplayOrderLog {
 		var orderHit = true
 		for index, txnInOrder := range order[:orderBeforeSize] {
 			if txnInOrder != orderBefore[index] {
@@ -636,6 +657,24 @@ func (g *TxnGroup) evaluatePreplay(groundOrder, orderBefore TxnOrder) (bool, boo
 		}
 	}
 	return true, false
+}
+
+func (g *TxnGroup) getTimestampOrderLog() []uint64 {
+	g.preplayMu.RLock()
+	defer g.preplayMu.RUnlock()
+
+	return g.preplayTimeLog
+}
+
+func (g *TxnGroup) isSubInOrder(subpoolIndex int) bool {
+	subPool := g.subpoolList[subpoolIndex]
+	nextIn := g.nextInList[subpoolIndex]
+	for from, txns := range subPool {
+		if nextIn[from] < len(txns) {
+			return false
+		}
+	}
+	return true
 }
 
 type TaskQueue struct {
@@ -750,13 +789,21 @@ func (l *PreplayLog) reportNewGroup(group *TxnGroup) (originGroup *TxnGroup, exi
 
 	if originGroup, exist = l.groupLog[group.hash]; !exist {
 		l.groupLog[group.hash] = group
-		for _, txns := range group.txns {
+		for _, txns := range group.txnPool {
 			for _, txn := range txns {
 				l.txnLog[txn.Hash()] = struct{}{}
 			}
 		}
 	}
 	return
+}
+
+func (l *PreplayLog) isGroupExist(group *TxnGroup) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	_, exist := l.groupLog[group.hash]
+	return exist
 }
 
 func (l *PreplayLog) reportGroupEnd(group *TxnGroup) {
@@ -782,7 +829,7 @@ func (l *PreplayLog) searchGroupHitGroup(currentTxn *types.Transaction, sender c
 
 	groupHitGroup := make(map[common.Hash]*TxnGroup)
 	for groupHash, group := range l.groupLog {
-		for _, txn := range group.txns[sender] {
+		for _, txn := range group.txnPool[sender] {
 			if txn.Hash() == currentTxn.Hash() {
 				groupHitGroup[groupHash] = group
 				break

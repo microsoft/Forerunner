@@ -9,7 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
 	"math/big"
 	"os"
 	"sort"
@@ -158,15 +157,15 @@ var (
 	CumKeyNoWarmup        = make(map[string]int)
 	CumKeyWarmupHelpless  = make(map[string]int)
 
-	cumApply         = metrics.NewRegisteredTimer("apply", nil)
-	cumFinalize      = metrics.NewRegisteredTimer("finalize", nil)
-	cumWaitReuse     = metrics.NewRegisteredTimer("apply.waitReuse", nil)
-	cumWaitRealApply = metrics.NewRegisteredTimer("apply.waitRealApply", nil)
-	cumTxFinalize    = metrics.NewRegisteredTimer("apply.txFinalize", nil)
-	cumUpdate        = metrics.NewRegisteredTimer("apply.update", nil)
-	cumGetRW         = metrics.NewRegisteredTimer("apply.waitReuse.getRW", nil)
-	cumSetDB         = metrics.NewRegisteredTimer("apply.waitReuse.setDB", nil)
-	cumRunTx         = metrics.NewRegisteredTimer("apply.waitRealApply.runTx", nil)
+	cumApply         time.Duration
+	cumFinalize      time.Duration
+	cumWaitReuse     time.Duration
+	cumWaitRealApply time.Duration
+	cumTxFinalize    time.Duration
+	cumUpdate        time.Duration
+	cumGetRW         time.Duration
+	cumSetDB         time.Duration
+	cumRunTx         time.Duration
 
 	blkCount      uint64
 	txnCount      uint64
@@ -413,47 +412,48 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		}
 	}
 
-	cumApply.Update(sumApply)
-	cumFinalize.Update(Finalize)
-	cumWaitReuse.Update(sumWaitReuse)
-	cumWaitRealApply.Update(sumWaitRealApply)
-	cumTxFinalize.Update(sumTxFinalize)
-	cumUpdate.Update(sumUpdate)
-	cumGetRW.Update(sumGetRW)
-	cumSetDB.Update(sumSetDB)
-	cumRunTx.Update(sumRunTx)
+	cumApply += sumApply
+	cumFinalize += Finalize
+	cumWaitReuse += sumWaitReuse
+	cumWaitRealApply += sumWaitRealApply
+	cumTxFinalize += sumTxFinalize
+	cumUpdate += sumUpdate
+	cumGetRW += sumGetRW
+	cumSetDB += sumSetDB
+	cumRunTx += sumRunTx
 
 	context := []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
 	if len(block.Transactions()) != 0 {
 		context = append(context,
-			"reuse/realApply", fmt.Sprintf("%.2f/%.2f", float64(sumWaitReuse)/float64(sumApply), float64(sumWaitRealApply)/float64(sumApply)),
-			"finalize+update", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
+			"reuse/apply", fmt.Sprintf("%.2f", float64(sumWaitReuse)/float64(sumApply)),
+			"realApply/apply", fmt.Sprintf("%.2f", float64(sumWaitRealApply)/float64(sumApply)),
+			"(finalize+update)/apply", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
 		if sumWaitReuse != 0 {
 			context = append(context,
-				"getRW", fmt.Sprintf("%.2f", float64(sumGetRW)/float64(sumWaitReuse)),
-				"setDB", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
+				"getRW/reuse", fmt.Sprintf("%.2f", float64(sumGetRW)/float64(sumWaitReuse)),
+				"setDB/reuse", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
 		}
 		if sumWaitRealApply != 0 {
 			context = append(context,
-				"runTx", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
+				"runTx/realApply", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
 		}
 	}
 	log.Info("Time consumption detail", context...)
 
-	context = []interface{}{"apply", common.PrettyDuration(cumApply.Sum()), "finalize", common.PrettyDuration(cumFinalize.Sum())}
+	context = []interface{}{"apply", common.PrettyDuration(cumApply), "finalize", common.PrettyDuration(cumFinalize)}
 	if len(block.Transactions()) != 0 {
 		context = append(context,
-			"reuse/realApply",
-			fmt.Sprintf("%.2f/%.2f", float64(cumWaitReuse.Sum())/float64(cumApply.Sum()), float64(cumWaitRealApply.Sum())/float64(cumApply.Sum())),
-			"finalize+update", fmt.Sprintf("%.2f", float64(cumTxFinalize.Sum()+cumUpdate.Sum())/float64(cumApply.Sum())))
+			"reuse/apply", fmt.Sprintf("%.2f", float64(cumWaitReuse)/float64(cumApply)),
+			"realApply/apply", fmt.Sprintf("%.2f", float64(cumWaitRealApply)/float64(cumApply)),
+			"(finalize+update)/apply", fmt.Sprintf("%.2f", float64(cumTxFinalize+cumUpdate)/float64(cumApply)))
 		if sumWaitReuse != 0 {
 			context = append(context,
-				"getRW", fmt.Sprintf("%.2f", float64(cumGetRW.Sum())/float64(cumWaitReuse.Sum())),
-				"setDB", fmt.Sprintf("%.2f", float64(cumSetDB.Sum())/float64(cumWaitReuse.Sum())))
+				"getRW/reuse", fmt.Sprintf("%.2f", float64(cumGetRW)/float64(cumWaitReuse)),
+				"setDB/reuse", fmt.Sprintf("%.2f", float64(cumSetDB)/float64(cumWaitReuse)))
 		}
 		if sumWaitRealApply != 0 {
 			context = append(context,
-				"runTx", fmt.Sprintf("%.2f", float64(cumRunTx.Sum())/float64(cumWaitRealApply.Sum())))
+				"runTx/realApply", fmt.Sprintf("%.2f", float64(cumRunTx)/float64(cumWaitRealApply)))
 		}
 	}
 	log.Info("Cumulative time consumption detail", context...)

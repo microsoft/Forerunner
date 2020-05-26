@@ -59,14 +59,16 @@ type Executor struct {
 
 	EnableReuseTracer bool
 
-	enableAgg    bool
-	enablePause  bool
+	enableAgg   bool
+	enablePause bool
+
 	basicPreplay bool
+	addrNotCopy  map[common.Address]struct{}
 }
 
 func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
 	rawPending map[common.Address]types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
-	enableAgg bool, enablePause bool, basicPreplay bool) *Executor {
+	enableAgg bool, enablePause bool, basicPreplay bool, addrNotCopy map[common.Address]struct{}) *Executor {
 	executor := &Executor{
 		id:             id,
 		config:         config,
@@ -84,6 +86,7 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		enableAgg:      enableAgg,
 		enablePause:    enablePause,
 		basicPreplay:   basicPreplay,
+		addrNotCopy:    addrNotCopy,
 	}
 
 	for _, txs := range rawPending {
@@ -118,8 +121,9 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 	statedbInstance, err := e.chain.StateAt(parent.Root())
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
 		statedb = state.NewRWStateDB(statedbInstance)
+		statedb.SetAddrNotCopy(e.addrNotCopy)
 		if !e.basicPreplay {
-			statedb.DisableUpdateRoot()
+			statedb.SetAllowObjCopy(false)
 		}
 	} else {
 		statedb = statedbInstance

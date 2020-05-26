@@ -123,9 +123,9 @@ type StateDB struct {
 	StorageCommits time.Duration
 
 	// MSRA fields !!! don't forget to initialize in New() and Copy()
-	EnableFeeToCoinbase bool       // default true
-	EnableWObject       bool       // default true
-	EnableUpdateRoot    bool       // default true
+	EnableFeeToCoinbase bool // default true
+	allowObjCopy        bool // default true
+	addrNotCopy         map[common.Address]struct{}
 	rwRecorder          RWRecorder // RWRecord mode
 
 	ReuseTracer cmptypes.IReuseTracer
@@ -276,8 +276,8 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:             newJournal(),
 
 		EnableFeeToCoinbase: true,
-		EnableWObject:       true,
-		EnableUpdateRoot:    true,
+		allowObjCopy:        true,
+		addrNotCopy:         make(map[common.Address]struct{}),
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
 		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
@@ -290,12 +290,16 @@ func NewRWStateDB(state *StateDB) *StateDB {
 	return state
 }
 
-func (self *StateDB) SetEnableWObject(enableWObject bool) {
-	self.EnableWObject = enableWObject
+func (self *StateDB) IsAllowObjCopy() bool {
+	return self.allowObjCopy
 }
 
-func (self *StateDB) DisableUpdateRoot() {
-	self.EnableUpdateRoot = false
+func (self *StateDB) SetAllowObjCopy(allow bool) {
+	self.allowObjCopy = allow
+}
+
+func (self *StateDB) SetAddrNotCopy(addrMap map[common.Address]struct{}) {
+	self.addrNotCopy = addrMap
 }
 
 func (self *StateDB) SetRWMode(enabled bool) {
@@ -1028,8 +1032,7 @@ func (s *StateDB) Copy() *StateDB {
 		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
-		EnableWObject:       s.EnableWObject,
-		EnableUpdateRoot:    s.EnableUpdateRoot,
+		allowObjCopy:        s.allowObjCopy,
 		rwRecorder:          emptyRWRecorder{},
 		IsParallelHasher:    s.IsParallelHasher,
 	}
@@ -1105,8 +1108,7 @@ func (s *StateDB) ShareCopy() {
 		logs:                s.logs,
 		journal:             newJournal(),
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
-		EnableWObject:       s.EnableWObject,
-		EnableUpdateRoot:    s.EnableUpdateRoot,
+		allowObjCopy:        s.allowObjCopy,
 		rwRecorder:          emptyRWRecorder{},
 		primary:             false,
 		delta:               newDeltaDB(),

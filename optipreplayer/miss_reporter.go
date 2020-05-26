@@ -97,7 +97,7 @@ func (r *MissReporter) SetNoPreplayTxn(txn *types.Transaction, enqueue uint64) {
 		r.noExecPreplay++
 		pickGroup := pickOneGroup(groupHitGroup)
 		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration,
-			"reason", pickGroup.failPreplay[txn.Hash()])
+			"reason", pickGroup.getTxnFailReason(txn.Hash()))
 		return
 	}
 	log.Info("Report reuse no preplay: bug", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration)
@@ -187,14 +187,14 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		//		}
 		//		var groupTxns = "TooLarge"
 		//		if pickGroup.txnCount <= 20 {
-		//			groupTxns = pickGroup.txns.String()
+		//			groupTxns = pickGroup.txnPool.String()
 		//		}
 		//		log.Info("Report reuse miss: timestamp", "tx", txn.Hash().Hex(), "index", index,
 		//			"nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
 		//			"forecastTime", forecastTime, "block.Time", r.block.Time(),
 		//			"haveTimeDepGroupNum", len(haveTimeDep), "pickGroupSize", pickGroup.txnCount,
-		//			"isTimeDep", pickGroup.isTimestampDep(), "history", pickGroup.timeHistory,
-		//			"pickGroupPreplay", pickGroup.getPreplayCount(), "group.txns", groupTxns,
+		//			"isTimeDep", pickGroup.isTimestampDep(), "preplayedTimestamp", pickGroup.getTimestampOrderLog(),
+		//			"pickGroupPreplay", pickGroup.getPreplayCount(), "group.txnPool", groupTxns,
 		//		)
 		//	}
 		//}
@@ -279,7 +279,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			pickGroup := pickOneGroup(chainHitGroup)
 			log.Info("Report reuse miss: extra txns", "tx", txn.Hash(), "index", index, "chainHitGroupNum", len(chainHitGroup),
 				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-				"group.txns", pickGroup.txns, "groundOrder", groundOrder)
+				"group.txnPool", pickGroup.txnPool, "groundOrder", groundOrder)
 		}
 		return
 	}
@@ -324,7 +324,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		if isSample(txn) {
 			log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash(), "index", index, "snapHitGroupNum", len(snapHitGroup),
 				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
-				"group.txns", pickGroup.txns, "groundOrder", groundOrder,
+				"group.txnPool", pickGroup.txnPool, "groundOrder", groundOrder,
 				"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.getPreplayCount(), preplayRate*100, pickGroup.orderCount.String()))
 		}
 		return
@@ -383,21 +383,21 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		if len(node.Children) > 0 {
 			nodeChildStr += "}"
 		}
-		var groupTxns = "TooLarge"
+		var groupTxnPool = "TooLarge"
 		if pickGroup.txnCount <= 20 {
-			groupTxns = pickGroup.txns.String()
+			groupTxnPool = pickGroup.txnPool.String()
 		}
 		log.Info("Report reuse miss: bug", "tx", txn.Hash().Hex(), "index", index,
 			"nodeType", nodeTypeStr, "nodeChild", nodeChildStr, "missValue", getInterfaceValue(value),
 			"rootHitGroupNum", len(rootHitGroup), "pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
 			"pickPreplayMost", fmt.Sprintf("%d->%s", pickGroup.getPreplayCount(), pickGroup.orderCount.String()),
-			"preplayedOrder", pickGroup.preplayHistory[0],
-			"group.txns", groupTxns, "orderBefore", orderBefore,
+			"preplayedOrder", pickGroup.getFirstPreplayOrder(),
+			"group.txnPool", groupTxnPool, "orderBefore", orderBefore,
 		)
 		group := r.groundGroups[groundGroup.hash]
 		log.Info("Ground group info", "hash", group.hash, "txnCount", group.txnCount,
-			"txns", group.txns, "order", groundOrder)
-		for _, txns := range group.txns {
+			"txnPool", group.txnPool, "order", groundOrder)
+		for _, txns := range group.txnPool {
 			for _, txn := range txns {
 				log.Info("Transaction info", "tx", txn.Hash().Hex(), "index", r.txnsIndexMap[txn.Hash()],
 					"sender", r.txnsSenderMap[txn.Hash()], "rwrecord", r.getRWRecord(txn.Hash()).String())
@@ -488,7 +488,7 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 	}
 
 	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), txnsIndexMap, pendingTxn, currentState,
-		p.trigger, nil, false, false, false)
+		p.trigger, nil, false, false, false, nil)
 
 	executor.RoundID = p.globalCache.NewRoundID()
 
@@ -512,7 +512,7 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 		}
 	}
 
-	getRWRecord := func(txn common.Hash) *RWRecord {
+	selectRWRecord := func(txn common.Hash) *RWRecord {
 		if rwrecord, ok := rwrecords[txn]; ok {
 			return rwrecord
 		} else {
@@ -521,10 +521,10 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 		}
 	}
 	isSameGroup := func(sender common.Address, txn common.Hash, group *TxnGroup) bool {
-		if _, ok := group.txns[sender]; ok {
+		if _, ok := group.txnPool[sender]; ok {
 			return true
 		}
-		rwrecord := getRWRecord(txn)
+		rwrecord := selectRWRecord(txn)
 		return rwrecord.isRWOverlap(group.RWRecord) || group.isRWOverlap(rwrecord)
 	}
 
@@ -542,39 +542,38 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 			}
 		}
 
-		newGroup := make(TransactionPool)
+		txnPool := make(TransactionPool)
+		txnList := make([][]byte, 0)
 		rwrecord := NewRWRecord(nil)
-		var res [][]byte
 		for groupHash := range relativeGroup {
 			addGroup := nowGroups[groupHash]
-			rwrecord.merge(addGroup.RWRecord)
-			for addr, txns := range addGroup.txns {
-				newGroup[addr] = append(newGroup[addr], txns...)
-				for _, txn := range txns {
-					res = append(res, txn.Hash().Bytes())
-				}
-			}
 			delete(nowGroups, groupHash)
+			for addr, txns := range addGroup.txnPool {
+				txnPool[addr] = append(txnPool[addr], txns...)
+			}
+			txnList = append(txnList, addGroup.txnList...)
+			rwrecord.merge(addGroup.RWRecord)
 		}
-		newGroup[from] = append(newGroup[from], txns...)
+		txnPool[from] = append(txnPool[from], txns...)
 		for _, txn := range txns {
-			rwrecord.merge(getRWRecord(txn.Hash()))
-			res = append(res, txn.Hash().Bytes())
+			txnList = append(txnList, txn.Hash().Bytes())
+			rwrecord.merge(selectRWRecord(txn.Hash()))
 		}
-		sort.Slice(res, func(i, j int) bool {
-			return bytes.Compare(res[i], res[j]) == -1
+		sort.Slice(txnList, func(i, j int) bool {
+			return bytes.Compare(txnList[i], txnList[j]) == -1
 		})
-		groupHash := crypto.Keccak256Hash(res...)
+		groupHash := crypto.Keccak256Hash(txnList...)
 		nowGroups[groupHash] = &TxnGroup{
 			hash:     groupHash,
-			txns:     newGroup,
+			txnPool:  txnPool,
+			txnList:  txnList,
 			RWRecord: rwrecord,
 		}
 	}
 	for _, group := range nowGroups {
-		group.txnCount = group.txns.size()
+		group.txnCount = group.txnPool.size()
 	}
-	return parent, nowGroups, getRWRecord
+	return parent, nowGroups, selectRWRecord
 }
 
 func (r *MissReporter) searchGroundGroup(currentTxn *types.Transaction, sender common.Address) (*TxnGroup, TxnOrder) {
@@ -584,8 +583,8 @@ func (r *MissReporter) searchGroundGroup(currentTxn *types.Transaction, sender c
 		sum         int
 	)
 	for _, group := range r.groundGroups {
-		sum += group.txns.size()
-		for _, txn := range group.txns[sender] {
+		sum += group.txnPool.size()
+		for _, txn := range group.txnPool[sender] {
 			if txn.Hash() == currentTxn.Hash() {
 				if groundGroup != nil {
 					panic("Find duplicate ground group for tx:" + currentTxn.Hash().Hex() + ",sum:" + strconv.Itoa(sum))
@@ -596,7 +595,7 @@ func (r *MissReporter) searchGroundGroup(currentTxn *types.Transaction, sender c
 	}
 	if groundGroup == nil {
 		for _, group := range r.groundGroups {
-			for from, txns := range group.txns {
+			for from, txns := range group.txnPool {
 				for _, txn := range txns {
 					if txn.Hash() == currentTxn.Hash() {
 						groundGroup = group
@@ -610,7 +609,7 @@ func (r *MissReporter) searchGroundGroup(currentTxn *types.Transaction, sender c
 		}
 	}
 	groundOrder = make([]common.Hash, 0, groundGroup.txnCount)
-	for _, txns := range groundGroup.txns {
+	for _, txns := range groundGroup.txnPool {
 		for _, txn := range txns {
 			groundOrder = append(groundOrder, txn.Hash())
 		}
@@ -648,7 +647,7 @@ func (r *MissReporter) searchExecHitGroup(currentTxn *types.Transaction, groupHi
 func (r *MissReporter) searchTxnHitGroup(groupExecGroup map[common.Hash]*TxnGroup, poolBefore TransactionPool) map[common.Hash]*TxnGroup {
 	txnHitGroup := make(map[common.Hash]*TxnGroup)
 	for groupHash, group := range groupExecGroup {
-		if !poolBefore.isTxnsPoolLarge(group.txns) {
+		if !poolBefore.isTxnsPoolLarge(group.txnPool) {
 			txnHitGroup[groupHash] = group
 		}
 	}
@@ -738,172 +737,6 @@ func (r *MissReporter) searchRootHitGroup(orderHitGroup map[common.Hash]*TxnGrou
 	}
 	return rootHitGroup
 }
-
-//func (r *MissReporter) getRanking(beforeOrder TxnOrder, group *TxnGroup, debug bool) (int64, bool) {
-//	start := time.Now()
-//	var isPrint bool
-//	groundOrderMap := make(map[common.Hash]int, len(beforeOrder))
-//	for i, hash := range beforeOrder {
-//		groundOrderMap[hash] = i
-//	}
-//	nextInList := make([]map[common.Address]int, len(group.subpoolList))
-//	for i := range nextInList {
-//		nextInList[i] = make(map[common.Address]int, group.subpoolList[i].size())
-//		for from := range group.subpoolList[i] {
-//			nextInList[i][from] = 0
-//		}
-//	}
-//	isSubInOrder := func(subpoolIndex int) bool {
-//		subPool := group.subpoolList[subpoolIndex]
-//		nextIn := nextInList[subpoolIndex]
-//		for from, txns := range subPool {
-//			if nextIn[from] < len(txns) {
-//				return false
-//			}
-//		}
-//		return true
-//	}
-//	rank := int64(-1)
-//	overflow := false
-//	rankCount := uint64(1)
-//	finish := false
-//	var walkTxnsPool func(subpoolLoc int, txnLoc int, isMatch bool, lastIndex int)
-//	walkTxnsPool = func(subpoolLoc int, txnLoc int, isMatch bool, lastIndex int) {
-//		if time.Since(start) > time.Minute && !isPrint {
-//			log.Info("Detect long getRanking", "beforeOrder", beforeOrder.String(), "group", group.txns.String(),
-//				"rank", rank, "rankCount", rankCount, "overflow", overflow, "finish", finish)
-//			debug = true
-//			isPrint = true
-//		}
-//		if time.Since(start) > 2*time.Minute && isPrint {
-//			debug = false
-//		}
-//		if debug {
-//			log.Info("In walkTxnsPool", "subpoolLoc", subpoolLoc, "txnLoc", txnLoc, "isMatch", isMatch, "lastIndex", lastIndex)
-//		}
-//		if finish {
-//			return
-//		}
-//		if rankCount > uint64(group.preplayCount) && rankCount >= 1000 {
-//			finish = true
-//			rank = int64(rankCount)
-//			overflow = true
-//			return
-//		}
-//		if isSubInOrder(subpoolLoc) {
-//			if subpoolLoc == 0 {
-//				if isMatch {
-//					if group.isChainDep() {
-//						var (
-//							coinbaseTryCount  = 1
-//							timestampTryCount = 1
-//						)
-//						if group.isCoinbaseDep() {
-//							coinbaseTryCount = len(r.preplayer.taskBuilder.minerList.topActive)
-//						}
-//						if group.isTimestampDep() {
-//							timestampTryCount = len(timeShift)
-//						}
-//						for i := 0; i < coinbaseTryCount; i++ {
-//							for j := 0; j < timestampTryCount; j++ {
-//								if !(group.isCoinbaseDep() && r.block.Header().Coinbase != r.preplayer.taskBuilder.minerList.topActive[i] ||
-//									group.isTimestampDep() && r.block.Header().Time != uint64(int(group.header.time)+timeShift[j])) {
-//									rank = int64(rankCount)
-//									finish = true
-//									return
-//								}
-//								rankCount++
-//							}
-//						}
-//						if debug {
-//							log.Info("Reach impossible", "ground", r.block.Header().Time, "forecast", group.header.time)
-//						}
-//					} else {
-//						rank = int64(rankCount)
-//						finish = true
-//					}
-//				} else {
-//					rankCount += uint64(group.chainFactor)
-//				}
-//				return
-//			} else {
-//				if isMatch {
-//					subpoolLoc--
-//					txnLoc = group.startList[subpoolLoc]
-//					lastIndex = -1
-//				} else {
-//					count := uint64(group.chainFactor)
-//					for i := 0; i < subpoolLoc; i++ {
-//						count *= group.orderCountList[i].Uint64()
-//					}
-//					rankCount += count
-//					return
-//				}
-//			}
-//		}
-//
-//		subpool := group.subpoolList[subpoolLoc]
-//		nextIn := nextInList[subpoolLoc]
-//		var (
-//			maxPriceFrom = make([]common.Address, 0)
-//			maxPrice     = new(big.Int)
-//		)
-//		for from, txns := range subpool {
-//			nextIndex := nextIn[from]
-//			if nextIndex >= len(txns) {
-//				continue
-//			}
-//			headTxn := txns[nextIndex]
-//			headGasPrice := headTxn.GasPrice()
-//			cmp := headGasPrice.Cmp(maxPrice)
-//			switch {
-//			case cmp > 0:
-//				maxPrice = headGasPrice
-//				maxPriceFrom = []common.Address{from}
-//			case cmp == 0:
-//				maxPriceFrom = append(maxPriceFrom, from)
-//			}
-//		}
-//		sort.Slice(maxPriceFrom, func(i, j int) bool {
-//			return bytes.Compare(maxPriceFrom[i].Bytes(), maxPriceFrom[j].Bytes()) < 0
-//		})
-//		for _, from := range maxPriceFrom {
-//			txn := subpool[from][nextIn[from]]
-//			nextIn[from]++
-//			if debug {
-//				log.Info("Pick", "txn", txn.Hash(), "txnLoc", txnLoc, "from count", len(maxPriceFrom))
-//			}
-//			if isMatch {
-//				if index, ok := groundOrderMap[txn.Hash()]; ok {
-//					if lastIndex < index {
-//						walkTxnsPool(subpoolLoc, txnLoc+1, true, index)
-//					} else {
-//						walkTxnsPool(subpoolLoc, txnLoc+1, false, index)
-//					}
-//				} else {
-//					if len(beforeOrder) <= txnLoc {
-//						walkTxnsPool(subpoolLoc, txnLoc+1, true, lastIndex)
-//					} else {
-//						walkTxnsPool(subpoolLoc, txnLoc+1, false, lastIndex)
-//					}
-//				}
-//			} else {
-//				walkTxnsPool(subpoolLoc, txnLoc+1, false, lastIndex)
-//			}
-//			nextIn[from]--
-//		}
-//	}
-//	lastSubpoolIndex := len(group.subpoolList) - 1
-//	if debug {
-//		log.Info("Start walk", "lastSubpoolIndex", lastSubpoolIndex)
-//	}
-//	if len(group.subpoolList) == 0 {
-//		log.Info("Detect subpool zero", "txn", group.txns, "count", group.txnCount)
-//	} else {
-//		walkTxnsPool(lastSubpoolIndex, group.startList[lastSubpoolIndex], true, -1)
-//	}
-//	return rank, overflow
-//}
 
 func isSample(txn *types.Transaction) bool {
 	return txn.Hash()[0] == 0

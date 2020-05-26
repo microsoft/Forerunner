@@ -1613,7 +1613,7 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	bc.wg.Done()
 
 	// make it visible in the flame graph
-	for; insertDuration.Milliseconds() < 200; insertDuration = time.Since(insertStart) {
+	for ; insertDuration.Milliseconds() < 200; insertDuration = time.Since(insertStart) {
 	}
 
 	return n, err
@@ -1989,8 +1989,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
-		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount,
-		totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
 		log.Info("Read memory statistics",
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
@@ -2001,6 +1999,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
 			"PauseMsInProcess", fmt.Sprintf("%.2f", float64(afterTotalPausedNs-beforeTotalPausedNs)/1000000.0),
 			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
+		)
+		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount,
+		totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
+		log.Info("Trie size in tx preplay cache",
 			"cachedTxCount", cachedTxCount,
 			"tracedTxCount", cachedTxWithTraceCount,
 			"maxTraceNodeCount", maxTrieNodeCount,

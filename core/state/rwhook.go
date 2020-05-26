@@ -27,10 +27,10 @@ type ReadChain struct {
 
 type WriteState struct {
 	Balance      *big.Int `json:",omitempty"`
-	Nonce        *uint64 `json:",omitempty"`
-	Code         *Code `json:",omitempty"`
-	DirtyStorage Storage `json:",omitempty"`
-	Suicided     *bool `json:",omitempty"`
+	Nonce        *uint64  `json:",omitempty"`
+	Code         *Code    `json:",omitempty"`
+	DirtyStorage Storage  `json:",omitempty"`
+	Suicided     *bool    `json:",omitempty"`
 }
 
 type ReadStates map[common.Address]*ReadState
@@ -470,14 +470,14 @@ func (h *rwRecorderImpl) updateWStorage(addr common.Address, key common.Hash, va
 }
 
 func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject) {
-	if h.statedb.EnableWObject {
-		cpy := object.deepCopy(object.db)
-		cpy.delta = newDeltaObject()
-		cpy.Code(cpy.db.db)
-		if h.statedb.EnableUpdateRoot {
+	if h.statedb.allowObjCopy {
+		if _, ok := h.statedb.addrNotCopy[addr]; !ok {
+			cpy := object.deepCopy(object.db)
+			cpy.delta = newDeltaObject()
+			cpy.Code(cpy.db.db)
 			cpy.updateRoot(cpy.db.db)
+			cpy.shareCopy(cpy.db)
+			h.WObject[addr] = cpy
 		}
-		cpy.shareCopy(cpy.db)
-		h.WObject[addr] = cpy
 	}
 }

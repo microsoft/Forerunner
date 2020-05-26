@@ -42,8 +42,8 @@ func (l *Listener) cacheEvictionLoop() {
 	defer chainHeadSub.Unsubscribe()
 
 	var removed, oldRemoved, newSize int
-	for {
-		currentBlock := (<-chainHeadCh).Block
+	for chainHeadEvent := range chainHeadCh {
+		currentBlock := chainHeadEvent.Block
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
 		oldSize := l.globalCache.GetTxPreplayLen()
@@ -66,7 +66,7 @@ func (l *Listener) cacheEvictionLoop() {
 			removed, ok := l.globalCache.RemoveOldest()
 			if ok {
 				nodesCountToEvict -= removed
-			}else{
+			} else {
 				break
 			}
 		}
@@ -103,8 +103,8 @@ func (l *Listener) commitLoop() {
 	newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
 	defer newTxsSub.Unsubscribe()
 
-	for {
-		l.commitNewTxs((<-newTxsCh).Txs)
+	for txsEvent := range newTxsCh {
+		l.commitNewTxs(txsEvent.Txs)
 	}
 }
 
@@ -138,8 +138,8 @@ func (l *Listener) register() (func(*big.Int), func()) {
 		newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
 		defer newTxsSub.Unsubscribe()
 
-		for {
-			txs := (<-newTxsCh).Txs
+		for txsEvent := range newTxsCh {
+			txs := txsEvent.Txs
 			if len(txs) == 0 {
 				continue
 			}

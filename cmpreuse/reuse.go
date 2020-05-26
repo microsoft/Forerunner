@@ -541,7 +541,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (res *cache.PreplayResult, isAbort bool, ok bool) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
 	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
-	
+
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
@@ -976,7 +976,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		return
 	}
 
-	if isBlockProcess && cfg.MSRAVMSettings.CmpReuseChecking{
+	if isBlockProcess && cfg.MSRAVMSettings.CmpReuseChecking {
 		sjs, _ := json.Marshal(status)
 		log.Info("status", "tx", tx.Hash().Hex(), "status", string(sjs))
 	}
