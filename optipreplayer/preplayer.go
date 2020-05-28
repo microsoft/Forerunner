@@ -300,9 +300,30 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 		}
 	}
 
-	p.chain.Warmuper.AddWarmupTask(executor.RoundID, executor.executionOrder, parent.Root())
+	var rounds = make([]*cache.PreplayResult, 0, len(executor.executionOrder))
+	for _, tx := range executor.executionOrder {
+		if txPreplay := p.globalCache.PeekTxPreplay(tx.Hash()); txPreplay != nil {
+			if round, _ := txPreplay.PeekRound(executor.RoundID); round != nil {
+				rounds = append(rounds, round)
+			}
+		}
+	}
+
+	p.reportWobjectCopy(rounds)
+
+	p.chain.Warmuper.AddWarmupTask(rounds, parent.Root())
 
 	return executor.resultMap, executor.RoundID
+}
+
+func (p *Preplayer) reportWobjectCopy(rounds []*cache.PreplayResult) {
+	for _, round := range rounds {
+		addrList := make([]common.Address, 0, len(round.WObjectWeakRefs))
+		for addr := range round.WObjectWeakRefs {
+			addrList = append(addrList, addr)
+		}
+		p.preplayLog.reportWobjectCopy(round.WObjectCopy, round.WObjectNotCopy, addrList)
+	}
 }
 
 type Preplayers []*Preplayer

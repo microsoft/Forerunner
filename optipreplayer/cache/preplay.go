@@ -126,15 +126,15 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds           *lru.Cache `json:"-"`
-	RWRecordTrie     *cmptypes.PreplayResTrie
-	ReadDepTree      *cmptypes.PreplayResTrie
-	MixTree          *cmptypes.PreplayResTrie
-	DeltaTree        *cmptypes.PreplayResTrie
-	TraceTrie        ITracerTrie
-	wobjectHolderMap state.ObjectHolderMap
-	holderMapMutex   sync.Mutex
-	wobjectIDCounter uintptr
+	Rounds               *lru.Cache `json:"-"`
+	RWRecordTrie         *cmptypes.PreplayResTrie
+	ReadDepTree          *cmptypes.PreplayResTrie
+	MixTree              *cmptypes.PreplayResTrie
+	DeltaTree            *cmptypes.PreplayResTrie
+	TraceTrie            ITracerTrie
+	wobjectHolderMap     state.ObjectHolderMap
+	holderMapMutex       sync.Mutex
+	wobjectIDCounter     uintptr
 	objectPointerToObjID map[uintptr]uintptr
 
 	// deprecated
@@ -247,10 +247,12 @@ type PreplayResult struct {
 	Receipt  *types.Receipt `json:"receipt"`
 	RWrecord *RWRecord      `json:"rwrecord"`
 	//WObjects       state.ObjectMap     `json:"wobjects"`
-	WObjectWeakRefs    WObjectWeakRefMap       `json:"wobjects"`
-	AccountChanges cmptypes.TxResIDMap `json:"changes"`   // the written address changedby
-	Timestamp      uint64              `json:"timestamp"` // Generation Time
-	TimestampNano  uint64              `json:"timestampNano"`
+	WObjectWeakRefs WObjectWeakRefMap   `json:"wobjects"`
+	WObjectCopy     uint64              `json:"wobjectCopy"`
+	WObjectNotCopy  uint64              `json:"wobjectNotCopy"`
+	AccountChanges  cmptypes.TxResIDMap `json:"changes"`   // the written address changedby
+	Timestamp       uint64              `json:"timestamp"` // Generation Time
+	TimestampNano   uint64              `json:"timestampNano"`
 
 	BasedBlockHash common.Hash              `json:"basedBlock"`
 	ReadDepSeq     []*cmptypes.AddrLocValue `json:"deps"`
@@ -782,7 +784,7 @@ func (r *GlobalCache) GetTxPreplayLen() int {
 func (r *GlobalCache) GetTotalNodeCountAndWObjectSize() (totalNodeCount int64, totalWObjectSize uint64) {
 	_, _, _, totalTrieNodeCount, totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := r.GetTrieAndWObjectSizes()
 	totalNodeCount = totalTrieNodeCount + totalMixTrieNodeCount + totalRWTrieNodeCount
-	totalWObjectSize = totalWObjectCount * config.WOBJECT_BASE_SIZE + totalWObjectStorageSize
+	totalWObjectSize = totalWObjectCount*config.WOBJECT_BASE_SIZE + totalWObjectStorageSize
 	return
 }
 
@@ -872,7 +874,7 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 }
 
 // SetMainResult set the result for a tx
-func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap,
+func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
 	accChanges cmptypes.TxResIDMap, readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
 	r.FillBigIntPool()
 
@@ -891,6 +893,8 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 	nowTime := time.Now()
 	//round.WObjects = wobjects
 	round.WObjectWeakRefs = txPreplay.StoreWObjects(wobjects, roundID)
+	round.WObjectCopy = wobjectCopy
+	round.WObjectNotCopy = wobjectNotCopy
 	round.Timestamp = uint64(nowTime.Unix())
 	round.TimestampNano = uint64(nowTime.UnixNano())
 

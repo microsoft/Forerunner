@@ -87,7 +87,8 @@ type GlobalCache struct {
 	// BucketCache *lru.Cache // Feature Cache
 	pause int32
 
-	Synced func() bool
+	Synced    func() bool
+	SyncStart uint64
 
 	// global bigIntPool
 	BigIntPool      []*big.Int
@@ -426,11 +427,11 @@ func (r *GlobalCache) GetGround(hash common.Hash) *SimpleResult {
 }
 
 type WObjectWeakReference struct {
-	TxHash    common.Hash  `json:"txHash"`
+	TxHash    common.Hash    `json:"txHash"`
 	Address   common.Address `json:"address"`
-	Timestamp time.Time `json:"timestamp"`
-	ObjectID  uintptr `json:"objectID"`
-	RoundID   uint64 `json:"roundID"`
+	Timestamp time.Time      `json:"timestamp"`
+	ObjectID  uintptr        `json:"objectID"`
+	RoundID   uint64         `json:"roundID"`
 }
 
 func NewWObjectWeakReference(txHash common.Hash, address common.Address,
@@ -440,7 +441,7 @@ func NewWObjectWeakReference(txHash common.Hash, address common.Address,
 		Address:   address,
 		Timestamp: timestamp,
 		ObjectID:  objId,
-		RoundID: roundID,
+		RoundID:   roundID,
 	}
 }
 
@@ -499,4 +500,3 @@ func (m WObjectWeakRefPool) AddWObjectWeakRefList(addr common.Address, newObjLis
 		cache.Add(obj, struct{}{})
 	}
 }
-

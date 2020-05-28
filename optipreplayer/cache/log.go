@@ -123,8 +123,7 @@ type LogPreplayItem struct {
 type LogBlockGround []*LogRWrecord
 
 var (
-	syncStart uint64
-	toScreen  bool
+	toScreen bool
 
 	Process       time.Duration
 	Apply         []time.Duration
@@ -362,10 +361,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 
 	r.LogPrint(filePath, infoFileName, infoResult)
 
-	if syncStart == 0 && synced {
-		syncStart = block.NumberU64()
+	if r.SyncStart == 0 && synced {
+		r.SyncStart = block.NumberU64()
 	}
-	if syncStart != 0 && block.NumberU64() >= syncStart+k {
+	if r.SyncStart != 0 && block.NumberU64() >= r.SyncStart+k {
 		toScreen = true
 	}
 

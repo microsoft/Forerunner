@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -506,7 +505,8 @@ type TxnGroup struct {
 	*RWRecord
 
 	// Just as its name
-	valid int32
+	validMu sync.RWMutex
+	valid   bool
 
 	// Constant information during preplay, access without lock
 	parent       *types.Block
@@ -537,19 +537,28 @@ type TxnGroup struct {
 }
 
 func (g *TxnGroup) setInvalid() {
-	atomic.StoreInt32(&g.valid, 0)
+	g.validMu.Lock()
+	defer g.validMu.Unlock()
+
+	g.valid = false
 }
 
 func (g *TxnGroup) setValid() {
-	atomic.StoreInt32(&g.valid, 1)
+	g.validMu.Lock()
+	defer g.validMu.Unlock()
+
+	g.valid = true
 }
 
 func (g *TxnGroup) isValid() bool {
-	return atomic.LoadInt32(&g.valid) == 1
+	g.validMu.RLock()
+	defer g.validMu.RUnlock()
+
+	return g.valid
 }
 
 func (g *TxnGroup) defaultInit(parent *types.Block, basicPreplay bool) {
-	atomic.StoreInt32(&g.valid, 1)
+	g.setValid()
 	g.parent = parent
 	g.txnCount = g.txnPool.size()
 	g.chainFactor = 1
@@ -745,6 +754,10 @@ type PreplayLog struct {
 	groupEnd    map[common.Hash]struct{}
 	txnLog      map[common.Hash]struct{}
 
+	wobjectCopyCnt    uint64
+	wobjectNotCopyCnt uint64
+	wobjectAddr       map[common.Address]struct{}
+
 	groupExecCnt uint64
 	txnExecCnt   uint64
 }
@@ -756,6 +769,7 @@ func NewPreplayLog() *PreplayLog {
 		groupLog:    make(map[common.Hash]*TxnGroup),
 		groupEnd:    make(map[common.Hash]struct{}),
 		txnLog:      make(map[common.Hash]struct{}),
+		wobjectAddr: map[common.Address]struct{}{},
 	}
 }
 
@@ -812,6 +826,17 @@ func (l *PreplayLog) reportGroupEnd(group *TxnGroup) {
 
 	if _, ok := l.groupLog[group.hash]; ok {
 		l.groupEnd[group.hash] = struct{}{}
+	}
+}
+
+func (l *PreplayLog) reportWobjectCopy(copy, noCopy uint64, addrList []common.Address) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.wobjectCopyCnt += copy
+	l.wobjectNotCopyCnt += noCopy
+	for _, addr := range addrList {
+		l.wobjectAddr[addr] = struct{}{}
 	}
 }
 
@@ -878,6 +903,7 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 		context, "build", l.taskBuildCnt, "deadline", len(l.deadlineLog),
 		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), l.groupExecCnt),
 		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt),
+		"object", fmt.Sprintf("%d(%d)-%d", l.wobjectCopyCnt, len(l.wobjectAddr), l.wobjectNotCopyCnt),
 		"remain", remain, "duration", common.PrettyDuration(time.Since(l.lastUpdate)),
 	)
 	log.Info("In last block", context...)
@@ -889,7 +915,10 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	l.deadlineLog = make(map[uint64]struct{})
 	l.groupLog = make(map[common.Hash]*TxnGroup)
 	l.groupEnd = make(map[common.Hash]struct{})
-	l.groupExecCnt = 0
 	l.txnLog = make(map[common.Hash]struct{})
+	l.wobjectCopyCnt = 0
+	l.wobjectNotCopyCnt = 0
+	l.wobjectAddr = make(map[common.Address]struct{})
+	l.groupExecCnt = 0
 	l.txnExecCnt = 0
 }

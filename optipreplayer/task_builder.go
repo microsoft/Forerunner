@@ -19,8 +19,10 @@ import (
 const (
 	// preplayLimitForRemain is the upper limit of preplay count for transactions in remain pool.
 	preplayLimitForRemain = 2
-	// txnCountLimitInOncePreplayRemain is the upper limit of txn count when preplay remain
-	txnCountLimitWhenPreplayRemain = 200
+	// remainTxnLimit is the limit of remain txn preplay count.
+	remainTxnLimit = 20
+	// remainTxnTotalLimit is the total limit of remain txn preplay count between two blocks.
+	remainTxnTotalLimit = 200
 )
 
 type TaskBuilder struct {
@@ -132,7 +134,7 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 
 	if b.packageType == TYPE0 {
 		var rawPendingCopy = make(TransactionPool)
-		if atomic.LoadInt32(b.preplayRemain) == 0 {
+		if len(b.remainCount) < remainTxnTotalLimit && atomic.LoadInt32(b.preplayRemain) == 0 {
 			rawPendingCopy = rawPending.copy()
 		}
 
@@ -213,7 +215,7 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 			b.setMinPrice(txnWithMinPrice.GasPrice())
 		}
 
-		if atomic.CompareAndSwapInt32(b.preplayRemain, 0, 1) {
+		if len(b.remainCount) < remainTxnTotalLimit && atomic.CompareAndSwapInt32(b.preplayRemain, 0, 1) {
 			go func() {
 				b.handleRemainPreplayPool(pending, txnRemovedForGasLimit, rawPendingCopy)
 				atomic.StoreInt32(b.preplayRemain, 0)
@@ -302,7 +304,7 @@ func isSamePriceTooMuch(pool TransactionPool) bool {
 		}
 	}
 	for _, count := range priceTotalMap {
-		if count > 3 {
+		if count >= 2 {
 			return true
 		}
 	}
@@ -620,17 +622,17 @@ func (b *TaskBuilder) isTxnTooLate(txn *types.Transaction) bool {
 func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsByPriceAndNonce, txnRemovedForGasLimit map[*types.Transaction]struct{}, rawPendingCopy TransactionPool) {
 	var pickTxn = make(map[common.Hash]struct{})
 	for txn := range txnRemovedForGasLimit {
-		if b.globalCache.GetTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
+		if b.globalCache.PeekTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
 			pickTxn[txn.Hash()] = struct{}{}
 		}
 	}
-	needSize := txnCountLimitWhenPreplayRemain - len(pickTxn)
+	needSize := remainTxnLimit - len(pickTxn)
 	for needSize > 0 {
 		txn := remainPending.Peek()
 		if txn == nil {
 			break
 		}
-		if b.globalCache.GetTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
+		if b.globalCache.PeekTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
 			pickTxn[txn.Hash()] = struct{}{}
 			needSize--
 		}

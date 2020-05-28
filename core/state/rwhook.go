@@ -51,7 +51,7 @@ type RWRecorder interface {
 	RWClear()
 	//RWDump() (map[common.Address]*ReadState, ReadChain, map[common.Address]*WriteState, *cmptypes.ReadDetail, map[common.Address]*stateObject)
 	RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes.ReadDetail)
-	WObjectDump() map[common.Address]*stateObject
+	WObjectDump() (map[common.Address]*stateObject, uint64, uint64)
 
 	UpdateRHeader(field cmptypes.Field, val interface{})
 	UpdateRBlockhash(num uint64, val common.Hash)
@@ -85,7 +85,7 @@ func (h emptyRWRecorder) RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes
 	panic("Enable RWRecord mode to use RWDump!")
 }
 
-func (h emptyRWRecorder) WObjectDump() map[common.Address]*stateObject {
+func (h emptyRWRecorder) WObjectDump() (map[common.Address]*stateObject, uint64, uint64) {
 	panic("Enable RWRecord mode to use WObjectDump!")
 }
 
@@ -138,6 +138,9 @@ type rwRecorderImpl struct {
 	WState     WriteStates
 	ReadDetail *cmptypes.ReadDetail
 	WObject    map[common.Address]*stateObject
+
+	WobjectCopy    uint64
+	WobjectNotCopy uint64
 }
 
 func (h *rwRecorderImpl) _Exist(addr common.Address, so *stateObject, ret bool) {
@@ -249,8 +252,8 @@ func (h *rwRecorderImpl) RWDump() (ReadStates, ReadChain, WriteStates, *cmptypes
 	return h.RState, h.RChain, h.WState, h.ReadDetail
 }
 
-func (h *rwRecorderImpl) WObjectDump() map[common.Address]*stateObject {
-	return h.WObject
+func (h *rwRecorderImpl) WObjectDump() (map[common.Address]*stateObject, uint64, uint64) {
+	return h.WObject, h.WobjectCopy, h.WobjectNotCopy
 }
 
 // no need
@@ -478,6 +481,9 @@ func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject)
 			cpy.updateRoot(cpy.db.db)
 			cpy.shareCopy(cpy.db)
 			h.WObject[addr] = cpy
+			h.WobjectCopy++
+			return
 		}
 	}
+	h.WobjectNotCopy++
 }

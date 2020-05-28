@@ -3,7 +3,6 @@ package core
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
@@ -226,21 +225,13 @@ func (w *Warmuper) exit() {
 	}
 }
 
-func (w *Warmuper) AddWarmupTask(RoundID uint64, executionOrder []*types.Transaction, root common.Hash) {
+func (w *Warmuper) AddWarmupTask(rounds []*cache.PreplayResult, root common.Hash) {
 	if !w.valid {
 		return
 	}
 	addrMap := make(map[common.Address]map[common.Hash]struct{})
 	objectRefListMap := make(cache.WObjectWeakRefListMap)
-	for _, tx := range executionOrder {
-		txPreplay := w.chain.MSRACache.GetTxPreplay(tx.Hash())
-		if txPreplay == nil {
-			continue
-		}
-		round, _ := txPreplay.PeekRound(RoundID)
-		if round == nil {
-			continue
-		}
+	for _, round := range rounds {
 		if round.RWrecord != nil {
 			for addr, readStates := range round.RWrecord.RState {
 				if _, ok := addrMap[addr]; !ok {

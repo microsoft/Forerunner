@@ -1858,8 +1858,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		bc.Warmuper.Pause()
 		var memStats runtime.MemStats
 		runtime.ReadMemStats(&memStats)
-		beforeTotalGCNum := memStats.NumGC
 		beforeTotalPausedNs := memStats.PauseTotalNs
+		beforeTotalGCNum := memStats.NumGC
 		substart := time.Now()
 		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
 			bp := types.NewParallelBloomProcessor()
@@ -1870,8 +1870,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		cache.Process = time.Since(substart)
 
 		runtime.ReadMemStats(&memStats)
-		afterTotalGCNum := memStats.NumGC
 		afterTotalPausedNs := memStats.PauseTotalNs
+		afterTotalGCNum := memStats.NumGC
 
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -1990,14 +1990,16 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
 		log.Info("Read memory statistics",
+			"BlockCount", block.NumberU64()-bc.MSRACache.SyncStart+1,
 			"HeapAlloc", common.StorageSize(m.HeapAlloc),
 			"HeapSys", common.StorageSize(m.HeapSys),
 			"HeapIdle", common.StorageSize(m.HeapIdle),
 			"HeapInuse", common.StorageSize(m.HeapInuse),
 			"NextGC", common.StorageSize(m.NextGC),
+			"PauseTotal", common.PrettyDuration(m.PauseTotalNs),
+			"PauseInProcess", common.PrettyDuration(afterTotalPausedNs-beforeTotalPausedNs),
 			"NumGC", m.NumGC,
 			"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
-			"PauseMsInProcess", fmt.Sprintf("%.2f", float64(afterTotalPausedNs-beforeTotalPausedNs)/1000000.0),
 			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
 		)
 		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount,
@@ -2012,7 +2014,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			"totalWObjectCount", totalWObjectCount,
 			"totalWObjectStorageSize", totalWObjectStorageSize,
 			"totalNodeCount", totalTrieNodeCount+totalMixTrieNodeCount+totalRWTrieNodeCount,
-			"totalWObjectSize", totalWObjectCount * config.WOBJECT_BASE_SIZE + totalWObjectStorageSize,
+			"totalWObjectSize", totalWObjectCount*config.WOBJECT_BASE_SIZE+totalWObjectStorageSize,
 		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
