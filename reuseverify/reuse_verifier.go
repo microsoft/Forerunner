@@ -149,7 +149,7 @@ func (v *ReuseVerifier) TestBlock(block *types.Block, statedb *state.StateDB, cf
 			}
 		}
 
-		if !cmpreuse.CheckRState(rw, statedb, true) {
+		if !cmpreuse.CheckRState(rw, statedb, true, true) {
 			log.Info("ReuseVerifier !CheckRState",
 				"block", block.NumberU64(), "i", i, "txHash", tx.Hash())
 

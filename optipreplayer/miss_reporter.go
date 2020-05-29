@@ -369,9 +369,9 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		if nodeType.Field == cmptypes.CommittedStorage || nodeType.Field == cmptypes.Storage {
 			nodeTypeStr += "." + nodeType.Loc.(common.Hash).Hex()
 		}
-		nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
+		nodeChildStr := fmt.Sprintf("%d:", node.Children.Size())
 		var first = true
-		for value := range node.Children {
+		for _, value := range node.Children.GetKeys() {
 			if first {
 				nodeChildStr += "{"
 				first = false
@@ -380,7 +380,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			}
 			nodeChildStr += getInterfaceValue(value)
 		}
-		if len(node.Children) > 0 {
+		if node.Children.Size() > 0 {
 			nodeChildStr += "}"
 		}
 		var groupTxnPool = "TooLarge"
@@ -499,7 +499,7 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 	for _, txns := range pendingTxn {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
-			txPreplay := p.globalCache.GetTxPreplay(txnHash)
+			txPreplay := p.globalCache.PeekTxPreplay(txnHash)
 			if txPreplay != nil {
 				if round, ok := txPreplay.PeekRound(executor.RoundID); ok {
 					rwrecords[txnHash] = NewRWRecord(round.RWrecord)
@@ -750,6 +750,9 @@ func pickOneGroup(groupMap map[common.Hash]*TxnGroup) *TxnGroup {
 }
 
 func getInterfaceValue(value interface{}) string {
+	if value == nil{ // miss_value is null
+		return ""
+	}
 	val := reflect.ValueOf(value)
 	typ := reflect.Indirect(val).Type()
 	switch v := value.(type) {

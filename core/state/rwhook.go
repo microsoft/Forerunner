@@ -288,7 +288,7 @@ func (h *rwRecorderImpl) UpdateRHeader(field cmptypes.Field, val interface{}) {
 	case cmptypes.Difficulty:
 		if h.RChain.Difficulty == nil {
 			h.RChain.Difficulty = val.(*big.Int)
-			value = common.BigToHash(val.(*big.Int)) // Difficulty in `Header` in block.go is *big.Int
+			value = val.(*big.Int).Uint64() // Difficulty in `Header` in block.go is uint64
 		}
 	case cmptypes.GasLimit:
 		if h.RChain.GasLimit == nil {

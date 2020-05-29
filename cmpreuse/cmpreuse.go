@@ -259,9 +259,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		} else if reuseStatus.BaseStatus == cmptypes.Hit &&
 			(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
 			reuseDB.ApplyAccountChanged(round.AccountChanges)
-			//if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
-			//	reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
-			//}
+
 			reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
 		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit {
 			if reuseStatus.TraceTrieHitAddrs != nil {
@@ -299,8 +297,10 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
 		t1 := time.Now()
-		// XXX
-		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), cmptypes.DEFAULT_TXRESID)
+		for _, addr:= range applyDB.DirtyAddress(){
+			reuseDB.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
+		}
+		reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
 
 		applyDB.Update()
 		cache.Update = append(cache.Update, time.Since(t1))

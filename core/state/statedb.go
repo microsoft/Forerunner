@@ -606,29 +606,12 @@ func (s *StateDB) IsInPending(addr common.Address) bool {
 	return ok
 }
 
-// Deprecated
-func (s *StateDB) PendingAddress() []common.Address {
-	var res []common.Address
-	for addr := range s.stateObjectsPending {
-		res = append(res, addr)
-	}
-	return res
-}
-
 func (s *StateDB) DirtyAddress() []common.Address {
 	var res []common.Address
 	for addr := range s.journal.dirties {
 		res = append(res, addr)
 	}
 	return res
-}
-
-// deprecated
-func (s *StateDB) UpdateAccountByJournal(txHash common.Hash, roundId uint64) {
-	txRes := cmptypes.NewTxResID(txHash, roundId)
-	for addr := range s.journal.dirties {
-		s.UpdateAccountChanged(addr, txRes)
-	}
 }
 
 func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txRes *cmptypes.TxResID) {
@@ -665,8 +648,7 @@ func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxRe
 	if changedBy, ok := s.AccountChangedBy[addr]; ok {
 		changedBy.AppendTx(txRes)
 	} else {
-		changedBy = cmptypes.NewChangedBy()
-		changedBy.AppendTx(txRes)
+		changedBy = cmptypes.NewChangedBy(txRes)
 		s.AccountChangedBy[addr] = changedBy
 	}
 }
@@ -678,26 +660,26 @@ func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy 
 		changed = cmptypes.NewChangedBy2(accSnap)
 		s.AccountChangedBy[address] = changed
 	}
-	// TODO: just return Hash
 	return changed.Copy()
 }
 
-func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) interface{} {
+func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) string {
 	changed, ok := s.AccountChangedBy[address]
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
-		return *accSnap
+		changed = cmptypes.NewChangedBy2(accSnap)
+		s.AccountChangedBy[address] = changed
 	}
 	return changed.Hash()
 }
 
-func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
-	res := make(map[common.Address]*cmptypes.ChangedBy)
-	for _, addr := range addresses {
-		res[*addr] = s.GetTxDepByAccount(*addr)
-	}
-	return res
-}
+//func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
+//	res := make(map[common.Address]*cmptypes.ChangedBy)
+//	for _, addr := range addresses {
+//		res[*addr] = s.GetTxDepByAccount(*addr)
+//	}
+//	return res
+//}
 
 // Database retrieves the low level database supporting the lower level trie ops.
 func (s *StateDB) Database() Database {
@@ -1166,7 +1148,6 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 
 	snap, err := s.trie.TryGet(address[:])
 	if err != nil { // this address does not exist
-		//panic(err.Error())
 		return &cmptypes.AccountSnap{}
 	}
 	return cmptypes.BytesToAccountSnap(snap)

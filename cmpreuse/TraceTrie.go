@@ -1743,6 +1743,8 @@ func GetGuardKey(a interface{}) interface{} {
 		return ta
 	case int:
 		return ta
+	case string:
+		return ta
 	default:
 		panic(fmt.Sprintf("Unknown type: %v", reflect.TypeOf(a).Name()))
 	}

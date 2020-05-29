@@ -9,9 +9,14 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"sync/atomic"
+	"unsafe"
 )
+
+var EmptyCodeHash = crypto.Keccak256Hash(nil)
+var NilCodeHash = common.Hash{}
 
 type Field int
 
@@ -22,22 +27,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit // 6
+	GasLimit  // 6
 
-	PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
+	//PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance          //8
-	Nonce            //9
-	CodeHash         //10
-	Exist            // 11
-	Empty            // 12
-	Code             // 13
-	Storage          // 14
-	CommittedStorage //15
+	Balance           //7
+	Nonce             //8
+	CodeHash          //9
+	Exist             // 10
+	Empty             // 11
+	Code              // 12
+	Storage           // 13
+	CommittedStorage  //14
 
 	// Dep info
-	Dependence //16
+	Dependence  //15
 
 	// Write State
 	DirtyStorage
@@ -61,8 +66,6 @@ func (f Field) String() string {
 		return "difficulty"
 	case GasLimit:
 		return "gasLimit"
-	case PreBlockHash:
-		return "preBlockHash"
 	case Balance:
 		return "balance"
 	case Nonce:
@@ -91,10 +94,6 @@ func IsChainField(field Field) bool {
 	return field < Balance
 }
 
-func IsStateField(field Field) bool {
-	return field > PreBlockHash && field < Dependence
-}
-
 type ReuseStatus struct {
 	BaseStatus        ReuseBaseStatus
 	HitType           HitType
@@ -102,7 +101,7 @@ type ReuseStatus struct {
 	MixHitStatus      *MixHitStatus
 	TraceHitStatus    *TraceHitStatus
 	MissNode          *PreplayResTrieNode
-	MissValue         interface{}
+	MissValue         interface{} // to reduce the cost of converting interfaces, mute the miss Value
 	AbortStage        AbortStage
 	TraceTrieHitAddrs TxResIDMap
 }
@@ -206,6 +205,8 @@ const (
 	AllDepHit MixHitType = iota
 	AllDetailHit
 	PartialHit
+	AllDeltaHit
+	PartialDeltaHit
 	NotMixHit
 )
 
@@ -255,101 +256,80 @@ type TxResID struct {
 	Txhash  *common.Hash `json:"tx"`
 	RoundID uint64       `json:"rID"`
 
-	hash    *common.Hash
-	hasHash bool
+	hash *string
 }
 
 func NewTxResID(txHash common.Hash, roundID uint64) *TxResID {
-	return &TxResID{Txhash: &txHash, RoundID: roundID, hasHash: false}
+	bs := append(txHash.Bytes(), GetBytes(roundID)...)
+	return &TxResID{Txhash: &txHash, RoundID: roundID, hash: ImmutableBytesToStringPtr(bs)}
 }
 
-// Deprecated
-func NewDefaultTxResID(txHash common.Hash) *TxResID {
-	return &TxResID{Txhash: &txHash, RoundID: 0, hasHash: true, hash: &txHash}
+var DEFAULT_TXRESID_Hash = ""
+var DEFAULT_TXRESID = &TxResID{hash: &DEFAULT_TXRESID_Hash}
+
+func (t *TxResID) Hash() *string {
+	return t.hash
 }
 
-var DEFAULT_TXRESID = &TxResID{hasHash: true, hash: &common.Hash{}}
-
-func (t *TxResID) Hash() *common.Hash {
-	if t.hasHash {
-		return t.hash
-	} else {
-		bs := append(t.Txhash.Bytes(), GetBytes(t.RoundID)...)
-		res := new(common.Hash)
-		res.SetBytes(bs)
-		t.hash = res
-		t.hasHash = true
-		return t.hash
-	}
+type AccountSnap struct {
+	hash  *string // convert bytes into `string`, that would be helpful for comparing
+	bytes []byte
 }
-
-const AccountSnapLen = 90
-
-type AccountSnap [AccountSnapLen]byte
 
 func (a AccountSnap) String() string {
-	return hexutil.Encode(a[:])
+	return hexutil.Encode(a.bytes)
 }
 
 func (a AccountSnap) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fmt.Sprintf("0x%s", a.String()))
 }
 
+func (a AccountSnap) Hex() string {
+	return a.String()
+}
+
+func (a AccountSnap) Hash() *string {
+	return a.hash
+}
+
 func BytesToAccountSnap(bs []byte) *AccountSnap {
-	if len(bs) > AccountSnapLen {
-		bs = bs[len(bs)-AccountSnapLen:]
-		//
-		panic("too long bytes " + "" + string(len(bs)))
-	}
-	var as AccountSnap
-	copy(as[AccountSnapLen-len(bs):], bs)
-	return &as
+	//newBytes := make([]byte, len(bs))
+	//copy(newBytes, bs)
+	res := &AccountSnap{hash: ImmutableBytesToStringPtr(bs), bytes: bs}
+	return res
+}
+
+func ImmutableBytesToStringPtr(buf []byte) *string {
+	res := *(*string)(unsafe.Pointer(&buf))
+	return &res
 }
 
 type ChangedBy struct {
-	AccountSnap *AccountSnap
-	LastTxResID *TxResID `json:"lastRes"`
-
-	hash        interface{} // for each seq, only cal once
-	hashUpdated bool
+	AccountSnap *AccountSnap `json:"snap"`
+	LastTxResID *TxResID     `json:"lastRes"`
 }
 
-func NewChangedBy() *ChangedBy {
-	return &ChangedBy{LastTxResID: nil, hash: nil, hashUpdated: false}
+func NewChangedBy(id *TxResID) *ChangedBy {
+	return &ChangedBy{LastTxResID: id}
 }
 
 func NewChangedBy2(accountSnap *AccountSnap) *ChangedBy {
-	return &ChangedBy{AccountSnap: accountSnap, LastTxResID: nil, hash: nil, hashUpdated: false}
+	return &ChangedBy{AccountSnap: accountSnap, LastTxResID: nil}
 }
 
 func (c *ChangedBy) AppendTx(txResID *TxResID) {
 	c.LastTxResID = txResID
-	c.hashUpdated = false
 }
 
 func (c *ChangedBy) Copy() *ChangedBy {
-	c.updateHash()
-	return &ChangedBy{AccountSnap: c.AccountSnap, LastTxResID: c.LastTxResID, hash: c.hash, hashUpdated: c.hashUpdated}
+	return &ChangedBy{AccountSnap: c.AccountSnap, LastTxResID: c.LastTxResID}
 }
 
-func (c *ChangedBy) updateHash() {
-	if !c.hashUpdated {
-		if c.LastTxResID == nil {
-			c.hash = c.AccountSnap
-		} else {
-			c.hash = c.LastTxResID.Hash()
-
-		}
-	}
-	c.hashUpdated = true
-}
-
-func (c *ChangedBy) Hash() interface{} {
-	c.updateHash()
+func (c *ChangedBy) Hash() string {
 	if c.LastTxResID == nil {
-		return *c.hash.(*AccountSnap)
+		return *c.AccountSnap.Hash()
 	} else {
-		return *c.hash.(*common.Hash)
+		return *c.LastTxResID.Hash()
 	}
 }
 
@@ -433,6 +413,240 @@ func MyAssert(b bool, params ...interface{}) {
 	}
 }
 
+type IChildren interface {
+	GetChild(interface{}) (*PreplayResTrieNode, bool)
+	//InsertChild(interface{}, *PreplayResTrieNode)
+	Delete(interface{})
+	Size() int
+	CopyKey() IChildren
+	GetKeys() []interface{}
+}
+
+type UintChildren map[uint64]*PreplayResTrieNode
+
+func (u UintChildren) GetChild(value interface{}) (*PreplayResTrieNode, bool) {
+	realValue, ok := value.(uint64)
+	if ok {
+		node, find := u[realValue]
+		return node, find
+	} else {
+		return nil, false
+	}
+}
+
+func (u UintChildren) Delete(value interface{}) {
+	realValue, ok := value.(uint64)
+	MyAssert(ok)
+	delete(u, realValue)
+}
+
+func (u UintChildren) Size() int {
+	return len(u)
+}
+
+func (u UintChildren) CopyKey() IChildren {
+	copyU := make(UintChildren, u.Size())
+
+	for child := range u {
+		copyU[child] = nil
+	}
+	return copyU
+}
+
+func (u UintChildren) GetKeys() []interface{} {
+	res := make([]interface{}, u.Size())
+	index := 0
+	for k := range u {
+		res[index] = k
+		index++
+	}
+	return res
+}
+
+type HashChildren map[common.Hash]*PreplayResTrieNode
+
+func (h HashChildren) GetChild(value interface{}) (*PreplayResTrieNode, bool) {
+	realValue, ok := value.(common.Hash)
+	if ok {
+		node, find := h[realValue]
+		return node, find
+	} else {
+		return nil, false
+	}
+}
+
+func (h HashChildren) Delete(value interface{}) {
+	realValue, ok := value.(common.Hash)
+	MyAssert(ok)
+	delete(h, realValue)
+}
+
+func (h HashChildren) Size() int {
+	return len(h)
+}
+
+func (h HashChildren) CopyKey() IChildren {
+	copyU := make(HashChildren, h.Size())
+
+	for child := range h {
+		copyU[child] = nil
+	}
+	return copyU
+}
+
+func (h HashChildren) GetKeys() []interface{} {
+	res := make([]interface{}, h.Size())
+	index := 0
+	for k := range h {
+		res[index] = k
+		index++
+	}
+	return res
+}
+
+type BoolChildren map[bool]*PreplayResTrieNode
+
+func (b BoolChildren) GetChild(value interface{}) (*PreplayResTrieNode, bool) {
+	realValue, ok := value.(bool)
+	if ok {
+		node, find := b[realValue]
+		return node, find
+	} else {
+		return nil, false
+	}
+}
+
+func (b BoolChildren) Delete(value interface{}) {
+	realValue, ok := value.(bool)
+	MyAssert(ok)
+	delete(b, realValue)
+}
+
+func (b BoolChildren) Size() int {
+	return len(b)
+}
+
+func (b BoolChildren) CopyKey() IChildren {
+	copyU := make(BoolChildren, b.Size())
+
+	for child := range b {
+		copyU[child] = nil
+	}
+	return copyU
+}
+
+func (b BoolChildren) GetKeys() []interface{} {
+	res := make([]interface{}, b.Size())
+	index := 0
+	for k := range b {
+		res[index] = k
+		index++
+	}
+	return res
+}
+
+type AddressChildren map[common.Address]*PreplayResTrieNode
+
+func (a AddressChildren) GetChild(value interface{}) (*PreplayResTrieNode, bool) {
+	realValue, ok := value.(common.Address)
+	if ok {
+		node, find := a[realValue]
+		return node, find
+	} else {
+		return nil, false
+	}
+}
+
+func (a AddressChildren) Delete(value interface{}) {
+	realValue, ok := value.(common.Address)
+	MyAssert(ok)
+	delete(a, realValue)
+}
+
+func (a AddressChildren) Size() int {
+	return len(a)
+}
+
+func (a AddressChildren) CopyKey() IChildren {
+	copyU := make(AddressChildren, a.Size())
+
+	for child := range a {
+		copyU[child] = nil
+	}
+	return copyU
+}
+
+func (a AddressChildren) GetKeys() []interface{} {
+	res := make([]interface{}, a.Size())
+	index := 0
+	for k := range a {
+		res[index] = k
+		index++
+	}
+	return res
+}
+
+type StringChildren map[string]*PreplayResTrieNode
+
+func (s StringChildren) GetChild(value interface{}) (*PreplayResTrieNode, bool) {
+	realValue, ok := value.(string)
+	if ok {
+		node, find := s[realValue]
+		return node, find
+	} else {
+		return nil, false
+	}
+}
+
+func (s StringChildren) Delete(value interface{}) {
+	realValue, ok := value.(string)
+	MyAssert(ok)
+	delete(s, realValue)
+}
+
+func (s StringChildren) Size() int {
+	return len(s)
+}
+
+func (s StringChildren) CopyKey() IChildren {
+	copyU := make(StringChildren, s.Size())
+
+	for child := range s {
+		copyU[child] = nil
+	}
+	return copyU
+}
+
+func (s StringChildren) GetKeys() []interface{} {
+	res := make([]interface{}, len(s))
+	index := 0
+	for k := range s {
+		res[index] = k
+		index++
+	}
+	return res
+}
+
+const InitialChidrenLen = 10
+
+func NewChildren(nodeType *AddrLocation) IChildren {
+	switch nodeType.Field {
+	case Coinbase:
+		return make(AddressChildren, InitialChidrenLen)
+	case Timestamp, Number, Difficulty, GasLimit, Nonce:
+		return make(UintChildren, InitialChidrenLen)
+	case Blockhash, Balance, CodeHash, Storage, CommittedStorage:
+		return make(HashChildren, InitialChidrenLen)
+	case Exist, Empty, MinBalance:
+		return make(BoolChildren, InitialChidrenLen)
+	case Dependence:
+		return make(StringChildren, InitialChidrenLen)
+	default:
+		panic("Wrong Field")
+	}
+	return nil
+}
+
 type PreplayResTrieRoundNodes struct {
 	LeafNodes []*PreplayResTrieNode
 	RoundID   uint64
@@ -441,12 +655,12 @@ type PreplayResTrieRoundNodes struct {
 }
 
 type PreplayResTrieNode struct {
-	Value       interface{}                         // this value is the key in its parent
-	Children    map[interface{}]*PreplayResTrieNode // value => child node
-	NodeType    *AddrLocation
-	DetailChild *PreplayResTrieNode
+	Value       interface{} `json:"value"` // this value is the key in its parent
+	Children    IChildren                  //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+	NodeType    *AddrLocation       `json:"node_type"`
+	DetailChild *PreplayResTrieNode `json:"detail_child"`
 	Parent      *PreplayResTrieNode
-	IsLeaf      bool
+	IsLeaf      bool `json:"is_leaf"`
 	Round       IRound
 
 	//SRefCount // RefCount in PreplayResTrieNode means the number of children nodes (including DetailChild)
@@ -455,7 +669,7 @@ type PreplayResTrieNode struct {
 func (p *PreplayResTrieNode) GetChildrenCount() uint {
 	res := 0
 	if p.Children != nil {
-		res += len(p.Children)
+		res += p.Children.Size()
 	}
 	if p.DetailChild != nil {
 		res++
@@ -475,10 +689,10 @@ func (p *PreplayResTrieNode) removeSelf() (removed int) {
 			MyAssert(p == p.Parent.DetailChild)
 			p.Parent.DetailChild = nil
 		} else {
-			parent2child, ok := p.Parent.Children[p.Value]
+			parent2child, ok := p.Parent.Children.GetChild(p.Value)
 			MyAssert(ok)
 			MyAssert(p == parent2child)
-			delete(p.Parent.Children, p.Value)
+			p.Parent.Children.Delete(p.Value)
 		}
 		removed += p.Parent.RemoveRecursivelyIfNoChildren(nil)
 	}
@@ -506,11 +720,14 @@ type PreplayResTrie struct {
 	LatestBN          uint64
 	LeafCount         uint64 // rwset cound for detail trie. round count for dep tree and mix tree
 	RoundIds          map[uint64]bool
-	IsCleared         bool
 	RoundRefNodesHead *PreplayResTrieRoundNodes
 	RoundRefNodesTail *PreplayResTrieRoundNodes
 	RoundRefCount     uint
 	TrieNodeCount     int64
+}
+
+func (tt *PreplayResTrie) IsEmpty() bool {
+	return tt.RoundRefCount == 0
 }
 
 func (tt *PreplayResTrie) GetNodeCount() int64 {
@@ -585,39 +802,35 @@ func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {
 }
 
 func NewPreplayResTrie() *PreplayResTrie {
-	rootNode := &PreplayResTrieNode{Children: make(map[interface{}]*PreplayResTrieNode)}
+	rootNode := &PreplayResTrieNode{}
 	return &PreplayResTrie{
 		Root:      rootNode,
 		LatestBN:  0,
 		LeafCount: 0,
-		RoundIds:  make(map[uint64]bool),
-		IsCleared: false,
 	}
 }
 
-func (t *PreplayResTrie) Clear() {
-	t.Root = &PreplayResTrieNode{Children: make(map[interface{}]*PreplayResTrieNode)}
-	t.LatestBN = 0
-	t.LeafCount = 0
-	t.RoundIds = make(map[uint64]bool)
-	t.IsCleared = true
-}
+//func (t *PreplayResTrie) Clear() {
+//	t.Root = &PreplayResTrieNode{}
+//	t.LatestBN = 0
+//	t.LeafCount = 0
+//}
 
-// used for dep tree and mix tree
-func (t *PreplayResTrie) ClearOld(gap uint64) {
-	if t.Root == nil || t.Root.NodeType == nil {
-		return
-	}
-	if t.Root.NodeType.Field != Number {
-		panic("wrong nodeType of root node")
-	}
-	if t.Root.Children == nil {
-		return
-	}
-	for bn := range t.Root.Children {
-		if bn.(uint64) < t.LatestBN-gap {
-			delete(t.Root.Children, bn)
-		}
-	}
-
-}
+//// used for dep tree and mix tree
+//func (t *PreplayResTrie) ClearOld(gap uint64) {
+//	if t.Root == nil || t.Root.NodeType == nil {
+//		return
+//	}
+//	if t.Root.NodeType.Field != Number {
+//		panic("wrong nodeType of root node")
+//	}
+//	if t.Root.Children == nil {
+//		return
+//	}
+//	for bn := range t.Root.Children {
+//		if bn.(uint64) < t.LatestBN-gap {
+//			delete(t.Root.Children, bn)
+//		}
+//	}
+//
+//}

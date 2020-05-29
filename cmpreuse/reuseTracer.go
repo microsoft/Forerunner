@@ -127,7 +127,7 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 	rt.Uint64_1 = rt.ConstVarWithName(uint64(1), "uint1")
 	rt.ByteArray_Empty = rt.ConstVarWithName(make([]byte, 0), "[0]byte")
 	rt.BigInt_EmptyHash = rt.ConstVarWithName(big.NewInt(0), "Hash{}").MarkBigIntAsHash()
-	rt.BigInt_EmptyCodeHash = rt.ConstVarWithName(emptyCodeHash.Big(), "emptyCodeHash").SetTypedVal(emptyCodeHash)
+	rt.BigInt_EmptyCodeHash = rt.ConstVarWithName(cmptypes.EmptyCodeHash.Big(), "emptyCodeHash").SetTypedVal(cmptypes.EmptyCodeHash)
 	rt.Bool_false = rt.ConstVarWithName(false, "false")
 	rt.Bool_true = rt.ConstVarWithName(true, "true")
 

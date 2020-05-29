@@ -308,7 +308,7 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 }
 
 func (w *Warmuper) getObjectHolder(wref *cache.WObjectWeakReference) *state.ObjectHolder {
-	txPreplay := w.GlobalCache.GetTxPreplay(wref.TxHash)
+	txPreplay := w.GlobalCache.PeekTxPreplay(wref.TxHash)
 	if txPreplay != nil && txPreplay.Timestamp == wref.Timestamp {
 		if holder, hok := txPreplay.PreplayResults.GetHolder(wref); hok {
 			return holder

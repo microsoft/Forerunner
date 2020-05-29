@@ -1,7 +1,6 @@
 package cmpreuse
 
 import (
-	"encoding/json"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -17,10 +16,27 @@ const (
 	MaxTreeCleanThreshold = 5000
 )
 
+//func isExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
+//	// assert seqRecord len
+//	if len(seqRecord) != 5 {
+//		return false
+//	} else {
+//		//assert 'to' is a common user
+//		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
+//			return false
+//		} else {
+//			value := seqRecord[4].Value.(common.Hash)
+//			if value != EmptyCodeHash && value != EmptyCodeHash {
+//				return false
+//			}
+//		}
+//	}
+//	return true
+//}
+
+// only external transfer tx can call this function
 func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
-	if blockNumber > trie.LatestBN {
-		trie.LatestBN = blockNumber
-	}
+
 	if trie.LeafCount > 0 {
 		// each tx only have one kind of result now.
 		return
@@ -28,27 +44,10 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 	currentNode := trie.Root
 	record := round.RWrecord
 	seqRecord := record.ReadDetail.ReadDetailSeq
-	// assert seqRecord len
-	if len(seqRecord) != 5 {
-		return
-	} else {
-		//assert to is a common user
-		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
-			return
-		} else {
-			value := seqRecord[4].Value.(common.Hash)
-			if value != nilCodeHash && value != emptyCodeHash {
-				return
-			}
-		}
-	}
-	var sender common.Address
-	isSender := true
-	for _, addrFieldValue := range seqRecord {
+
+	for index, addrFieldValue := range seqRecord {
 		if addrFieldValue.AddLoc.Field == cmptypes.Balance {
-			if isSender {
-				sender = addrFieldValue.AddLoc.Address
-				isSender = false
+			if index == 1 {
 				minB := new(big.Int).Add(tx.Value(), new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasPrice()))
 				adv := &cmptypes.AddrLocValue{
 					AddLoc: &cmptypes.AddrLocation{
@@ -59,6 +58,8 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 					Value: true,
 				}
 				currentNode, _ = insertNode(currentNode, adv)
+			} else { // else : the balance of `to` is unnecessary.
+				cmptypes.MyAssert(index == 3)
 			}
 		} else {
 			currentNode, _ = insertNode(currentNode, addrFieldValue)
@@ -67,23 +68,21 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 	if currentNode.IsLeaf {
 	} else {
 		currentNode.IsLeaf = true
-
-		// set delta
-		record.WStateDelta = make(map[common.Address]*cache.WStateDelta)
-
-		senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
-		record.WStateDelta[sender] = &cache.WStateDelta{senderBalanceDelta}
-		if tx.To() != nil {
-			if _, ok := record.WState[*tx.To()]; ok {
-				toBalanceDelta := new(big.Int).Sub(record.WState[*tx.To()].Balance, record.RState[*tx.To()].Balance)
-				record.WStateDelta[*tx.To()] = &cache.WStateDelta{toBalanceDelta}
-			}
-		}
+		//
+		//// set delta
+		//record.WStateDelta = make(map[common.Address]*cache.WStateDelta)
+		//senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
+		//record.WStateDelta[sender] = &cache.WStateDelta{senderBalanceDelta}
+		//
+		//cmptypes.MyAssert(tx.To() != nil)
+		//if _, ok := record.WState[*tx.To()]; ok {
+		//	toBalanceDelta := new(big.Int).Sub(record.WState[*tx.To()].Balance, record.RState[*tx.To()].Balance)
+		//	record.WStateDelta[*tx.To()] = &cache.WStateDelta{toBalanceDelta}
+		//}
 
 		currentNode.Round = round
 		trie.LeafCount += 1
 	}
-	trie.RoundIds[round.RoundID] = true
 }
 
 func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
@@ -124,7 +123,6 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		newLeaves[0] = currentNode
 		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
 	}
-	trie.RoundIds[round.RoundID] = true
 }
 
 func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, ) (*cmptypes.PreplayResTrieNode, bool, bool) {
@@ -153,7 +151,6 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		currentNode, _ = insertNode(currentNode, readDep)
 	}
 
-	trie.RoundIds[round.RoundID] = true
 	if currentNode.IsLeaf {
 		// there is the same RWRecord before, assert they are the same
 		// TODO debug code
@@ -219,14 +216,10 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 
 }
 
-func SearchAccDep(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool) (*cmptypes.PreplayResTrieNode, bool, bool) {
-	return SearchTree(trie, db, bc, header, abort, false)
-}
-
 // only some of addresses's would inserted into detail check subtree,
 const FixedDepCheckCount = 4
 
-func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) {
+func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, isExternalTransfer bool, blockNumber uint64, preBlockHash *common.Hash) {
 	var newLeaves []*cmptypes.PreplayResTrieNode
 	newLeavesPtr := &newLeaves
 	newNodeCount := new(uint)
@@ -242,29 +235,28 @@ func InsertMixTree(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, bl
 	//	trie.Clear()
 	//}
 
-	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
-
 	currentNode := trie.Root
 
 	hitDep := make(map[interface{}]bool)
 	depCheckedAddr := make(map[common.Address]bool)
 	checkedButNoHit := 0
-	//leafCount := new(int)
 
-	insertDep2MixTree(currentNode, 0, round.ReadDepSeq, 0, detailSeq, hitDep, depCheckedAddr, checkedButNoHit, round, newLeavesPtr, newNodeCount)
+	insertDep2MixTree(currentNode, 0, 0, hitDep, depCheckedAddr, checkedButNoHit, newLeavesPtr, newNodeCount, round, tx, isExternalTransfer)
 
 	trie.LeafCount += 1
-	trie.RoundIds[round.RoundID] = true
 
 	trie.TrackRoundNodes(*newLeavesPtr, *newNodeCount, round)
 }
 
-func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDepSeq []*cmptypes.AddrLocValue, dIndex int,
-	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	round *cache.PreplayResult, newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint) {
+func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex int, detailDeqIndex int,
+	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
+	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) {
+	readDepSeq := round.ReadDepSeq
+	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 
-	if rIndex >= len(readDepSeq) {
-		for _, detailalv := range detailSeq[dIndex:] {
+	// all dep have been inserted, now, insert the rest details
+	if readDepIndex >= len(readDepSeq) {
+		for _, detailalv := range detailSeq[detailDeqIndex:] {
 			if cmptypes.IsChainField(detailalv.AddLoc.Field) || hitDep[detailalv.AddLoc.Address] {
 				continue
 			}
@@ -283,7 +275,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 
 		return
 	}
-	curDep := readDepSeq[rIndex]
+	curDep := readDepSeq[readDepIndex]
 	curAddr := curDep.AddLoc.Address
 	child := currentNode
 
@@ -294,7 +286,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 		if isNew {
 			*newNodeCount = *newNodeCount + 1
 		}
-		insertDep2MixTree(child, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, newLeaves, newNodeCount)
+		insertDep2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 
 		hitDep[curDep.AddLoc.Field] = false
 	} else {
@@ -303,7 +295,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 		//	rbs, _ := json.Marshal(round)
 		//	hitdepbs, _ := json.Marshal(hitDep)
 		//	depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
-		//	log.Warn("insert dep wrong", "tx", round.TxHash.Hex(), "rIndex", rIndex, "dIndex", dIndex,
+		//	log.Warn("insert dep wrong", "tx", round.TxHash.Hex(), "readDepIndex", readDepIndex, "detailDeqIndex", detailDeqIndex,
 		//		"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
 		//
 		//	panic("Insert dep check wrong")
@@ -316,25 +308,25 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, rea
 		if isNew {
 			*newNodeCount = *newNodeCount + 1
 		}
-		insertDetail2MixTree(child, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, newLeaves, newNodeCount)
+		insertDetail2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 
 		hitDep[curAddr] = false
 
 		if currentNode.DetailChild == nil {
-			currentNode.DetailChild = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode), Parent: currentNode}
+			currentNode.DetailChild = &cmptypes.PreplayResTrieNode{Parent: currentNode}
 			*newNodeCount = *newNodeCount + 1
 		}
 
-		insertDetail2MixTree(currentNode.DetailChild, rIndex+1, readDepSeq, dIndex, detailSeq, hitDep, depCheckedAddr, noHit+1, round, newLeaves, newNodeCount)
+		insertDetail2MixTree(currentNode.DetailChild, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit+1, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 
 		depCheckedAddr[curAddr] = false
 	}
 }
 
-func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, readDep []*cmptypes.AddrLocValue, dIndex int,
-	detailSeq []*cmptypes.AddrLocValue, hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	round *cache.PreplayResult, newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint) {
-
+func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, dIndex int,
+	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
+	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) {
+	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 	if dIndex >= len(detailSeq) {
 		if currentNode.IsLeaf {
 		} else {
@@ -369,22 +361,45 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				*newNodeCount = *newNodeCount + 1
 			}
 		}
-		insertDetail2MixTree(currentNode, rIndex, readDep, dIndex+1, detailSeq, hitDep, depCheckedAddr, noHit, round, newLeaves, newNodeCount)
+		insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 		return
 	} else {
 		detailReadAddr := detailRead.AddLoc.Address
 		isNewAddr := !depCheckedAddr[detailReadAddr]
 		// to reduce the node number, ifnoHit <= FixedDepCheckCount, only append detail node, regardless of this addr is not checked by deb // magic number
 		if isNewAddr && noHit < FixedDepCheckCount && !(noHit > 0 && noHit <= FixedDepCheckCount && rIndex > FixedDepCheckCount+3) {
-			insertDep2MixTree(currentNode, rIndex, readDep, dIndex, detailSeq, hitDep, depCheckedAddr, noHit, round, newLeaves, newNodeCount)
+			insertDep2MixTree(currentNode, rIndex, dIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 		} else {
 			if !hitDep[detailReadAddr] {
-				var isNew bool
-				currentNode, isNew = insertNode(currentNode, detailRead)
-				if isNew{
+				var isNewNode bool
+				if isExternalTransfer {
+					if detailRead.AddLoc.Field == cmptypes.Balance {
+						cmptypes.MyAssert(dIndex == 1 || dIndex == 3)
+						isSender := dIndex == 1
+						if isSender {
+							minB := new(big.Int).Add(tx.Value(), new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasPrice()))
+							adv := &cmptypes.AddrLocValue{
+								AddLoc: &cmptypes.AddrLocation{
+									Address: detailReadAddr,
+									Field:   cmptypes.MinBalance,
+									Loc:     minB,
+								},
+								Value: true,
+							}
+							currentNode, isNewNode = insertNode(currentNode, adv)
+						} // else : the balance of `to` is unnecessary, and it would not be inserted.
+					} else {
+						currentNode, isNewNode = insertNode(currentNode, detailRead)
+					}
+				} else {
+					currentNode, isNewNode = insertNode(currentNode, detailRead)
+				}
+
+				if isNewNode {
 					*newNodeCount = *newNodeCount + 1
 				}
 			}
+
 			if isNewAddr {
 				//if hitDep[detailReadAddr] {
 				//	rbs, _ := json.Marshal(round)
@@ -407,7 +422,7 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				noHit++
 				rIndex++
 			}
-			insertDetail2MixTree(currentNode, rIndex, readDep, dIndex+1, detailSeq, hitDep, depCheckedAddr, noHit, round, newLeaves, newNodeCount)
+			insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
 			if isNewAddr {
 				depCheckedAddr[detailReadAddr] = false
 			}
@@ -415,11 +430,12 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 	}
 }
 
-//	 @return    *cmptypes.PreplayResTrieNode	"the child node(which is supposed to be insert)"
+//	 @return    *cmptypes.PreplayResTrieNode	"the child node(which is supposed to be inserted)"
 //				bool 	"whether a new node is inserted"
 func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) (*cmptypes.PreplayResTrieNode, bool) {
 	if currentNode.NodeType == nil {
 		currentNode.NodeType = alv.AddLoc
+		currentNode.Children = cmptypes.NewChildren(alv.AddLoc)
 	} else {
 		////TODO: debug code, test well(would not be touched), can be removed
 		//key := currentNode.NodeType
@@ -433,17 +449,53 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 		//}
 	}
 
-	var value interface{}
-	if currentNode.NodeType.Field == cmptypes.Dependence {
-		value = alv.Value.(*cmptypes.ChangedBy).Hash()
-	} else {
-		value = alv.Value
+	var child *cmptypes.PreplayResTrieNode
+	var ok bool
+	switch alv.AddLoc.Field {
+	case cmptypes.Coinbase:
+		value := alv.Value.(common.Address)
+		realChild := currentNode.Children.(cmptypes.AddressChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit, cmptypes.Nonce:
+		value := alv.Value.(uint64)
+		realChild := currentNode.Children.(cmptypes.UintChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Blockhash, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage:
+		value := alv.Value.(common.Hash)
+		realChild := currentNode.Children.(cmptypes.HashChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Exist, cmptypes.Empty, cmptypes.MinBalance:
+		value := alv.Value.(bool)
+		realChild := currentNode.Children.(cmptypes.BoolChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Dependence:
+		value := alv.Value.(*cmptypes.ChangedBy).Hash()
+		realChild := currentNode.Children.(cmptypes.StringChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: value}
+			realChild[value] = child
+		}
+	default:
+		panic("Wrong Field")
 	}
-	child, ok := currentNode.Children[value]
-	if !ok {
-		child = &cmptypes.PreplayResTrieNode{Children: make(map[interface{}]*cmptypes.PreplayResTrieNode), Parent: currentNode, Value: value}
-		currentNode.Children[value] = child
-	}
+
 	return child, !ok
 }
 
@@ -459,15 +511,13 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 		if abort() {
 			return nil, true, false
 		}
-		nodeType := currentNode.NodeType
-		value := getCurrentValue(nodeType, db, bc, header)
-		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
-		childNode, ok := currentNode.Children[value]
-		if debug {
-			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
-			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
-				"loc", nodeType.Loc, "value", value, "alv", string(albs))
-		}
+		childNode, ok := getChild(currentNode, db, bc, header, false)
+		//if debug {
+		//  nodeType := currentNode.NodeType
+		//	albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+		//	log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+		//		"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		//}
 		if ok {
 			currentNode = childNode
 		} else {
@@ -478,13 +528,13 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 }
 
 func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool,
-	debug bool, isBlockProcess bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixHitStatus,
+	debug bool, isBlockProcess bool, isExternalTransfer bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixHitStatus,
 	missNode *cmptypes.PreplayResTrieNode, missValue interface{}, isAbort bool, ok bool) {
 	currentNode := trie.Root
 
 	if currentNode.NodeType == nil {
 		if isBlockProcess {
-			return nil, nil, copyNode(currentNode), nil, false, false
+			return nil, nil, currentNode, nil, false, false
 		} else {
 			return nil, nil, nil, nil, false, false
 		}
@@ -502,36 +552,38 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 		if abort() {
 			return nil, nil, nil, nil, true, false
 		}
+		childNode, ok := getChild(currentNode, db, bc, header, isBlockProcess)
+		//if debug {
+		//
+		//	albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+		//	log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+		//		"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		//}
 		nodeType := currentNode.NodeType
-		value := getCurrentValue(nodeType, db, bc, header)
-		// assert all kinds of values in the trie are simple types, which is guaranteed in rwhook when recording the readDetail
-		childNode, ok := currentNode.Children[value]
-		if debug {
-			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
-			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
-				"loc", nodeType.Loc, "value", value, "alv", string(albs))
-		}
 		if ok {
 			currentNode = childNode
 			if nodeType.Field == cmptypes.Dependence {
 				allDetailMatched = false
 				matchedDeps = append(matchedDeps, nodeType.Address)
-				depMatchedMap[nodeType.Address] = value
+				depMatchedMap[nodeType.Address] = true
 			}
 		} else {
 			if currentNode.DetailChild != nil {
+				// Note: for external transfer, mixcheck is disabled.
+				if isExternalTransfer && !isBlockProcess {
+					mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit}
+					return nil, mixStatus, nil, nil, false, false
+				}
 				// assert cmptypes.IsStateField(nodeType.Field) is false
 				allDepMatched = false
 				currentNode = currentNode.DetailChild
-				if debug {
-					log.Warn("search node type-detail node", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
-						"loc", nodeType.Loc, "value", value)
-				}
+
 			} else {
 				mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
 
 				if isBlockProcess {
-					return nil, mixStatus, copyNode(currentNode), value, false, false
+					// to reduce the cost of converting interfaces, mute the miss Value
+					return nil, mixStatus, currentNode, nil, false, false
 				} else {
 					return nil, mixStatus, nil, nil, false, false
 				}
@@ -542,7 +594,13 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	if allDepMatched {
 		mixHitType = cmptypes.AllDepHit
 	} else if allDetailMatched {
-		mixHitType = cmptypes.AllDetailHit
+		if isExternalTransfer {
+			mixHitType = cmptypes.AllDeltaHit
+		} else {
+			mixHitType = cmptypes.AllDetailHit
+		}
+	} else if isExternalTransfer {
+		mixHitType = cmptypes.PartialDeltaHit
 	}
 
 	mixStatus = &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
@@ -550,9 +608,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 }
 
 func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
-	nodeCpy := &cmptypes.PreplayResTrieNode{
-		Children: make(map[interface{}]*cmptypes.PreplayResTrieNode, len(node.Children)),
-	}
+	nodeCpy := &cmptypes.PreplayResTrieNode{}
 	if node.NodeType != nil {
 		nodeCpy.NodeType = &cmptypes.AddrLocation{
 			Address: node.NodeType.Address,
@@ -560,70 +616,132 @@ func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
 			Loc:     node.NodeType.Loc,
 		}
 	}
-	for child := range node.Children {
-		nodeCpy.Children[child] = nil
-	}
+	nodeCpy.Children = node.Children.CopyKey()
 	return nodeCpy
 }
 
-func getCurrentValue(addrLoc *cmptypes.AddrLocation, statedb *state.StateDB, bc core.ChainContext, header *types.Header) interface{} {
-	addr := addrLoc.Address
-	switch addrLoc.Field {
+func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext, header *types.Header, isBlockProcess bool) (*cmptypes.PreplayResTrieNode, bool) {
+
+	addr := currentNode.NodeType.Address
+	switch currentNode.NodeType.Field {
 	case cmptypes.Coinbase:
-		return header.Coinbase
+		child, ok := currentNode.Children.(cmptypes.AddressChildren)[header.Coinbase]
+		return child, ok
 	case cmptypes.Timestamp:
-		return header.Time
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[header.Time]
+		return child, ok
 	case cmptypes.Number:
-		return header.Number.Uint64()
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[header.Number.Uint64()]
+		return child, ok
 	case cmptypes.Difficulty:
-		return common.BigToHash(header.Difficulty)
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[header.Difficulty.Uint64()]
+		return child, ok
 	case cmptypes.GasLimit:
-		return header.GasLimit
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[header.GasLimit]
+		return child, ok
 	case cmptypes.Blockhash:
-		number := addrLoc.Loc.(uint64)
+		number := currentNode.NodeType.Loc.(uint64)
 		curBn := header.Number.Uint64()
+		value := common.Hash{}
 		if curBn-number < 257 && number < curBn {
 			getHashFn := core.GetHashFn(header, bc)
-			return getHashFn(number)
-		} else {
-			return common.Hash{}
+			value = getHashFn(number)
 		}
-	case cmptypes.PreBlockHash:
-		return header.ParentHash
+		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		return child, ok
 	case cmptypes.Exist:
-		return statedb.Exist(addr)
+		child, ok := currentNode.Children.(cmptypes.BoolChildren)[statedb.Exist(addr)    ]
+		return child, ok
 	case cmptypes.Empty:
-		return statedb.Empty(addr)
+		child, ok := currentNode.Children.(cmptypes.BoolChildren)[statedb.Empty(addr)]
+		return child, ok
 	case cmptypes.Balance:
-		return common.BigToHash(statedb.GetBalance(addr)) // // convert complex type (big.Int) to simple type: bytes[32]
+		value := common.BigToHash(statedb.GetBalance(addr)) // // convert complex type (big.Int) to simple type: bytes[32]
+		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		return child, ok
 	case cmptypes.Nonce:
-		return statedb.GetNonce(addr)
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[statedb.GetNonce(addr)]
+		return child, ok
 	case cmptypes.CodeHash:
 		value := statedb.GetCodeHash(addr)
-		if value == emptyCodeHash {
-			value = nilCodeHash
+		if value == cmptypes.EmptyCodeHash {
+			value = cmptypes.NilCodeHash
 		}
-		return value
+		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		return child, ok
 	case cmptypes.Storage:
-		position := addrLoc.Loc.(common.Hash)
-		return statedb.GetState(addr, position)
+		position := currentNode.NodeType.Loc.(common.Hash)
+		value := statedb.GetState(addr, position)
+		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		return child, ok
 	case cmptypes.CommittedStorage:
-		position := addrLoc.Loc.(common.Hash)
-		return statedb.GetCommittedState(addr, position)
+		position := currentNode.NodeType.Loc.(common.Hash)
+		value := statedb.GetCommittedState(addr, position)
+		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		return child, ok
 	case cmptypes.Dependence:
-		return statedb.GetAccountSnapOrChangedBy(addr)
-		//var value interface{}
-		//changedBy, ok := statedb.AccountChangedBy[addr]
-		//if ok {
-		//	value = changedBy.Hash()
-		//} else {
-		//	value = *statedb.GetAccountSnap(addr)
-		//}
-		//return value
+		value := statedb.GetAccountSnapOrChangedBy(addr)
+
+		child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
+		return child, ok
 	case cmptypes.MinBalance:
-		return statedb.GetBalance(addr).Cmp(addrLoc.Loc.(*big.Int)) > 0
+		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) > 0
+		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
+		return child, ok
 	default:
-		log.Error("wrong field", "field ", addrLoc.Field)
+		log.Error("wrong field", "field ", currentNode.NodeType.Field)
 	}
-	return nil
+	return nil, false
+}
+
+// return : child node  &&  whether new node is inserted
+func getChildOrInsert(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) (*cmptypes.PreplayResTrieNode, bool) {
+	var child *cmptypes.PreplayResTrieNode
+	var ok bool
+	switch alv.AddLoc.Field {
+	case cmptypes.Coinbase:
+		value := alv.Value.(common.Address)
+		realChild := currentNode.Children.(cmptypes.AddressChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit, cmptypes.Nonce:
+		value := alv.Value.(uint64)
+		realChild := currentNode.Children.(cmptypes.UintChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Blockhash, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage:
+		value := alv.Value.(common.Hash)
+		realChild := currentNode.Children.(cmptypes.HashChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Exist, cmptypes.Empty, cmptypes.MinBalance:
+		value := alv.Value.(bool)
+		realChild := currentNode.Children.(cmptypes.BoolChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	case cmptypes.Dependence:
+		value := alv.Value.(*cmptypes.ChangedBy).Hash()
+		realChild := currentNode.Children.(cmptypes.StringChildren)
+		child, ok = realChild[value]
+		if !ok {
+			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: alv.Value}
+			realChild[value] = child
+		}
+	default:
+		panic("Wrong Field")
+	}
+
+	return child, !ok
 }

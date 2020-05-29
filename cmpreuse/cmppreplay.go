@@ -40,9 +40,10 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	}
 
 	txHash := tx.Hash()
-	txPreplay := reuse.MSRACache.GetTxPreplay(txHash)
+	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx)
+		txPreplay.SetExternalTransferInfo(rwrecord)
 	}
 	txPreplay.Mu.Lock()
 	defer txPreplay.Mu.Unlock()
@@ -74,11 +75,13 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		if !ok {
 			return
 		}
-		reuse.setMixTree(txPreplay, round, curBlockNumber, &preBlockHash)
+		reuse.setMixTree(tx, txPreplay, round, curBlockNumber, &preBlockHash)
 
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
-			reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+			if txPreplay.PreplayResults.IsExternalTransfer {
+				reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+			}
 			if trace != nil {
 				traceTrieStart := time.Now()
 				reuse.setTraceTrie(tx, txPreplay, round, trace)
@@ -110,8 +113,8 @@ func (reuse *Cmpreuse) setReadDepTree(txPreplay *cache.TxPreplay, round *cache.P
 	return InsertAccDep(txPreplay.PreplayResults.ReadDepTree, round, curBlockNumber, preBlockHash)
 }
 
-func (reuse *Cmpreuse) setMixTree(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
-	InsertMixTree(txPreplay.PreplayResults.MixTree, round, curBlockNumber, preBlockHash)
+func (reuse *Cmpreuse) setMixTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
+	InsertMixTree(tx, txPreplay.PreplayResults.MixTree, round, txPreplay.PreplayResults.IsExternalTransfer, curBlockNumber, preBlockHash)
 }
 
 func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
@@ -159,7 +162,7 @@ var traceMutex sync.Mutex
 func GetWObjectsFromWObjectWeakRefs(cache *cache.GlobalCache, refs cache.WObjectWeakRefMap) state.ObjectMap {
 	objMap := make(state.ObjectMap)
 	for addr, wref := range refs {
-		txPreplay := cache.GetTxPreplay(wref.TxHash)
+		txPreplay := cache.PeekTxPreplay(wref.TxHash)
 		if txPreplay != nil && txPreplay.Timestamp == wref.Timestamp {
 			if txPreplay.PreplayResults != nil {
 				if objHolder, ok := txPreplay.PreplayResults.GetHolder(wref); ok {

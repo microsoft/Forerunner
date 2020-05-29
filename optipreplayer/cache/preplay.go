@@ -73,6 +73,43 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	}
 }
 
+func isExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
+	// assert seqRecord len
+	if len(seqRecord) != 5 {
+		return false
+	} else {
+		//assert 'to' is a common user
+		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
+			return false
+		} else {
+			value := seqRecord[4].Value.(common.Hash)
+			if value != cmptypes.NilCodeHash && value != cmptypes.EmptyCodeHash {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord) {
+	t.PreplayResults.IsExternalTransfer = isExternalTransfer(record.ReadDetail.ReadDetailSeq)
+	if t.PreplayResults.IsExternalTransfer {
+		wDeltas := make(map[common.Address]*WStateDelta)
+		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address
+		to := record.ReadDetail.ReadAddressAndBlockSeq[1].AddLoc.Address
+
+		senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
+		wDeltas[sender] = &WStateDelta{senderBalanceDelta}
+
+		if _, ok := record.WState[to]; ok {
+			toBalanceDelta := new(big.Int).Sub(record.WState[to].Balance, record.RState[to].Balance)
+			wDeltas[to] = &WStateDelta{toBalanceDelta}
+		}
+		t.PreplayResults.DeltaWrites = wDeltas
+
+	}
+}
+
 // CreateRound create new round preplay for tx;
 func (t *TxPreplay) CreateOrGetRound(roundID uint64) (*PreplayResult, bool) {
 	round, ok := t.PreplayResults.Rounds.Get(roundID)
@@ -126,12 +163,15 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds               *lru.Cache `json:"-"`
-	RWRecordTrie         *cmptypes.PreplayResTrie
-	ReadDepTree          *cmptypes.PreplayResTrie
-	MixTree              *cmptypes.PreplayResTrie
-	DeltaTree            *cmptypes.PreplayResTrie
-	TraceTrie            ITracerTrie
+	Rounds             *lru.Cache `json:"-"`
+	RWRecordTrie       *cmptypes.PreplayResTrie
+	ReadDepTree        *cmptypes.PreplayResTrie
+	MixTree            *cmptypes.PreplayResTrie
+	DeltaTree          *cmptypes.PreplayResTrie
+	TraceTrie          ITracerTrie
+	IsExternalTransfer bool
+	DeltaWrites        map[common.Address]*WStateDelta
+
 	wobjectHolderMap     state.ObjectHolderMap
 	holderMapMutex       sync.Mutex
 	wobjectIDCounter     uintptr
@@ -286,11 +326,10 @@ type RWRecord struct {
 	IterMu sync.Mutex
 	// HashOrder [][]byte
 
-	RState      map[common.Address]*state.ReadState
-	ReadDetail  *cmptypes.ReadDetail
-	RChain      state.ReadChain
-	WState      map[common.Address]*state.WriteState
-	WStateDelta map[common.Address]*WStateDelta
+	RState     map[common.Address]*state.ReadState
+	ReadDetail *cmptypes.ReadDetail
+	RChain     state.ReadChain
+	WState     map[common.Address]*state.WriteState
 
 	Failed bool
 	Hashed bool
@@ -936,7 +975,7 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 		return false
 	}
 
-	txPreplay := r.GetTxPreplay(hash)
+	txPreplay := r.PeekTxPreplay(hash)
 	if txPreplay == nil {
 		log.Debug("[PreplayCache] SetMainResult Error", "txHash", hash)
 		return false

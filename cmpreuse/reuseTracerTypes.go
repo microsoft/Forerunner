@@ -290,7 +290,7 @@ func (v *Variable) StoreBalance(balanceVar *Variable) *Variable {
 	v.tracer.world.TWStore(ACCOUNT_EXIST, v, v.tracer.Bool_true)
 
 	// Empty
-	if balanceVar.BigInt().Sign() != 0 || statedb.OriginalGetNonce(addr) != 0 || statedb.OriginalGetCodeHash(addr) != emptyCodeHash {
+	if balanceVar.BigInt().Sign() != 0 || statedb.OriginalGetNonce(addr) != 0 || statedb.OriginalGetCodeHash(addr) != cmptypes.EmptyCodeHash {
 		v.tracer.world.TWStore(ACCOUNT_EMPTY, v, v.tracer.Bool_false)
 	} else { // balance equal zero
 		v.tracer.world.TWStore(ACCOUNT_EMPTY, v, v.tracer.Bool_true)

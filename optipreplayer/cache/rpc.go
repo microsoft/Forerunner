@@ -42,7 +42,7 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 	roundID := uint64(0)
 	result := &TxDistributionList{}
 
-	queryTx := r.GetTxPreplay(txHash)
+	queryTx := r.PeekTxPreplay(txHash)
 	if queryTx == nil {
 		return result
 	}

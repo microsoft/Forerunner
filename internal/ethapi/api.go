@@ -1824,7 +1824,7 @@ func (s *PublicPreplayAPI) GetPreplayByHash(ctx context.Context, hash common.Has
 
 	result.Status = []string{}
 	if flagPreplayResult == uint64(1) {
-		if preplayResult := globalCache.GetTxPreplay(hash); preplayResult != nil {
+		if preplayResult := globalCache.PeekTxPreplay(hash); preplayResult != nil {
 			result.PreplayResult = preplayResult
 		}
 	}

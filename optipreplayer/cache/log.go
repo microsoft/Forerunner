@@ -19,39 +19,41 @@ const k = 10
 
 // LogBlockInfo define blockInfo log format
 type LogBlockInfo struct {
-	TxnApply        int64         `json:"apply"`
-	BlockFinalize   int64         `json:"finalize"`
-	WaitReuse       int64         `json:"reuse"`
-	WaitRealApply   int64         `json:"realApply"`
-	TxnFinalize     int64         `json:"txFinalize"`
-	Update          int64         `json:"updatePair"`
-	GetRW           int64         `json:"getRW"`
-	SetDB           int64         `json:"setDB"`
-	RunTx           int64         `json:"runTx"`
-	NoListen        int           `json:"L"`
-	NoPackage       int           `json:"Pa"`
-	NoEnqueue       int           `json:"E"`
-	NoPreplay       int           `json:"Pr"`
-	Hit             int           `json:"H"`
-	Miss            int           `json:"M"`
-	Unknown         int           `json:"U"`
-	AbortedTrace    int           `json:"aR"`
-	AbortedMix      int           `json:"aM"`
-	AbortedDelta    int           `json:"aD"`
-	AbortedTrie     int           `json:"aT"`
-	MixHit          int           `json:"MH"`
-	AllDepMixHit    int           `json:"DMH"`
-	AllDetailMixHit int           `json:"TMH"`
-	PartialMixHit   int           `json:"PMH"`
-	UnhitHeadCount  [10]int       `json:"UHC"`
-	TrieHit         int           `json:"TH"`
-	DeltaHit        int           `json:"EH"`
-	TraceHit        int           `json:"RH"`
-	ReuseGas        int           `json:"reuseGas"`
-	ProcTime        int64         `json:"procTime"`
-	RunMode         string        `json:"runMode"`
-	TxnCount        int           `json:"txnCount"`
-	Header          *types.Header `json:"header"`
+	TxnApply           int64         `json:"apply"`
+	BlockFinalize      int64         `json:"finalize"`
+	WaitReuse          int64         `json:"reuse"`
+	WaitRealApply      int64         `json:"realApply"`
+	TxnFinalize        int64         `json:"txFinalize"`
+	Update             int64         `json:"updatePair"`
+	GetRW              int64         `json:"getRW"`
+	SetDB              int64         `json:"setDB"`
+	RunTx              int64         `json:"runTx"`
+	NoListen           int           `json:"L"`
+	NoPackage          int           `json:"Pa"`
+	NoEnqueue          int           `json:"E"`
+	NoPreplay          int           `json:"Pr"`
+	Hit                int           `json:"H"`
+	Miss               int           `json:"M"`
+	Unknown            int           `json:"U"`
+	AbortedTrace       int           `json:"aR"`
+	AbortedMix         int           `json:"aM"`
+	AbortedDelta       int           `json:"aD"`
+	AbortedTrie        int           `json:"aT"`
+	MixHit             int           `json:"MH"`
+	AllDepMixHit       int           `json:"DMH"`
+	AllDetailMixHit    int           `json:"TMH"`
+	PartialMixHit      int           `json:"PMH"`
+	AllDeltaMixHit     int           `json:"AMH"`
+	PartialDeltaMixHit int           `json:"MMH"`
+	UnhitHeadCount     [10]int       `json:"UHC"`
+	TrieHit            int           `json:"TH"`
+	DeltaHit           int           `json:"EH"`
+	TraceHit           int           `json:"RH"`
+	ReuseGas           int           `json:"reuseGas"`
+	ProcTime           int64         `json:"procTime"`
+	RunMode            string        `json:"runMode"`
+	TxnCount           int           `json:"txnCount"`
+	Header             *types.Header `json:"header"`
 }
 
 type MissReporter interface {
@@ -317,7 +319,12 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 						} else {
 							infoResult.UnhitHeadCount[9]++
 						}
+					case cmptypes.AllDeltaHit:
+						infoResult.AllDeltaMixHit++
+					case cmptypes.PartialDeltaHit:
+						infoResult.PartialDeltaMixHit++
 					}
+
 				case cmptypes.TrieHit:
 					infoResult.TrieHit++
 				case cmptypes.DeltaHit:
@@ -485,8 +492,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
 			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d]", infoResult.MixHit, mixHitRate,
-				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit),
+			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d|AllDelta:%03d|DeltaMix:%03d]", infoResult.MixHit, mixHitRate,
+				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit, infoResult.AllDeltaMixHit, infoResult.PartialDeltaMixHit),
 			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
 		}
 		if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 || infoResult.TraceHit > 0 {
@@ -631,7 +638,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 				}
 			}
 
-			txPreplay := r.GetTxPreplay(tx.Hash())
+			txPreplay := r.PeekTxPreplay(tx.Hash())
 			if txPreplay != nil {
 
 				txPreplay.Mu.Lock()
@@ -738,7 +745,7 @@ func (r *GlobalCache) PreplayPrint(RoundID uint64, executionOrder []*types.Trans
 	}
 	// Disable RWrecord writing
 	for _, tx := range executionOrder {
-		txPreplay := r.GetTxPreplay(tx.Hash())
+		txPreplay := r.PeekTxPreplay(tx.Hash())
 		if txPreplay == nil {
 			log.Debug("[PreplayPrint] getTxPreplay Error", "txHash", tx.Hash())
 			preplayResult.Result = append(preplayResult.Result, nil)

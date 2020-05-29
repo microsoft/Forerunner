@@ -792,7 +792,7 @@ func CrossCheck(stats []*Statement, rDetail *cmptypes.ReadDetail, wStates state.
 	}
 
 	hashNormalize := func(codeHash common.Hash) common.Hash {
-		if codeHash == emptyCodeHash {
+		if codeHash == cmptypes.EmptyCodeHash {
 			return common.Hash{}
 		} else {
 			return codeHash
@@ -844,7 +844,7 @@ func CrossCheck(stats []*Statement, rDetail *cmptypes.ReadDetail, wStates state.
 				reportMismatch(i, s, alv)
 			}
 		case cmptypes.Difficulty:
-			if s.op != OP_ReadDifficulty || common.BigToHash(s.output.BigInt()) != alv.Value.(common.Hash) {
+			if s.op != OP_ReadDifficulty || s.output.BigInt().Uint64() != alv.Value.(uint64) {
 				reportMismatch(i, s, alv)
 			}
 		case cmptypes.Number:

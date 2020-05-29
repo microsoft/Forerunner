@@ -725,7 +725,7 @@ func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
 	for _, txns := range pool {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
-			if txPreplay := b.globalCache.GetTxPreplay(txnHash); txPreplay != nil {
+			if txPreplay := b.globalCache.PeekTxPreplay(txnHash); txPreplay != nil {
 				if round, ok := txPreplay.PeekRound(roundID); ok {
 					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))
 				}
