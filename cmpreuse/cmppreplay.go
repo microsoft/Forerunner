@@ -227,6 +227,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	reuseStatus, reuseRound, _, _ = reuse.reuseTransaction(bc, author, gp, statedb, header, nil, nil, tx, blockPre, AlwaysFalse, false, &cfg)
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 		cmptypes.MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
+		cmptypes.MyAssert(reuseStatus.HitType != cmptypes.DeltaHit)
+		cmptypes.MyAssert(!(reuseStatus.HitType == cmptypes.MixHit && (reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDeltaHit || reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialDeltaHit)))
 
 		var saveFlag bool
 		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {

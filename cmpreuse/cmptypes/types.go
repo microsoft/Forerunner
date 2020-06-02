@@ -264,7 +264,7 @@ func NewTxResID(txHash common.Hash, roundID uint64) *TxResID {
 	return &TxResID{Txhash: &txHash, RoundID: roundID, hash: ImmutableBytesToStringPtr(bs)}
 }
 
-var DEFAULT_TXRESID_Hash = ""
+var DEFAULT_TXRESID_Hash = "123"
 var DEFAULT_TXRESID = &TxResID{hash: &DEFAULT_TXRESID_Hash}
 
 func (t *TxResID) Hash() *string {

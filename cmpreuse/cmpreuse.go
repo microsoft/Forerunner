@@ -245,7 +245,8 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		t1 := time.Now()
 
-		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit &&
+			(reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit || reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialDeltaHit) {
 			//use account level update instead of :
 			curtxResId := cmptypes.DEFAULT_TXRESID
 			for addr, change := range round.AccountChanges {

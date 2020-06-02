@@ -1,6 +1,7 @@
 package cmpreuse
 
 import (
+	"encoding/json"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -552,13 +553,8 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 		if abort() {
 			return nil, nil, nil, nil, true, false
 		}
-		childNode, ok := getChild(currentNode, db, bc, header, isBlockProcess)
-		//if debug {
-		//
-		//	albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
-		//	log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
-		//		"loc", nodeType.Loc, "value", value, "alv", string(albs))
-		//}
+		childNode, ok := getChild(currentNode, db, bc, header, debug)
+
 		nodeType := currentNode.NodeType
 		if ok {
 			currentNode = childNode
@@ -620,9 +616,10 @@ func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
 	return nodeCpy
 }
 
-func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext, header *types.Header, isBlockProcess bool) (*cmptypes.PreplayResTrieNode, bool) {
+func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext, header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
 
 	addr := currentNode.NodeType.Address
+	nodeType:= currentNode.NodeType
 	switch currentNode.NodeType.Field {
 	case cmptypes.Coinbase:
 		child, ok := currentNode.Children.(cmptypes.AddressChildren)[header.Coinbase]
@@ -650,17 +647,40 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
 		return child, ok
 	case cmptypes.Exist:
-		child, ok := currentNode.Children.(cmptypes.BoolChildren)[statedb.Exist(addr)    ]
+		value:=statedb.Exist(addr)
+		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
 		return child, ok
 	case cmptypes.Empty:
-		child, ok := currentNode.Children.(cmptypes.BoolChildren)[statedb.Empty(addr)]
+		value:= statedb.Empty(addr)
+		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
 		return child, ok
 	case cmptypes.Balance:
 		value := common.BigToHash(statedb.GetBalance(addr)) // // convert complex type (big.Int) to simple type: bytes[32]
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
 		return child, ok
 	case cmptypes.Nonce:
-		child, ok := currentNode.Children.(cmptypes.UintChildren)[statedb.GetNonce(addr)]
+		value:= statedb.GetNonce(addr)
+		child, ok := currentNode.Children.(cmptypes.UintChildren)[value]
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
 		return child, ok
 	case cmptypes.CodeHash:
 		value := statedb.GetCodeHash(addr)
@@ -668,25 +688,59 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 			value = cmptypes.NilCodeHash
 		}
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
+
 		return child, ok
 	case cmptypes.Storage:
 		position := currentNode.NodeType.Loc.(common.Hash)
 		value := statedb.GetState(addr, position)
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
+
 		return child, ok
 	case cmptypes.CommittedStorage:
 		position := currentNode.NodeType.Loc.(common.Hash)
 		value := statedb.GetCommittedState(addr, position)
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
+
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
+
 		return child, ok
 	case cmptypes.Dependence:
 		value := statedb.GetAccountSnapOrChangedBy(addr)
-
 		child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
+
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
+
 		return child, ok
 	case cmptypes.MinBalance:
 		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) > 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
+
+		if debug {
+			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
+			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
+				"loc", nodeType.Loc, "value", value, "alv", string(albs))
+		}
+
 		return child, ok
 	default:
 		log.Error("wrong field", "field ", currentNode.NodeType.Field)
