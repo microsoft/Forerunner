@@ -21,13 +21,15 @@ const k = 10
 type LogBlockInfo struct {
 	TxnApply           int64         `json:"apply"`
 	BlockFinalize      int64         `json:"finalize"`
-	WaitReuse          int64         `json:"reuse"`
-	WaitRealApply      int64         `json:"realApply"`
+	Reuse              int64         `json:"reuse"`
+	RealApply          int64         `json:"realApply"`
 	TxnFinalize        int64         `json:"txFinalize"`
 	Update             int64         `json:"updatePair"`
 	GetRW              int64         `json:"getRW"`
 	SetDB              int64         `json:"setDB"`
+	WaitRealApplyEnd   int64         `json:"waitRealApplyEnd"`
 	RunTx              int64         `json:"runTx"`
+	WaitReuseEnd       int64         `json:"waitReuseEnd"`
 	NoListen           int           `json:"L"`
 	NoPackage          int           `json:"Pa"`
 	NoEnqueue          int           `json:"E"`
@@ -125,20 +127,24 @@ type LogPreplayItem struct {
 type LogBlockGround []*LogRWrecord
 
 var (
-	toScreen bool
+	ToScreen bool
 
-	Process       time.Duration
-	Apply         []time.Duration
-	Finalize      time.Duration
-	WaitReuse     []time.Duration
-	WaitRealApply []time.Duration
-	TxFinalize    []time.Duration
-	Update        []time.Duration
-	GetRW         []time.Duration
-	SetDB         []time.Duration
-	RunTx         []time.Duration
+	Process          time.Duration
+	Apply            []time.Duration
+	Finalize         time.Duration
+	Reuse            []time.Duration
+	RealApply        []time.Duration
+	TxFinalize       []time.Duration
+	Update           []time.Duration
+	GetRW            []time.Duration
+	SetDB            []time.Duration
+	WaitRealApplyEnd []time.Duration
+	RunTx            []time.Duration
+	WaitReuseEnd     []time.Duration
 
 	ReuseGasCount uint64
+
+	LongExecutionCost time.Duration
 
 	ReuseResult []*cmptypes.ReuseStatus
 
@@ -158,15 +164,17 @@ var (
 	CumKeyNoWarmup        = make(map[string]int)
 	CumKeyWarmupHelpless  = make(map[string]int)
 
-	cumApply         time.Duration
-	cumFinalize      time.Duration
-	cumWaitReuse     time.Duration
-	cumWaitRealApply time.Duration
-	cumTxFinalize    time.Duration
-	cumUpdate        time.Duration
-	cumGetRW         time.Duration
-	cumSetDB         time.Duration
-	cumRunTx         time.Duration
+	cumApply            time.Duration
+	cumFinalize         time.Duration
+	cumReuse            time.Duration
+	cumRealApply        time.Duration
+	cumTxFinalize       time.Duration
+	cumUpdate           time.Duration
+	cumGetRW            time.Duration
+	cumSetDB            time.Duration
+	cumWaitRealApplyEnd time.Duration
+	cumRunTx            time.Duration
+	cumWaitReuseEnd     time.Duration
 
 	blkCount      uint64
 	txnCount      uint64
@@ -211,13 +219,15 @@ func ResetLogVar(size int) {
 
 	Apply = make([]time.Duration, 0, size)
 	Finalize = 0
-	WaitReuse = make([]time.Duration, 0, size)
-	WaitRealApply = make([]time.Duration, 0, size)
+	Reuse = make([]time.Duration, 0, size)
+	RealApply = make([]time.Duration, 0, size)
 	TxFinalize = make([]time.Duration, 0, size)
 	Update = make([]time.Duration, 0, size)
 	GetRW = make([]time.Duration, 0, size)
 	SetDB = make([]time.Duration, 0, size)
+	WaitRealApplyEnd = make([]time.Duration, 0, size)
 	RunTx = make([]time.Duration, 0, size)
+	WaitReuseEnd = make([]time.Duration, 0, size)
 
 	ReuseGasCount = 0
 }
@@ -257,30 +267,34 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, reporter MissReporter, statedb *state.StateDB) {
 
 	var (
-		sumApply         = SumDuration(Apply)
-		sumWaitReuse     = SumDuration(WaitReuse)
-		sumWaitRealApply = SumDuration(WaitRealApply)
-		sumTxFinalize    = SumDuration(TxFinalize)
-		sumUpdate        = SumDuration(Update)
-		sumGetRW         = SumDuration(GetRW)
-		sumSetDB         = SumDuration(SetDB)
-		sumRunTx         = SumDuration(RunTx)
+		sumApply            = SumDuration(Apply)
+		sumReuse            = SumDuration(Reuse)
+		sumRealApply        = SumDuration(RealApply)
+		sumTxFinalize       = SumDuration(TxFinalize)
+		sumUpdate           = SumDuration(Update)
+		sumGetRW            = SumDuration(GetRW)
+		sumSetDB            = SumDuration(SetDB)
+		sumWaitRealApplyEnd = SumDuration(WaitRealApplyEnd)
+		sumRunTx            = SumDuration(RunTx)
+		sumWaitReuseEnd     = SumDuration(WaitReuseEnd)
 	)
 
 	infoResult := &LogBlockInfo{
-		TxnApply:      sumApply.Microseconds(),
-		BlockFinalize: Finalize.Microseconds(),
-		WaitReuse:     sumWaitReuse.Microseconds(),
-		WaitRealApply: sumWaitRealApply.Microseconds(),
-		TxnFinalize:   sumTxFinalize.Microseconds(),
-		Update:        sumUpdate.Microseconds(),
-		GetRW:         sumGetRW.Microseconds(),
-		SetDB:         sumSetDB.Microseconds(),
-		RunTx:         sumRunTx.Microseconds(),
-		ReuseGas:      int(ReuseGasCount),
-		ProcTime:      Process.Nanoseconds(),
-		TxnCount:      len(block.Transactions()),
-		Header:        block.Header(),
+		TxnApply:         sumApply.Microseconds(),
+		BlockFinalize:    Finalize.Microseconds(),
+		Reuse:            sumReuse.Microseconds(),
+		RealApply:        sumRealApply.Microseconds(),
+		TxnFinalize:      sumTxFinalize.Microseconds(),
+		Update:           sumUpdate.Microseconds(),
+		GetRW:            sumGetRW.Microseconds(),
+		SetDB:            sumSetDB.Microseconds(),
+		WaitRealApplyEnd: sumWaitRealApplyEnd.Microseconds(),
+		RunTx:            sumRunTx.Microseconds(),
+		WaitReuseEnd:     sumWaitReuseEnd.Microseconds(),
+		ReuseGas:         int(ReuseGasCount),
+		ProcTime:         Process.Nanoseconds(),
+		TxnCount:         len(block.Transactions()),
+		Header:           block.Header(),
 	}
 
 	processTimeNano := r.PeekBlockPre(block.Hash()).ListenTimeNano
@@ -372,94 +386,118 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		r.SyncStart = block.NumberU64()
 	}
 	if r.SyncStart != 0 && block.NumberU64() >= r.SyncStart+k {
-		toScreen = true
+		ToScreen = true
 	}
 
-	if !cfg.MSRAVMSettings.IsEmulateMode && !toScreen {
+	if !cfg.MSRAVMSettings.IsEmulateMode && !ToScreen {
 		return
 	}
 
-	for word := range WarmupMissTxnCount {
-		CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
-		CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
-		CumAddrNoWarmup[word] += AddrNoWarmup[word]
-		CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
-		CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
-		CumKeyNoWarmup[word] += KeyNoWarmup[word]
-		CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
-	}
+	if cfg.MSRAVMSettings.CalWarmupMiss {
+		for word := range WarmupMissTxnCount {
+			CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
+			CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
+			CumAddrNoWarmup[word] += AddrNoWarmup[word]
+			CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
+			CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
+			CumKeyNoWarmup[word] += KeyNoWarmup[word]
+			CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
+		}
 
-	var keySort []string
-	for word := range CumWarmupMissTxnCount {
-		keySort = append(keySort, word)
-	}
-	sort.Strings(keySort)
+		var keySort []string
+		for word := range CumWarmupMissTxnCount {
+			keySort = append(keySort, word)
+		}
+		sort.Strings(keySort)
 
-	for _, word := range keySort {
-		if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
-			context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word]}
-			if CumAddrWarmupMiss[word] > 0 {
-				context = append(context, "cum addr miss-helpless",
-					fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrWarmupHelpless[word]))
-				if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
-					context = append(context, "addr miss-helpless",
-						fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrWarmupHelpless[word]))
+		for _, word := range keySort {
+			if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
+				context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word]}
+				if CumAddrWarmupMiss[word] > 0 {
+					context = append(context, "cum addr miss-helpless",
+						fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrWarmupHelpless[word]))
+					if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
+						context = append(context, "addr miss-helpless",
+							fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrWarmupHelpless[word]))
+					}
 				}
-			}
-			if CumKeyWarmupMiss[word] > 0 {
-				context = append(context, "cum key miss",
-					fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
-				if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
-					context = append(context, "key miss",
-						fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
+				if CumKeyWarmupMiss[word] > 0 {
+					context = append(context, "cum key miss",
+						fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
+					if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
+						context = append(context, "key miss",
+							fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
+					}
 				}
+				log.Info("Warmup miss statistics", context...)
 			}
-			log.Info("Warmup miss statistics", context...)
 		}
 	}
 
 	cumApply += sumApply
 	cumFinalize += Finalize
-	cumWaitReuse += sumWaitReuse
-	cumWaitRealApply += sumWaitRealApply
+	cumReuse += sumReuse
+	cumRealApply += sumRealApply
 	cumTxFinalize += sumTxFinalize
 	cumUpdate += sumUpdate
 	cumGetRW += sumGetRW
 	cumSetDB += sumSetDB
+	cumWaitRealApplyEnd += sumWaitRealApplyEnd
 	cumRunTx += sumRunTx
+	cumWaitReuseEnd += sumWaitReuseEnd
 
 	context := []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
-	if len(block.Transactions()) != 0 {
+	if sumApply != 0 {
 		context = append(context,
-			"reuse/apply", fmt.Sprintf("%.2f", float64(sumWaitReuse)/float64(sumApply)),
-			"realApply/apply", fmt.Sprintf("%.2f", float64(sumWaitRealApply)/float64(sumApply)),
-			"(finalize+update)/apply", fmt.Sprintf("%.2f", float64(sumTxFinalize+sumUpdate)/float64(sumApply)))
-		if sumWaitReuse != 0 {
+			"reuse/apply", fmt.Sprintf("%.2f", float64(sumReuse)/float64(sumApply)),
+			"realApply/apply", fmt.Sprintf("%.2f", float64(sumRealApply)/float64(sumApply)),
+			"finalize/apply", fmt.Sprintf("%.2f", float64(sumTxFinalize)/float64(sumApply)),
+			"update/apply", fmt.Sprintf("%.2f", float64(sumUpdate)/float64(sumApply)),
+		)
+		if sumReuse != 0 {
 			context = append(context,
-				"getRW/reuse", fmt.Sprintf("%.2f", float64(sumGetRW)/float64(sumWaitReuse)),
-				"setDB/reuse", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumWaitReuse)))
+				"getRW/reuse", fmt.Sprintf("%.2f", float64(sumGetRW)/float64(sumReuse)),
+				"setDB/reuse", fmt.Sprintf("%.2f", float64(sumSetDB)/float64(sumReuse)),
+			)
+			if cfg.MSRAVMSettings.ParallelizeReuse {
+				context = append(context,
+					"waitRealApplyEnd/reuse", fmt.Sprintf("%.2f", float64(sumWaitRealApplyEnd)/float64(sumReuse)),
+				)
+			}
 		}
-		if sumWaitRealApply != 0 {
+		if sumRealApply != 0 && cfg.MSRAVMSettings.ParallelizeReuse {
 			context = append(context,
-				"runTx/realApply", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumWaitRealApply)))
+				"runTx/realApply", fmt.Sprintf("%.2f", float64(sumRunTx)/float64(sumRealApply)),
+				"waitReuseEnd/realApply", fmt.Sprintf("%.2f", float64(sumWaitReuseEnd)/float64(sumRealApply)),
+			)
 		}
 	}
 	log.Info("Time consumption detail", context...)
 
 	context = []interface{}{"apply", common.PrettyDuration(cumApply), "finalize", common.PrettyDuration(cumFinalize)}
-	if len(block.Transactions()) != 0 {
+	if cumApply != 0 {
 		context = append(context,
-			"reuse/apply", fmt.Sprintf("%.2f", float64(cumWaitReuse)/float64(cumApply)),
-			"realApply/apply", fmt.Sprintf("%.2f", float64(cumWaitRealApply)/float64(cumApply)),
-			"(finalize+update)/apply", fmt.Sprintf("%.2f", float64(cumTxFinalize+cumUpdate)/float64(cumApply)))
-		if sumWaitReuse != 0 {
+			"reuse/apply", fmt.Sprintf("%.2f", float64(cumReuse)/float64(cumApply)),
+			"realApply/apply", fmt.Sprintf("%.2f", float64(cumRealApply)/float64(cumApply)),
+			"finalize/apply", fmt.Sprintf("%.2f", float64(cumTxFinalize)/float64(cumApply)),
+			"update/apply", fmt.Sprintf("%.2f", float64(cumUpdate)/float64(cumApply)),
+		)
+		if cumReuse != 0 {
 			context = append(context,
-				"getRW/reuse", fmt.Sprintf("%.2f", float64(cumGetRW)/float64(cumWaitReuse)),
-				"setDB/reuse", fmt.Sprintf("%.2f", float64(cumSetDB)/float64(cumWaitReuse)))
+				"getRW/reuse", fmt.Sprintf("%.2f", float64(cumGetRW)/float64(cumReuse)),
+				"setDB/reuse", fmt.Sprintf("%.2f", float64(cumSetDB)/float64(cumReuse)),
+			)
+			if cfg.MSRAVMSettings.ParallelizeReuse {
+				context = append(context,
+					"waitRealApplyEnd/reuse", fmt.Sprintf("%.2f", float64(cumWaitRealApplyEnd)/float64(cumReuse)),
+				)
+			}
 		}
-		if sumWaitRealApply != 0 {
+		if cumRealApply != 0 && cfg.MSRAVMSettings.ParallelizeReuse {
 			context = append(context,
-				"runTx/realApply", fmt.Sprintf("%.2f", float64(cumRunTx)/float64(cumWaitRealApply)))
+				"runTx/realApply", fmt.Sprintf("%.2f", float64(cumRunTx)/float64(cumRealApply)),
+				"waitReuseEnd/realApply", fmt.Sprintf("%.2f", float64(cumWaitReuseEnd)/float64(cumRealApply)),
+			)
 		}
 	}
 	log.Info("Cumulative time consumption detail", context...)
@@ -532,18 +570,24 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		AbortedMix += uint64(infoResult.AbortedMix)
 		AbortedDelta += uint64(infoResult.AbortedDelta)
 		AbortedTrie += uint64(infoResult.AbortedTrie)
-		log.Info("Cumulative block reuse", "block", blkCount, "txn", txnCount,
+		context = []interface{}{
+			"block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
 			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
-			"unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
-			"MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
-			"AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
-				AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie),
-		)
+		}
+		if cfg.MSRAVMSettings.ParallelizeReuse {
+			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)))
+		}
+		context = append(context, "MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+			mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate))
+		if cfg.MSRAVMSettings.ParallelizeReuse {
+			context = append(context, "AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
+				AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie))
+		}
+		log.Info("Cumulative block reuse", context...)
 
 		var (
 			enqueues      = make([]uint64, 0)

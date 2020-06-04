@@ -87,7 +87,7 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 		preplayTaskQueue: NewTaskQueue(),
 		preplayLog:       NewPreplayLog(),
 		taskBuilder:      taskBuilder,
-		missReporter:     NewMissReporter(config),
+		missReporter:     NewMissReporter(config.ChainID, eth.BlockChain().GetVMConfig().MSRAVMSettings.ReportMissDetail),
 		routinePool:      grpool.NewPool(executorNum*2, executorNum*2),
 	}
 	preplayer.taskBuilder.setPreplayer(preplayer)

@@ -476,10 +476,12 @@ func (h *rwRecorderImpl) UpdateWObject(addr common.Address, object *stateObject)
 	if h.statedb.allowObjCopy {
 		if _, ok := h.statedb.addrNotCopy[addr]; !ok {
 			cpy := object.deepCopy(object.db)
-			cpy.delta = newDeltaObject()
 			cpy.Code(cpy.db.db)
 			cpy.updateRoot(cpy.db.db)
-			cpy.shareCopy(cpy.db)
+			if h.statedb.copyForShare {
+				cpy.delta = newDeltaObject()
+				cpy.shareCopy(cpy.db)
+			}
 			h.WObject[addr] = cpy
 			h.WobjectCopy++
 			return

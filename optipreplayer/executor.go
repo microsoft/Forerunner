@@ -121,9 +121,12 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 	statedbInstance, err := e.chain.StateAt(parent.Root())
 	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
 		statedb = state.NewRWStateDB(statedbInstance)
-		statedb.SetAddrNotCopy(e.addrNotCopy)
 		if !e.basicPreplay {
 			statedb.SetAllowObjCopy(false)
+		}
+		statedb.SetAddrNotCopy(e.addrNotCopy)
+		if e.chain.GetVMConfig().MSRAVMSettings.ParallelizeReuse {
+			statedb.SetCopyForShare(true)
 		}
 	} else {
 		statedb = statedbInstance

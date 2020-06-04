@@ -68,6 +68,10 @@ type MSRAVMConfig struct {
 	EmulateFile          string
 	EnableReuseTracer    bool
 	CmpReusePerfTest     bool
+
+	ParallelizeReuse bool
+	CalWarmupMiss    bool
+	ReportMissDetail bool
 }
 
 func (p *MSRAVMConfig) IsPrintRecord() bool {

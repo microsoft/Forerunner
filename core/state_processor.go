@@ -40,7 +40,8 @@ import (
 type TransactionApplier interface {
 	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, blockPre *cache.BlockPre) (*types.Receipt, error, *cmptypes.ReuseStatus)
+		cfg *vm.Config, blockPre *cache.BlockPre, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
+		pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
 
 	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -284,10 +285,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 	var reuseResult []*cmptypes.ReuseStatus
 
-	if cfg.MSRAVMSettings.CmpReuse {
+	if cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.ParallelizeReuse {
 		statedb.ShareCopy()
 	}
-	controller := NewController()
+	var controller *Controller
+	if cfg.MSRAVMSettings.ParallelizeReuse {
+		controller = NewController()
+	}
 
 	signer := types.MakeSigner(p.config, header.Number)
 
@@ -387,8 +391,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}()
 			} else {
 
-				receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
-					tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+				if cfg.MSRAVMSettings.ParallelizeReuse {
+					receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
+						tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+				} else {
+					receipt, err, reuseStatus = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header,
+						tx, usedGas, &cfg, blockPre, getHashFunc, precompiles, pMsg, signer)
+				}
 			}
 			reuseResult = append(reuseResult, reuseStatus)
 			if reuseStatus.BaseStatus == cmptypes.Unknown {
@@ -414,33 +423,35 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}
 			}
 
-			var checkDb = statedb
-			if pair := statedb.GetPair(); pair != nil && reuseStatus.BaseStatus != cmptypes.Hit {
-				checkDb = pair
-			}
-			if checkDb.HaveMiss() {
-				word := "Should(Hit)"
-				if reuseStatus.BaseStatus != cmptypes.Hit {
-					word = fmt.Sprintf("May(%s)", reuseStatus.BaseStatus)
-					if reuseStatus.BaseStatus == cmptypes.NoPreplay {
-						txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
-						if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
-							word = "Cannot(NoPreplay)"
+			if cfg.MSRAVMSettings.CalWarmupMiss {
+				var checkDb = statedb
+				if pair := statedb.GetPair(); pair != nil && reuseStatus.BaseStatus != cmptypes.Hit {
+					checkDb = pair
+				}
+				if checkDb.HaveMiss() {
+					word := "Should(Hit)"
+					if reuseStatus.BaseStatus != cmptypes.Hit {
+						word = fmt.Sprintf("May(%s)", reuseStatus.BaseStatus)
+						if reuseStatus.BaseStatus == cmptypes.NoPreplay {
+							txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+							if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
+								word = "Cannot(NoPreplay)"
+							}
 						}
 					}
+					cache.WarmupMissTxnCount[word]++
+					cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
+					cache.AddrNoWarmup[word] += statedb.AddrNoWarmup
+					cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
+					cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
+					cache.KeyNoWarmup[word] += statedb.KeyNoWarmup
+					cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
 				}
-				cache.WarmupMissTxnCount[word]++
-				cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
-				cache.AddrNoWarmup[word] += statedb.AddrNoWarmup
-				cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
-				cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
-				cache.KeyNoWarmup[word] += statedb.KeyNoWarmup
-				cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
-			}
 
-			statedb.ClearMiss()
-			if pair := statedb.GetPair(); pair != nil {
-				pair.ClearMiss()
+				statedb.ClearMiss()
+				if pair := statedb.GetPair(); pair != nil {
+					pair.ClearMiss()
+				}
 			}
 		} else {
 			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
@@ -455,11 +466,24 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
-		if reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Second*30 {
-			log.Info("Long execution", "tx", tx.Hash(), "index", i, "status", reuseResult[len(reuseResult)-1])
+		if cache.ToScreen && reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Millisecond*100 {
+			var status = reuseResult[len(reuseResult)-1]
+			var statusStr = status.BaseStatus.String()
+			if status.BaseStatus == cmptypes.Hit {
+				statusStr += "-" + status.HitType.String()
+				if status.HitType == cmptypes.MixHit {
+					statusStr += "-" + status.MixHitStatus.MixHitType.String()
+				}
+				if status.HitType == cmptypes.TraceHit {
+					statusStr += "-" + status.TraceHitStatus.String()
+				}
+			}
+			cache.LongExecutionCost += cache.Apply[len(cache.Apply)-1]
+			log.Info("Long execution", "number", block.Number(), "hash", block.Hash(), "index", i, "tx", tx.Hash().Hex(),
+				"status", statusStr, "cost", common.PrettyDuration(cache.Apply[len(cache.Apply)-1]), "cum cost", common.PrettyDuration(cache.LongExecutionCost))
 		}
 	}
-	if cfg.MSRAVMSettings.CmpReuse {
+	if cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.ParallelizeReuse {
 		statedb.MergeDelta()
 	}
 	t0 := time.Now()

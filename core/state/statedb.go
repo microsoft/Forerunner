@@ -112,6 +112,8 @@ type StateDB struct {
 	validRevisions []revision
 	nextRevisionId int
 
+	savedDirties map[common.Address]int
+
 	// Measurements gathered during execution for debugging purposes
 	AccountReads   time.Duration
 	AccountHashes  time.Duration
@@ -126,6 +128,7 @@ type StateDB struct {
 	EnableFeeToCoinbase bool // default true
 	allowObjCopy        bool // default true
 	addrNotCopy         map[common.Address]struct{}
+	copyForShare        bool       // default false
 	rwRecorder          RWRecorder // RWRecord mode
 
 	ReuseTracer cmptypes.IReuseTracer
@@ -154,7 +157,7 @@ type StateDB struct {
 
 	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
 	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
-	FromWarmuper       bool
+	CalWarmupMiss      bool
 	AddrWarmupMiss     int
 	AddrNoWarmup       int
 	AddrWarmupHelpless map[common.Address]struct{}
@@ -300,6 +303,10 @@ func (self *StateDB) SetAllowObjCopy(allow bool) {
 
 func (self *StateDB) SetAddrNotCopy(addrMap map[common.Address]struct{}) {
 	self.addrNotCopy = addrMap
+}
+
+func (self *StateDB) SetCopyForShare(copyForShare bool) {
+	self.copyForShare = copyForShare
 }
 
 func (self *StateDB) SetRWMode(enabled bool) {
@@ -607,11 +614,24 @@ func (s *StateDB) IsInPending(addr common.Address) bool {
 }
 
 func (s *StateDB) DirtyAddress() []common.Address {
+	var dirties map[common.Address]int
+	if s.IsShared() {
+		dirties = s.journal.dirties
+	} else {
+		dirties = s.savedDirties
+	}
 	var res []common.Address
-	for addr := range s.journal.dirties {
+	for addr := range dirties {
 		res = append(res, addr)
 	}
 	return res
+}
+
+func (s *StateDB) ClearSavedDirties() {
+	s.savedDirties = nil
+	if s.IsShared() {
+		s.pair.savedDirties = nil
+	}
 }
 
 func (s *StateDB) UpdateAccountChangedBySlice(dirties common.Addresses, txRes *cmptypes.TxResID) {
@@ -877,7 +897,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	enc, err := s.trie.TryGet(addr[:])
 	if len(enc) == 0 {
 		s.setError(err)
-		if s.FromWarmuper {
+		if s.CalWarmupMiss {
 			s.AddrWarmupHelpless[addr] = struct{}{}
 		}
 		return nil
@@ -887,7 +907,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		log.Error("Failed to decode state object", "addr", addr, "err", err)
 		return nil
 	}
-	if s.FromWarmuper {
+	if s.CalWarmupMiss {
 		s.AddrWarmupMiss++
 		if !s.IsAddrWarmup(addr) {
 			s.AddrNoWarmup++
@@ -1015,6 +1035,7 @@ func (s *StateDB) Copy() *StateDB {
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		allowObjCopy:        s.allowObjCopy,
+		copyForShare:        s.copyForShare,
 		rwRecorder:          emptyRWRecorder{},
 		IsParallelHasher:    s.IsParallelHasher,
 	}
@@ -1091,6 +1112,7 @@ func (s *StateDB) ShareCopy() {
 		journal:             newJournal(),
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		allowObjCopy:        s.allowObjCopy,
+		copyForShare:        s.copyForShare,
 		rwRecorder:          emptyRWRecorder{},
 		primary:             false,
 		delta:               newDeltaDB(),
@@ -1438,6 +1460,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 
 func (s *StateDB) clearJournalAndRefund() {
 	if len(s.journal.entries) > 0 {
+		s.savedDirties = s.journal.dirties
 		s.journal = newJournal()
 		s.refund = 0
 	}
@@ -1530,13 +1553,13 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 
 func (s *StateDB) ApplyStateObject(object *stateObject) {
 	object.db = s
-	object.pair.db = s.pair
-	s.journal.dirties[object.address]++
 	if s.IsShared() {
+		object.pair.db = s.pair
 		s.setDeltaStateObject(object)
 	} else {
 		s.setStateObject(object)
 	}
+	s.journal.dirties[object.address]++
 }
 
 func (s *StateDB) IsAddrWarmup(addr common.Address) bool {

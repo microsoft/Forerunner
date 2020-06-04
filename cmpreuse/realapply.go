@@ -9,30 +9,35 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"runtime/debug"
+	"time"
 )
 
 func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
-	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, c *core.Controller, msg core.Message, tx *types.Transaction) (gas uint64,
-	failed bool, err error) {
+	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, abort func() bool, setEvm func(evm *vm.EVM),
+	msg core.Message, tx *types.Transaction) (gas uint64, failed bool, err error, d time.Duration) {
+	t := time.Now()
+	defer func() {
+		d = time.Since(t)
+	}()
 
-	if c.IsAborted() {
+	if abort() {
 		return
 	}
 	snap := statedb.Snapshot()
 	if statedb.IsRWMode() {
 		statedb.RWRecorder().RWClear()
 	}
-	if c.IsAborted() {
+	if abort() {
 		return
 	}
 	context := core.NewEVMContext(msg, header, bc, author)
-	if c.IsAborted() {
+	if abort() {
 		return
 	}
 	evm := vm.NewEVM(context, statedb, config, *cfg)
 	//expCount := 10000000
 	//expCount = 1
-	if cfg.MSRAVMSettings.EnableReuseTracer {//&& ReuseTracerTracedTxCount < expCount {
+	if cfg.MSRAVMSettings.EnableReuseTracer { //&& ReuseTracerTracedTxCount < expCount {
 		//if strings.ToLower(tx.To().Hex()) == "0xdac17f958d2ee523a2206206994597c13d831ec7" {
 		rt := NewReuseTracer(statedb, header, evm.GetHash, evm.ChainConfig().ChainID, evm.ChainConfig().Rules(header.Number))
 		if cfg.MSRAVMSettings.ReuseTracerChecking {
@@ -50,8 +55,10 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 		}()
 	}
 
-	c.SetEvm(evm)
-	if c.IsAborted() {
+	if setEvm != nil {
+		setEvm(evm)
+	}
+	if abort() {
 		return
 	}
 	_, gas, failed, err = core.ApplyMessage(evm, msg, gp)

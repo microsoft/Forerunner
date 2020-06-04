@@ -458,10 +458,10 @@ func (w *Warmuper) getOrNewStatedbBox(root common.Hash) *StatedbBox {
 
 		go box.warmupDbLoop()
 
-		if w.cfg.MSRAVMSettings.CmpReuse {
-			for _, statedb := range box.statedbList {
+		for _, statedb := range box.statedbList {
+			statedb.PreAllocateObjects()
+			if w.cfg.MSRAVMSettings.CmpReuse && w.cfg.MSRAVMSettings.ParallelizeReuse {
 				statedb.ShareCopy()
-				statedb.PreAllocateObjects()
 				statedb.GetPair().PreAllocateObjects()
 			}
 		}

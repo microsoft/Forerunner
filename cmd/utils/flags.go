@@ -776,28 +776,28 @@ var (
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "preplaydata", "chainhead-driven")),
 	}
 
-	CmpResueEnabledFlag = cli.BoolFlag{
+	CmpResseEnabledFlag = cli.BoolFlag{
 		Name:  "cmpreuse",
 		Usage: "Enable computation reuse",
 	}
-	CmpResueCheckFlag = cli.BoolFlag{
+	CmpReuseCheckFlag = cli.BoolFlag{
 		Name:  "cmpreuse.check",
 		Usage: "Enable computation reuse dirty write checking",
 	}
-	CmpResuePerfTestFlag = cli.BoolFlag{
+	CmpReusePerfTestFlag = cli.BoolFlag{
 		Name:  "cmpreuse.perf",
 		Usage: "Enable perf testing for reuse and realapply",
 	}
-	CmpResueLogFlag = cli.BoolFlag{
+	CmpReuseLogFlag = cli.BoolFlag{
 		Name:  "cmpreuse.log",
 		Usage: "Enable computation reuse result logging",
 	}
-	CmpResueLogDirFlag = DirectoryFlag{
+	CmpReuseLogDirFlag = DirectoryFlag{
 		Name:  "cmpreuse.log.dir",
 		Usage: "Log directory for computation reuse result",
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "cmpreuse")),
 	}
-	ResueTracerCheckFlag = cli.BoolFlag{
+	ReuseTracerCheckFlag = cli.BoolFlag{
 		Name:  "reusetracer.check",
 		Usage: "Enable reuse tracer checking",
 	}
@@ -896,6 +896,19 @@ var (
 		Name:  "generateemulatorlogto",
 		Usage: "Generate emulator log to the given block number (exclusive)",
 		Value: 9271812,
+	}
+
+	ParallelizeReuseFlag = cli.BoolFlag{
+		Name:  "parallelizereuse",
+		Usage: "Parallelize reuse and real apply when apply (enable only when reuse mode)",
+	}
+	CalWarmupMissFlag = cli.BoolFlag{
+		Name:  "calwarmupmiss",
+		Usage: "Calculate warmup miss count for address and key",
+	}
+	ReportMissDetailFlag = cli.BoolFlag{
+		Name:  "reportmissdetail",
+		Usage: "Report transactions' miss detail",
 	}
 )
 
@@ -1313,7 +1326,7 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 
 	if ctx.GlobalIsSet(DelayedBlockFlag.Name) {
 		cfg.DelayedBlockStatsLevel = ctx.GlobalInt(DelayedBlockFlag.Name)
-	}else {
+	} else {
 		cfg.DelayedBlockStatsLevel = 1
 	}
 
@@ -1741,10 +1754,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
 		Silent:              ctx.GlobalBool(SilentFlag.Name),
 		LogRoot:             "/datadrive/reuse",
-		CmpReuse:            ctx.GlobalBool(CmpResueEnabledFlag.Name),
-		CmpReuseChecking:    ctx.GlobalBool(CmpResueCheckFlag.Name),
-		CmpReusePerfTest:    ctx.GlobalBool(CmpResuePerfTestFlag.Name),
-		CmpReuseLogging:     ctx.GlobalBool(CmpResueLogFlag.Name),
+		CmpReuse:            ctx.GlobalBool(CmpResseEnabledFlag.Name),
+		CmpReuseChecking:    ctx.GlobalBool(CmpReuseCheckFlag.Name),
+		CmpReusePerfTest:    ctx.GlobalBool(CmpReusePerfTestFlag.Name),
+		CmpReuseLogging:     ctx.GlobalBool(CmpReuseLogFlag.Name),
 		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
 		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),
 		CacheRecord:         ctx.GlobalBool(CacheRecordEnabledFlag.Name),
@@ -1753,14 +1766,18 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
 		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
 		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
-		ReuseTracerChecking: ctx.GlobalBool(ResueTracerCheckFlag.Name),
+		ReuseTracerChecking: ctx.GlobalBool(ReuseTracerCheckFlag.Name),
 
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",
+
+		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
+		CalWarmupMiss:    ctx.GlobalBool(CalWarmupMissFlag.Name),
+		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
-	if ctx.GlobalIsSet(CmpResueLogDirFlag.Name) {
-		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpResueLogDirFlag.Name)
+	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
+		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpReuseLogDirFlag.Name)
 	}
 	if ctx.GlobalIsSet(LogRootFlag.Name) {
 		cfg.MSRAVMSettings.LogRoot = ctx.GlobalString(LogRootFlag.Name)

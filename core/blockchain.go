@@ -1823,13 +1823,15 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
 		} else {
-			statedb.ProcessedForDb, statedb.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
-			statedb.FromWarmuper = true
-			statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
-			if pair := statedb.GetPair(); pair != nil {
-				pair.ProcessedForDb, pair.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
-				pair.FromWarmuper = true
-				pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+			if bc.vmConfig.MSRAVMSettings.CalWarmupMiss {
+				statedb.ProcessedForDb, statedb.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
+				statedb.CalWarmupMiss = true
+				statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
+				if pair := statedb.GetPair(); pair != nil {
+					pair.ProcessedForDb, pair.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
+					pair.CalWarmupMiss = true
+					pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+				}
 			}
 		}
 		if err != nil {

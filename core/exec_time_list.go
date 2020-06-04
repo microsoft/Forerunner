@@ -1,9 +1,9 @@
 package core
 
 import (
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -85,23 +85,27 @@ func (l *ExecTimeList) allStats() (time.Duration, time.Duration, bool) {
 func (l *ExecTimeList) print(number uint64) {
 	avgContext := []interface{}{
 		"number", number,
-		"execution", common.PrettyDuration(l.list[l.last]),
+		"execution", duration2Str(l.list[l.last]),
 	}
 	medContext := avgContext
 
 	if last10Avg, last10Med, ok := l.lastXXStats(l.last10Start, 10); ok {
-		avgContext = append(avgContext, "last10", common.PrettyDuration(last10Avg))
-		medContext = append(medContext, "last10", common.PrettyDuration(last10Med))
+		avgContext = append(avgContext, "last10", duration2Str(last10Avg))
+		medContext = append(medContext, "last10", duration2Str(last10Med))
 	}
 	if last100Avg, last100Med, ok := l.lastXXStats(l.last100Start, 100); ok {
-		avgContext = append(avgContext, "last100", common.PrettyDuration(last100Avg))
-		medContext = append(medContext, "last100", common.PrettyDuration(last100Med))
+		avgContext = append(avgContext, "last100", duration2Str(last100Avg))
+		medContext = append(medContext, "last100", duration2Str(last100Med))
 	}
 	if last1000Avg, last1000Med, ok := l.allStats(); ok {
-		avgContext = append(avgContext, "last1000", common.PrettyDuration(last1000Avg))
-		medContext = append(medContext, "last1000", common.PrettyDuration(last1000Med))
+		avgContext = append(avgContext, "last1000", duration2Str(last1000Avg))
+		medContext = append(medContext, "last1000", duration2Str(last1000Med))
 	}
 
 	log.Info("Block average execution time statistics", avgContext...)
 	log.Info("Block median execution time statistics", medContext...)
+}
+
+func duration2Str(d time.Duration) string {
+	return strconv.FormatInt(d.Milliseconds(), 10) + "." + strconv.FormatInt(d.Microseconds()%1e3, 10) + "ms"
 }

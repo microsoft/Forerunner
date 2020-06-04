@@ -9,7 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/ethereum/go-ethereum/params"
 	"math"
 	"math/big"
 	"reflect"
@@ -41,27 +40,29 @@ type MissReporter struct {
 	nilNodeTypeCount int
 	rChainMissTotal  int
 	rChainMissCount  [6]int
-	rStateMissCount  [2]int
-	txnMissCount     [2]int
-	sortMissCount    [2]int
-	chainMissCount   [2]int
-	snapMissCount    [2]int
-	orderMissTotal   int
-	orderMissCount   [7]int
-	minerMissCount   [2]int
-	rootMissCount    [2]int
-	bugMissCount     [2]int
+	noTimeDepCount   int
+	timeMissMap      map[[2]int]int
 
-	signer    types.Signer
-	preplayer *Preplayer
+	rStateMissCount [2]int
+	txnMissCount    [2]int
+	sortMissCount   [2]int
+	chainMissCount  [2]int
+	snapMissCount   [2]int
+	orderMissTotal  int
+	orderMissCount  [7]int
+	minerMissCount  [2]int
+	rootMissCount   [2]int
+	bugMissCount    [2]int
 
-	noTimeDepCount int
-	timeMissMap    map[[2]int]int
+	signer           types.Signer
+	reportMissDetail bool
+	preplayer        *Preplayer
 }
 
-func NewMissReporter(config *params.ChainConfig) *MissReporter {
+func NewMissReporter(chainID *big.Int, reportMissDetail bool) *MissReporter {
 	r := new(MissReporter)
-	r.signer = types.NewEIP155Signer(config.ChainID)
+	r.signer = types.NewEIP155Signer(chainID)
+	r.reportMissDetail = reportMissDetail
 	r.timeMissMap = make(map[[2]int]int)
 	return r
 }
@@ -77,7 +78,9 @@ func (r *MissReporter) SetBlock(block *types.Block) {
 		r.txnsSenderMap[txn.Hash()] = sender
 		r.txnsMap[txn.Hash()] = txn
 	}
-	r.parent, r.groundGroups, r.getRWRecord = r.preplayer.getGroundGroup(block, r.txnsIndexMap, r.txnsSenderMap)
+	if r.reportMissDetail {
+		r.parent, r.groundGroups, r.getRWRecord = r.preplayer.getGroundGroup(block, r.txnsIndexMap, r.txnsSenderMap)
+	}
 }
 
 func (r *MissReporter) SetNoPreplayTxn(txn *types.Transaction, enqueue uint64) {
@@ -171,9 +174,9 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		//			r.timeMissMap[[2]int{preplayMost, diff}]++
 		//		}
 		//		pickGroup := pickOneGroup(haveTimeDep)
-		//		nodeChildStr := fmt.Sprintf("%d:", len(node.Children))
+		//		nodeChildStr := fmt.Sprintf("%d:", node.Children.Size())
 		//		var first = true
-		//		for value := range node.Children {
+		//		for value := range node.Children.GetKeys() {
 		//			if first {
 		//				nodeChildStr += "{"
 		//				first = false
@@ -182,7 +185,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		//			}
 		//			nodeChildStr += getInterfaceValue(value)
 		//		}
-		//		if len(node.Children) > 0 {
+		//		if node.Children.Size() > 0 {
 		//			nodeChildStr += "}"
 		//		}
 		//		var groupTxns = "TooLarge"
@@ -206,6 +209,10 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		r.rStateMissCount[1]++
 	} else {
 		r.rStateMissCount[0]++
+	}
+
+	if !r.reportMissDetail {
+		return
 	}
 
 	groundGroup, groundOrder := r.searchGroundGroup(txn, sender)
@@ -441,11 +448,13 @@ func (r *MissReporter) ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint
 	if snapMissCount > 0 {
 		context = append(context, "extra txns", fmt.Sprintf("%d(%d:%d)", snapMissCount, r.snapMissCount[0], r.snapMissCount[1]))
 	}
-	context = append(context,
-		"insufficient execution", fmt.Sprintf("%d[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]",
-			r.orderMissTotal, r.orderMissCount[0], r.orderMissCount[1], r.orderMissCount[2], r.orderMissCount[3], r.orderMissCount[4],
-			r.orderMissCount[5], r.orderMissCount[6]),
-	)
+	if r.orderMissTotal > 0 {
+		context = append(context,
+			"insufficient execution", fmt.Sprintf("%d[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]",
+				r.orderMissTotal, r.orderMissCount[0], r.orderMissCount[1], r.orderMissCount[2], r.orderMissCount[3], r.orderMissCount[4],
+				r.orderMissCount[5], r.orderMissCount[6]),
+		)
+	}
 	minerMissCount := r.minerMissCount[0] + r.minerMissCount[1]
 	if minerMissCount > 0 {
 		context = append(context, "minerMiss", fmt.Sprintf("%d(%d:%d)", minerMissCount, r.minerMissCount[0], r.minerMissCount[1]))

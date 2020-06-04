@@ -243,7 +243,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		trace = reuseRound.Trace.(*STrace)
 
 	} else {
-		gas, failed, err = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, core.NewController(), msg, tx)
+		gas, failed, err, _ = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, AlwaysFalse, nil, msg, tx)
 
 		defer statedb.RWRecorder().RWClear() // Write set got
 		if err == nil {

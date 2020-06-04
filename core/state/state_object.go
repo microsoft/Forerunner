@@ -287,14 +287,14 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 			s.setError(err)
 		}
 		value.SetBytes(content)
-		if s.db.FromWarmuper {
+		if s.db.CalWarmupMiss {
 			s.db.KeyWarmupMiss++
 			if !s.db.IsKeyWarmup(s.address, key) {
 				s.db.KeyNoWarmup++
 			}
 		}
 	} else {
-		if s.db.FromWarmuper {
+		if s.db.CalWarmupMiss {
 			if _, ok := s.db.AddrWarmupHelpless[s.address]; ok {
 				s.db.KeyWarmupHelpless++
 			}

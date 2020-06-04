@@ -31,9 +31,7 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, c *core.Controller, msg core.Message) (uint64,
 	bool, error) {
 
-	t := time.Now()
-	gas, failed, err := reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, c, msg, nil)
-	d := time.Since(t)
+	gas, failed, err, d := reuse.realApplyTransaction(config, bc, author, gp, statedb, header, cfg, c.IsAborted, c.SetEvm, msg, nil)
 
 	if c.TryAbortCounterpart() {
 		cache.RunTx = append(cache.RunTx, d)
@@ -168,8 +166,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller,
 	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
-	pMsg *types.Message, signer types.Signer) (*types.Receipt,
-	error, *cmptypes.ReuseStatus) {
+	pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus) {
 
 	if statedb.IsRWMode() || !statedb.IsShared() {
 		panic("ReuseTransaction can only be used for process and statedb must be shared and not be RW mode.")
@@ -197,9 +194,11 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	var gasUsed uint64
 	var failed bool
 	var realApplyErr error
+
 	var realApply sync.WaitGroup
+	var realApplyStart = time.Now()
+	var realApplyEnd time.Time
 	realApply.Add(1)
-	realApplyStart := time.Now()
 
 	if cfg.MSRAVMSettings.CmpReuseChecking {
 		controller.ReuseDone.Add(1)
@@ -215,6 +214,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 			// try to help create receipt in parallel
 			reuse.TryCreateReceipt(reuseDB, header, tx, msg)
 		}
+		realApplyEnd = time.Now()
 		realApply.Done()
 	}
 
@@ -241,7 +241,9 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 
 		waitStart := time.Now()
 		realApply.Wait() // can only updatePair after real apply is completed
-		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
+		waitRealApplyEnd := time.Since(waitStart)
+		cache.WaitRealApplyEnd = append(cache.WaitRealApplyEnd, waitRealApplyEnd)
+		cache.Reuse = append(cache.Reuse, waitReuse+waitRealApplyEnd)
 
 		t1 := time.Now()
 
@@ -257,8 +259,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 				}
 			}
 			reuseDB.UpdateAccountChanged(header.Coinbase, curtxResId)
-		} else if reuseStatus.BaseStatus == cmptypes.Hit &&
-			(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
+		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
 			reuseDB.ApplyAccountChanged(round.AccountChanges)
 
 			reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
@@ -266,9 +267,9 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 			if reuseStatus.TraceTrieHitAddrs != nil {
 				for addr, reusedChange := range reuseStatus.TraceTrieHitAddrs {
 					if reusedChange == nil {
-						statedb.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
+						reuseDB.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
 					} else {
-						statedb.UpdateAccountChanged(addr, reusedChange)
+						reuseDB.UpdateAccountChanged(addr, reusedChange)
 					}
 				}
 				reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
@@ -288,7 +289,8 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		return receipt, nil, reuseStatus // reuse first
 	} else {
 		realApply.Wait() //wait for real apply result set
-		cache.WaitRealApply = append(cache.WaitRealApply, time.Since(realApplyStart))
+		cache.WaitReuseEnd = append(cache.WaitReuseEnd, time.Since(realApplyEnd))
+		cache.RealApply = append(cache.RealApply, time.Since(realApplyStart))
 
 		t0 := time.Now()
 		var receipt *types.Receipt
@@ -310,7 +312,6 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 		return receipt, realApplyErr, reuseStatus // real apply first
 	}
 }
-
 
 func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -355,8 +356,7 @@ func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc c
 	gasUsed, failed, realApplyErr = reuse.tryRealApplyTransaction(config, bc, author, &applyGp, applyDB, header, cfg, controller, msg)
 	applyDuration := time.Since(applyStart)
 
-
-	if  round != nil {
+	if round != nil {
 		waitReuse := time.Since(reuseStart)
 
 		t0 := time.Now()
@@ -364,7 +364,7 @@ func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc c
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
 		waitStart := time.Now()
-		cache.WaitReuse = append(cache.WaitReuse, time.Since(waitStart)+waitReuse)
+		cache.Reuse = append(cache.Reuse, time.Since(waitStart)+waitReuse)
 
 		t1 := time.Now()
 
@@ -406,12 +406,13 @@ func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc c
 		}
 
 		reuseDB.Update()
+		reuseDB.ClearSavedDirties()
 		cache.Update = append(cache.Update, time.Since(t1))
 
 		*gp = reuseGp
 		return receipt, nil, reuseStatus, reuseDuration, applyDuration // reuse first
 	} else {
-		cache.WaitRealApply = append(cache.WaitRealApply, time.Since(applyStart))
+		cache.RealApply = append(cache.RealApply, time.Since(applyStart))
 
 		t0 := time.Now()
 		var receipt *types.Receipt
@@ -425,6 +426,7 @@ func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc c
 		reuseDB.UpdateAccountChangedBySlice(append(applyDB.DirtyAddress(), header.Coinbase), cmptypes.DEFAULT_TXRESID)
 
 		applyDB.Update()
+		applyDB.ClearSavedDirties()
 		cache.Update = append(cache.Update, time.Since(t1))
 
 		*gp = applyGp
