@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/google/go-cmp/cmp"
 	"math/big"
 )
 
@@ -17,34 +18,17 @@ const (
 	MaxTreeCleanThreshold = 5000
 )
 
-//func isExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
-//	// assert seqRecord len
-//	if len(seqRecord) != 5 {
-//		return false
-//	} else {
-//		//assert 'to' is a common user
-//		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
-//			return false
-//		} else {
-//			value := seqRecord[4].Value.(common.Hash)
-//			if value != EmptyCodeHash && value != EmptyCodeHash {
-//				return false
-//			}
-//		}
-//	}
-//	return true
-//}
-
 // only external transfer tx can call this function
-func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
+func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) error {
 
 	if trie.LeafCount > 0 {
 		// each tx only have one kind of result now.
-		return
+		return nil
 	}
 	currentNode := trie.Root
 	record := round.RWrecord
 	seqRecord := record.ReadDetail.ReadDetailSeq
+	var err error
 
 	for index, addrFieldValue := range seqRecord {
 		if addrFieldValue.AddLoc.Field == cmptypes.Balance {
@@ -54,16 +38,22 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 					AddLoc: &cmptypes.AddrLocation{
 						Address: addrFieldValue.AddLoc.Address,
 						Field:   cmptypes.MinBalance,
-						Loc:     minB,
+						Loc:     BIGINT{minB},
 					},
 					Value: true,
 				}
-				currentNode, _ = insertNode(currentNode, adv)
+				currentNode, _, err = insertNode(currentNode, adv)
+				if err != nil {
+					return err
+				}
 			} else { // else : the balance of `to` is unnecessary.
 				cmptypes.MyAssert(index == 3)
 			}
 		} else {
-			currentNode, _ = insertNode(currentNode, addrFieldValue)
+			currentNode, _, err = insertNode(currentNode, addrFieldValue)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if currentNode.IsLeaf {
@@ -84,9 +74,10 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 		currentNode.Round = round
 		trie.LeafCount += 1
 	}
+	return nil
 }
 
-func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) {
+func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) error {
 
 	//if blockNumber > trie.LatestBN {
 	//	trie.LatestBN = blockNumber
@@ -104,8 +95,12 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	currentNode := trie.Root
 	record := round.RWrecord
 	seqRecord := record.ReadDetail.ReadDetailSeq
+	var err error
 	for _, addrFieldValue := range seqRecord {
-		currentNode, isNew = insertNode(currentNode, addrFieldValue)
+		currentNode, isNew, err = insertNode(currentNode, addrFieldValue)
+		if err != nil {
+			return err
+		}
 		if isNew {
 			newNodeCount++
 		}
@@ -124,32 +119,29 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		newLeaves[0] = currentNode
 		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
 	}
+	return nil
 }
 
 func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, ) (*cmptypes.PreplayResTrieNode, bool, bool) {
 	return SearchTree(trie, db, bc, header, abort, false)
 }
 
-// Deprecated
-// return true is this round is inserted. false for this round is a repeated round
-func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64, preBlockHash *common.Hash) bool {
 
-	//if blockNumber > trie.LatestBN {
-	//	trie.LatestBN = blockNumber
-	//	if trie.LeafCount > TreeCleanThreshold {
-	//		trie.Clear()
-	//	}
-	//}
-	//
-	//if trie.LeafCount > MaxTreeCleanThreshold {
-	//	trie.Clear()
-	//}
+func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) error {
 
 	currentNode := trie.Root
 
+	newNodeCount := uint(0)
+	isNew := false
+	var err error
 	for _, readDep := range round.ReadDepSeq {
-		//for _, readDep := range append(topseq, round.ReadDepSeq...) {
-		currentNode, _ = insertNode(currentNode, readDep)
+		currentNode, isNew, err = insertNode(currentNode, readDep)
+		if err!=nil{
+			return err
+		}
+		if isNew {
+			newNodeCount++
+		}
 	}
 
 	if currentNode.IsLeaf {
@@ -207,20 +199,21 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		//	panic("the rwrecord in dep tree should be the same")
 		//	return
 		//}
-		return false
 	} else {
 		currentNode.IsLeaf = true
 		currentNode.Round = round
 		trie.LeafCount += 1
-		return true
+		newLeaves := make([]*cmptypes.PreplayResTrieNode, 1)
+		newLeaves[0] = currentNode
+		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
 	}
-
+	return nil
 }
 
 // only some of addresses's would inserted into detail check subtree,
 const FixedDepCheckCount = 4
 
-func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, isExternalTransfer bool, blockNumber uint64, preBlockHash *common.Hash) {
+func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, isExternalTransfer bool) error {
 	var newLeaves []*cmptypes.PreplayResTrieNode
 	newLeavesPtr := &newLeaves
 	newNodeCount := new(uint)
@@ -242,19 +235,22 @@ func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *
 	depCheckedAddr := make(map[common.Address]bool)
 	checkedButNoHit := 0
 
-	insertDep2MixTree(currentNode, 0, 0, hitDep, depCheckedAddr, checkedButNoHit, newLeavesPtr, newNodeCount, round, tx, isExternalTransfer)
-
+	err := insertDep2MixTree(currentNode, 0, 0, hitDep, depCheckedAddr, checkedButNoHit, newLeavesPtr, newNodeCount, round, tx, isExternalTransfer)
+	if err != nil {
+		return err
+	}
 	trie.LeafCount += 1
 
 	trie.TrackRoundNodes(*newLeavesPtr, *newNodeCount, round)
+	return nil
 }
 
 func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex int, detailDeqIndex int,
 	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) {
+	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) error {
 	readDepSeq := round.ReadDepSeq
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
-
+	var err error
 	// all dep have been inserted, now, insert the rest details
 	if readDepIndex >= len(readDepSeq) {
 		for _, detailalv := range detailSeq[detailDeqIndex:] {
@@ -262,7 +258,10 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 				continue
 			}
 			var isNew bool
-			currentNode, isNew = insertNode(currentNode, detailalv)
+			currentNode, isNew, err = insertNode(currentNode, detailalv)
+			if err != nil {
+				return err
+			}
 			if isNew {
 				*newNodeCount = *newNodeCount + 1
 			}
@@ -274,7 +273,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 			*newLeaves = append(*newLeaves, currentNode)
 		}
 
-		return
+		return nil
 	}
 	curDep := readDepSeq[readDepIndex]
 	curAddr := curDep.AddLoc.Address
@@ -283,11 +282,17 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 	if cmptypes.IsChainField(curDep.AddLoc.Field) {
 		hitDep[curDep.AddLoc.Field] = true
 		var isNew bool
-		child, isNew = insertNode(currentNode, curDep)
+		child, isNew, err = insertNode(currentNode, curDep)
+		if err != nil {
+			return err
+		}
 		if isNew {
 			*newNodeCount = *newNodeCount + 1
 		}
-		insertDep2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		err = insertDep2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		if err != nil {
+			return err
+		}
 
 		hitDep[curDep.AddLoc.Field] = false
 	} else {
@@ -305,12 +310,17 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 		hitDep[curAddr] = true
 		depCheckedAddr[curAddr] = true
 		var isNew bool
-		child, isNew = insertNode(currentNode, curDep)
+		child, isNew, err = insertNode(currentNode, curDep)
+		if err != nil {
+			return err
+		}
 		if isNew {
 			*newNodeCount = *newNodeCount + 1
 		}
-		insertDetail2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
-
+		err = insertDetail2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		if err != nil {
+			return err
+		}
 		hitDep[curAddr] = false
 
 		if currentNode.DetailChild == nil {
@@ -318,15 +328,18 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 			*newNodeCount = *newNodeCount + 1
 		}
 
-		insertDetail2MixTree(currentNode.DetailChild, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit+1, newLeaves, newNodeCount, round, tx, isExternalTransfer)
-
+		err = insertDetail2MixTree(currentNode.DetailChild, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit+1, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		if err != nil {
+			return err
+		}
 		depCheckedAddr[curAddr] = false
 	}
+	return nil
 }
 
 func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, dIndex int,
-	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) {
+	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int, newLeaves *[]*cmptypes.PreplayResTrieNode,
+	newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) error {
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 	if dIndex >= len(detailSeq) {
 		if currentNode.IsLeaf {
@@ -335,10 +348,10 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 			currentNode.Round = round
 			*newLeaves = append(*newLeaves, currentNode)
 		}
-		return
+		return nil
 	}
 	detailRead := detailSeq[dIndex]
-
+	var err error
 	if cmptypes.IsChainField(detailRead.AddLoc.Field) {
 		if !hitDep[detailRead.AddLoc.Field] {
 			// assert readDep[rIndex] is chainfield
@@ -357,19 +370,26 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				rIndex++
 			}
 			var isNew bool
-			currentNode, isNew = insertNode(currentNode, detailRead)
+			currentNode, isNew, err = insertNode(currentNode, detailRead)
+			if err != nil {
+				return err
+			}
 			if isNew {
 				*newNodeCount = *newNodeCount + 1
 			}
 		}
-		insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
-		return
+		err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+
+		return err
 	} else {
 		detailReadAddr := detailRead.AddLoc.Address
 		isNewAddr := !depCheckedAddr[detailReadAddr]
 		// to reduce the node number, ifnoHit <= FixedDepCheckCount, only append detail node, regardless of this addr is not checked by deb // magic number
 		if isNewAddr && noHit < FixedDepCheckCount && !(noHit > 0 && noHit <= FixedDepCheckCount && rIndex > FixedDepCheckCount+3) {
-			insertDep2MixTree(currentNode, rIndex, dIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			err = insertDep2MixTree(currentNode, rIndex, dIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			if err != nil {
+				return err
+			}
 		} else {
 			if !hitDep[detailReadAddr] {
 				var isNewNode bool
@@ -383,17 +403,26 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 								AddLoc: &cmptypes.AddrLocation{
 									Address: detailReadAddr,
 									Field:   cmptypes.MinBalance,
-									Loc:     minB,
+									Loc:     BIGINT{minB},
 								},
 								Value: true,
 							}
-							currentNode, isNewNode = insertNode(currentNode, adv)
+							currentNode, isNewNode, err = insertNode(currentNode, adv)
+							if err != nil {
+								return err
+							}
 						} // else : the balance of `to` is unnecessary, and it would not be inserted.
 					} else {
-						currentNode, isNewNode = insertNode(currentNode, detailRead)
+						currentNode, isNewNode, err = insertNode(currentNode, detailRead)
+						if err != nil {
+							return err
+						}
 					}
 				} else {
-					currentNode, isNewNode = insertNode(currentNode, detailRead)
+					currentNode, isNewNode, err = insertNode(currentNode, detailRead)
+					if err != nil {
+						return err
+					}
 				}
 
 				if isNewNode {
@@ -423,31 +452,48 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				noHit++
 				rIndex++
 			}
-			insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			if err != nil {
+				return err
+			}
 			if isNewAddr {
 				depCheckedAddr[detailReadAddr] = false
 			}
 		}
 	}
+	return nil
+}
+
+type BIGINT struct {
+	B *big.Int
+}
+
+func (a BIGINT) Equal(b BIGINT) bool {
+	return a.B.Cmp(b.B) == 0
+}
+
+func (a BIGINT) BiggerThan(b BIGINT) bool {
+	return a.B.Cmp(b.B) > 0
 }
 
 //	 @return    *cmptypes.PreplayResTrieNode	"the child node(which is supposed to be inserted)"
 //				bool 	"whether a new node is inserted"
-func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) (*cmptypes.PreplayResTrieNode, bool) {
+func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) (*cmptypes.PreplayResTrieNode, bool, error) {
 	if currentNode.NodeType == nil {
 		currentNode.NodeType = alv.AddLoc
 		currentNode.Children = cmptypes.NewChildren(alv.AddLoc)
 	} else {
+
 		////TODO: debug code, test well(would not be touched), can be removed
-		//key := currentNode.NodeType
-		//if !cmp.Equal(key, alv.AddLoc) {
-		//
-		//	log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
-		//	log.Warn("addrfield", "addr", alv.AddLoc.Address, "filed",
-		//		alv.AddLoc.Field, "loc", alv.AddLoc.Loc)
-		//
-		//	panic("should be the same key")
-		//}
+		key := currentNode.NodeType
+		if !cmp.Equal(key, alv.AddLoc) {
+
+			log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
+			log.Warn("addrfield", "addr", alv.AddLoc.Address, "filed",
+				alv.AddLoc.Field, "loc", alv.AddLoc.Loc)
+
+			return nil, false, &cmptypes.NodeTypeDiffError{CurNodeType: key, NewNodeType: alv.AddLoc}
+		}
 	}
 
 	var child *cmptypes.PreplayResTrieNode
@@ -497,7 +543,7 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 		panic("Wrong Field")
 	}
 
-	return child, !ok
+	return child, !ok, nil
 }
 
 func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, debug bool) (
@@ -512,7 +558,7 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 		if abort() {
 			return nil, true, false
 		}
-		childNode, ok := getChild(currentNode, db, bc, header, false)
+		childNode, ok := getChild(currentNode, db, bc, header, debug)
 		//if debug {
 		//  nodeType := currentNode.NodeType
 		//	albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
@@ -543,7 +589,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 
 	var (
 		matchedDeps   []common.Address
-		depMatchedMap = make(map[common.Address]interface{})
+		depMatchedMap = make(map[common.Address]interface{}, 2)
 
 		allDepMatched    = true
 		allDetailMatched = true
@@ -619,7 +665,7 @@ func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
 func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext, header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
 
 	addr := currentNode.NodeType.Address
-	nodeType:= currentNode.NodeType
+	nodeType := currentNode.NodeType
 	switch currentNode.NodeType.Field {
 	case cmptypes.Coinbase:
 		child, ok := currentNode.Children.(cmptypes.AddressChildren)[header.Coinbase]
@@ -647,7 +693,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 		child, ok := currentNode.Children.(cmptypes.HashChildren)[value]
 		return child, ok
 	case cmptypes.Exist:
-		value:=statedb.Exist(addr)
+		value := statedb.Exist(addr)
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
 		if debug {
 			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
@@ -656,7 +702,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 		}
 		return child, ok
 	case cmptypes.Empty:
-		value:= statedb.Empty(addr)
+		value := statedb.Empty(addr)
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
 		if debug {
 			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
@@ -674,7 +720,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 		}
 		return child, ok
 	case cmptypes.Nonce:
-		value:= statedb.GetNonce(addr)
+		value := statedb.GetNonce(addr)
 		child, ok := currentNode.Children.(cmptypes.UintChildren)[value]
 		if debug {
 			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
@@ -732,7 +778,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 
 		return child, ok
 	case cmptypes.MinBalance:
-		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) > 0
+		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(BIGINT).B) > 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
 
 		if debug {

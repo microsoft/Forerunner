@@ -1,6 +1,7 @@
 package cmpreuse
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
@@ -42,8 +43,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
 	if txPreplay == nil {
-		txPreplay = reuse.addNewTx(tx)
-		txPreplay.SetExternalTransferInfo(rwrecord)
+		txPreplay = reuse.addNewTx(tx, rwrecord)
 	}
 	txPreplay.Mu.Lock()
 	defer txPreplay.Mu.Unlock()
@@ -62,25 +62,33 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			round.Trace = trace
 		}
 
-		//// XXX FIXME
-		//if len(rwrecord.WState) != len(wobjects){
-		//	roundjs, _ := json.Marshal(round)
-		//	log.Error("unmatched written address", "round", string(roundjs))
-		//	panic("")
-		//}
-
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
 		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
 		if !ok {
 			return
 		}
-		reuse.setMixTree(tx, txPreplay, round, curBlockNumber, &preBlockHash)
 
+		var err error
+		if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq){
+			// if isExternalTransfer is changed from true to false, only set dep in mix tree:
+			err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
+		}else{
+			err = reuse.setMixTree(tx, txPreplay, round)
+		}
+		if err != nil {
+			roundjs, _ := json.Marshal(round)
+			log.Error("", "round", string(roundjs))
+			panic(err.Error())
+		}
 		if reuseStatus.BaseStatus != cmptypes.Hit {
-			reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+			if err != nil {
+			}
 			if txPreplay.PreplayResults.IsExternalTransfer {
-				reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+				err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+				if err != nil {
+				}
 			}
 			if trace != nil {
 				traceTrieStart := time.Now()
@@ -103,22 +111,22 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	}
 }
 
-func (reuse *Cmpreuse) setRWRecordTrie(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
+func (reuse *Cmpreuse) setRWRecordTrie(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) error {
 	trie := txPreplay.PreplayResults.RWRecordTrie
-	InsertRecord(trie, round, curBlockNumber)
+	return InsertRecord(trie, round, curBlockNumber)
 }
 
-// Deprecated
-func (reuse *Cmpreuse) setReadDepTree(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) bool {
-	return InsertAccDep(txPreplay.PreplayResults.ReadDepTree, round, curBlockNumber, preBlockHash)
+
+func (reuse *Cmpreuse) setMixTreeWithOnlyDependence(txPreplay *cache.TxPreplay, round *cache.PreplayResult) error {
+	return InsertAccDep(txPreplay.PreplayResults.MixTree, round)
 }
 
-func (reuse *Cmpreuse) setMixTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64, preBlockHash *common.Hash) {
-	InsertMixTree(tx, txPreplay.PreplayResults.MixTree, round, txPreplay.PreplayResults.IsExternalTransfer, curBlockNumber, preBlockHash)
+func (reuse *Cmpreuse) setMixTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult) error {
+	return InsertMixTree(tx, txPreplay.PreplayResults.MixTree, round, txPreplay.PreplayResults.IsExternalTransfer)
 }
 
-func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) {
-	InsertDelta(tx, txPreplay.PreplayResults.DeltaTree, round, curBlockNumber)
+func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) error {
+	return InsertDelta(tx, txPreplay.PreplayResults.DeltaTree, round, curBlockNumber)
 }
 
 func (reuse *Cmpreuse) setTraceTrie(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, trace *STrace) {
@@ -150,8 +158,9 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 	}
 }
 
-func (reuse *Cmpreuse) addNewTx(tx *types.Transaction) *cache.TxPreplay {
+func (reuse *Cmpreuse) addNewTx(tx *types.Transaction, rwrecord *cache.RWRecord) *cache.TxPreplay {
 	txPreplay := cache.NewTxPreplay(tx)
+	txPreplay.SetExternalTransferInfo(rwrecord)
 	reuse.MSRACache.AddTxPreplay(txPreplay)
 	return txPreplay
 }

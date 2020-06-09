@@ -18,6 +18,17 @@ import (
 var EmptyCodeHash = crypto.Keccak256Hash(nil)
 var NilCodeHash = common.Hash{}
 
+type NodeTypeDiffError struct {
+	CurNodeType *AddrLocation
+	NewNodeType *AddrLocation
+}
+
+func (e *NodeTypeDiffError) Error() string{
+	curjs,_:= json.Marshal(e.CurNodeType)
+	newjs,_:= json.Marshal(e.NewNodeType)
+	return fmt.Sprintf("NodeTypeDiffError: \n\tCurrentNodeType:%s;\n\tNewNodeType:%s", string(curjs), string(newjs))
+}
+
 type Field int
 
 const (
@@ -86,6 +97,8 @@ func (f Field) String() string {
 		return "dependence"
 	case Suicided:
 		return "suicided"
+	case MinBalance:
+		return "minBalance"
 	}
 	return ""
 }

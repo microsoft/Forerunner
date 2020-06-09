@@ -73,7 +73,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	}
 }
 
-func isExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
+func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
 	// assert seqRecord len
 	if len(seqRecord) != 5 {
 		return false
@@ -92,7 +92,7 @@ func isExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
 }
 
 func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord) {
-	t.PreplayResults.IsExternalTransfer = isExternalTransfer(record.ReadDetail.ReadDetailSeq)
+	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail.ReadDetailSeq)
 	if t.PreplayResults.IsExternalTransfer {
 		wDeltas := make(map[common.Address]*WStateDelta)
 		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address

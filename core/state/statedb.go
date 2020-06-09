@@ -283,7 +283,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		addrNotCopy:         make(map[common.Address]struct{}),
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
-		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy),
+		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, 400),
 	}, nil
 }
 
