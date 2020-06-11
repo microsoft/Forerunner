@@ -92,18 +92,18 @@ func (r *MissReporter) SetNoPreplayTxn(txn *types.Transaction, enqueue uint64) {
 	groupHitGroup := r.preplayer.preplayLog.searchGroupHitGroup(txn, sender)
 	if len(groupHitGroup) == 0 {
 		r.noGroupPreplay++
-		log.Info("Report reuse no preplay: NoGroup", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration)
+		log.Info("Report reuse no preplay: NoGroup", "tx", txn.Hash().Hex(), "index", index, "enqueue", enqueueStr, "duration", duration)
 		return
 	}
 	execHitGroup := r.searchExecHitGroup(txn, groupHitGroup)
 	if len(execHitGroup) == 0 {
 		r.noExecPreplay++
 		pickGroup := pickOneGroup(groupHitGroup)
-		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration,
+		log.Info("Report reuse no preplay: NoExec", "tx", txn.Hash().Hex(), "index", index, "enqueue", enqueueStr, "duration", duration,
 			"reason", pickGroup.getTxnFailReason(txn.Hash()))
 		return
 	}
-	log.Info("Report reuse no preplay: bug", "tx", txn.Hash(), "index", index, "enqueue", enqueueStr, "duration", duration)
+	log.Info("Report reuse no preplay: bug", "tx", txn.Hash().Hex(), "index", index, "enqueue", enqueueStr, "duration", duration)
 }
 
 func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.PreplayResTrieNode, value interface{}, txnType int) {
@@ -117,7 +117,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	if len(groupHitGroup) == 0 {
 		r.groupMissCount++
 		if isSample(txn) {
-			log.Info("Report reuse miss: NoGroup", "tx", txn.Hash(), "index", index)
+			log.Info("Report reuse miss: NoGroup", "tx", txn.Hash().Hex(), "index", index)
 		}
 		return
 	}
@@ -126,7 +126,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	if len(execHitGroup) == 0 {
 		r.execMissCount++
 		if isSample(txn) {
-			log.Info("Report reuse miss: NoExec", "tx", txn.Hash(), "index", index)
+			log.Info("Report reuse miss: NoExec", "tx", txn.Hash().Hex(), "index", index)
 		}
 		return
 	}
@@ -134,7 +134,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	if node.NodeType == nil {
 		r.nilNodeTypeCount++
 		if isSample(txn) {
-			log.Info("Report reuse miss: nodeType nil", "tx", txn.Hash(), "index", index)
+			log.Info("Report reuse miss: nodeType nil", "tx", txn.Hash().Hex(), "index", index)
 		}
 		return
 	}
@@ -226,7 +226,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			r.txnMissCount[0]++
 		}
 		if isSample(txn) {
-			log.Info("Report reuse miss: missing txns", "tx", txn.Hash(), "index", index,
+			log.Info("Report reuse miss: missing txns", "tx", txn.Hash().Hex(), "index", index,
 				"execHit->txnHit", fmt.Sprintf("%d->0", len(execHitGroup)))
 		}
 		return
@@ -239,7 +239,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			r.sortMissCount[0]++
 		}
 		if isSample(txn) {
-			log.Info("Report reuse miss: N&P violation", "tx", txn.Hash(), "index", index,
+			log.Info("Report reuse miss: N&P violation", "tx", txn.Hash().Hex(), "index", index,
 				"poolBeforeSize", poolBefore.size(), "orderBeforeSize", len(orderBefore),
 				"poolBefore", poolBefore, "orderBefore", orderBefore)
 		}
@@ -255,7 +255,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		}
 		if isSample(txn) {
 			pickGroup := pickOneGroup(txnHitGroup)
-			context := []interface{}{"tx", txn.Hash(), "index", index, "txnHitGroupNum", len(txnHitGroup),
+			context := []interface{}{"tx", txn.Hash().Hex(), "index", index, "txnHitGroupNum", len(txnHitGroup),
 				"isDep", fmt.Sprintf("%v:%v", pickGroup.isCoinbaseDep(), pickGroup.isTimestampDep())}
 			if pickGroup.isCoinbaseDep() {
 				var minerStr string
@@ -284,7 +284,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		}
 		if isSample(txn) {
 			pickGroup := pickOneGroup(chainHitGroup)
-			log.Info("Report reuse miss: extra txns", "tx", txn.Hash(), "index", index, "chainHitGroupNum", len(chainHitGroup),
+			log.Info("Report reuse miss: extra txns", "tx", txn.Hash().Hex(), "index", index, "chainHitGroupNum", len(chainHitGroup),
 				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
 				"group.txnPool", pickGroup.txnPool, "groundOrder", groundOrder)
 		}
@@ -329,7 +329,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			}
 		}
 		if isSample(txn) {
-			log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash(), "index", index, "snapHitGroupNum", len(snapHitGroup),
+			log.Info("Report reuse miss: insufficient execution", "tx", txn.Hash().Hex(), "index", index, "snapHitGroupNum", len(snapHitGroup),
 				"pickGroupSize", pickGroup.txnCount, "pickGroupSubSize", len(pickGroup.subpoolList),
 				"group.txnPool", pickGroup.txnPool, "groundOrder", groundOrder,
 				"pickPreplayMost", fmt.Sprintf("%d(%.2f%%)->%s", pickGroup.getPreplayCount(), preplayRate*100, pickGroup.orderCount.String()))
@@ -344,7 +344,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 			r.minerMissCount[0]++
 		}
 		if isSample(txn) {
-			log.Info("Report reuse miss: miner miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
+			log.Info("Report reuse miss: miner miss", "tx", txn.Hash().Hex(), "index", index, "orderHitGroupNum", len(orderHitGroup),
 				"sender", sender, "coinbase", r.block.Coinbase())
 		}
 		return
@@ -359,7 +359,7 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 		}
 		if isSample(txn) {
 			pickGroup := pickOneGroup(orderHitGroup)
-			log.Info("Report reuse miss: root miss", "tx", txn.Hash(), "index", index, "orderHitGroupNum", len(orderHitGroup),
+			log.Info("Report reuse miss: root miss", "tx", txn.Hash().Hex(), "index", index, "orderHitGroupNum", len(orderHitGroup),
 				"block.parent.root", r.parent.Root(), "group.parent.root", pickGroup.parent.Root())
 		}
 		return

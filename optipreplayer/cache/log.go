@@ -37,6 +37,7 @@ type LogBlockInfo struct {
 	Hit                int           `json:"H"`
 	Miss               int           `json:"M"`
 	Unknown            int           `json:"U"`
+	TxPreplayLock      int           `json:"tL"`
 	AbortedTrace       int           `json:"aR"`
 	AbortedMix         int           `json:"aM"`
 	AbortedDelta       int           `json:"aD"`
@@ -144,7 +145,9 @@ var (
 
 	ReuseGasCount uint64
 
-	LongExecutionCost time.Duration
+	MaxLongExecutionCost      time.Duration
+	MaxLongExecutionReuseCost time.Duration
+	LongExecutionCost         time.Duration
 
 	ReuseResult []*cmptypes.ReuseStatus
 
@@ -188,6 +191,7 @@ var (
 	trieHitCount  uint64
 	deltaHitCount uint64
 	traceHitCount uint64
+	TxPreplayLock uint64
 	AbortedTrace  uint64
 	AbortedMix    uint64
 	AbortedDelta  uint64
@@ -351,6 +355,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			case cmptypes.Unknown:
 				infoResult.Unknown++
 				switch ReuseResult[index].AbortStage {
+				case cmptypes.TxPreplayLock:
+					infoResult.TxPreplayLock++
 				case cmptypes.TraceCheck:
 					infoResult.AbortedTrace++
 				case cmptypes.MixCheck:
@@ -543,8 +549,11 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		}
 		if infoResult.Unknown > 0 {
 			context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate))
-			context = append(context, "AbortStage(R-M-D-T)", fmt.Sprintf("%03d-%03d-%03d-%03d",
-				infoResult.AbortedTrace, infoResult.AbortedMix, infoResult.AbortedDelta, infoResult.AbortedTrie))
+			context = append(context, "TxPreplayLock", infoResult.TxPreplayLock)
+			if cfg.MSRAVMSettings.ParallelizeReuse {
+				context = append(context, "AbortStage(R-M-D-T)", fmt.Sprintf("%03d-%03d-%03d-%03d",
+					infoResult.AbortedTrace, infoResult.AbortedMix, infoResult.AbortedDelta, infoResult.AbortedTrie))
+			}
 		}
 		context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
 
@@ -566,6 +575,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		trieHitRate = float64(trieHitCount) / float64(txnCount)
 		deltaHitRate = float64(deltaHitCount) / float64(txnCount)
 		traceHitRate = float64(traceHitCount) / float64(txnCount)
+		TxPreplayLock += uint64(infoResult.TxPreplayLock)
 		AbortedTrace += uint64(infoResult.AbortedTrace)
 		AbortedMix += uint64(infoResult.AbortedMix)
 		AbortedDelta += uint64(infoResult.AbortedDelta)
@@ -577,15 +587,16 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
+			"MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+				mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
 		}
-		if cfg.MSRAVMSettings.ParallelizeReuse {
+		if unknown > 0 {
 			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)))
-		}
-		context = append(context, "MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-			mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate))
-		if cfg.MSRAVMSettings.ParallelizeReuse {
-			context = append(context, "AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
-				AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie))
+			context = append(context, "txPreplayLock", TxPreplayLock)
+			if cfg.MSRAVMSettings.ParallelizeReuse {
+				context = append(context, "AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
+					AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie))
+			}
 		}
 		log.Info("Cumulative block reuse", context...)
 

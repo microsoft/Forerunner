@@ -5,6 +5,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/hashicorp/golang-lru"
 	"sync"
@@ -266,6 +267,13 @@ func (w *Warmuper) AddWarmupTask(rounds []*cache.PreplayResult, root common.Hash
 }
 
 func (w *Warmuper) GetStateDB(root common.Hash) (retDb *state.StateDB) {
+	start := time.Now()
+	defer func() {
+		if cost := time.Since(start); cost > 10 * time.Millisecond {
+			log.Info("Get stateDB cost too more", "cost", time.Since(start))
+		}
+	}()
+
 	if box := w.getStatedbBox(root); box != nil && box.usableDb < dbListSize {
 		box.exit()
 		box.wg.Wait()

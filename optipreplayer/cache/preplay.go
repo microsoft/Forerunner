@@ -5,7 +5,6 @@ import (
 	"container/heap"
 	"encoding/gob"
 	"fmt"
-	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"math"
 	"math/big"
 	"sort"
@@ -19,8 +18,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
+	"github.com/subchen/go-trylock/v2"
 )
 
 var (
@@ -47,7 +48,7 @@ type TxPreplay struct {
 
 	// Setting Info
 	FlagStatus bool // Flag: 0: not in, 1: already in
-	Mu         sync.RWMutex
+	Mu         trylock.TryLocker
 }
 
 // NewTxPreplay create new RWRecord
@@ -70,6 +71,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 		GasLimit:       tx.Gas(),
 		Tx:             tx,
 		Timestamp:      time.Now(),
+		Mu:             trylock.New(),
 	}
 }
 

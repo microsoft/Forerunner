@@ -466,21 +466,44 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
-		if cache.ToScreen && reuseResult != nil && cache.Apply[len(cache.Apply)-1] > time.Millisecond*100 {
-			var status = reuseResult[len(reuseResult)-1]
-			var statusStr = status.BaseStatus.String()
-			if status.BaseStatus == cmptypes.Hit {
-				statusStr += "-" + status.HitType.String()
-				if status.HitType == cmptypes.MixHit {
-					statusStr += "-" + status.MixHitStatus.MixHitType.String()
-				}
-				if status.HitType == cmptypes.TraceHit {
-					statusStr += "-" + status.TraceHitStatus.String()
+		if cache.ToScreen && cache.Apply[len(cache.Apply)-1] > time.Millisecond*50 {
+			applyCost := cache.Apply[len(cache.Apply)-1]
+			cache.LongExecutionCost += applyCost
+			if applyCost > cache.MaxLongExecutionCost {
+				cache.MaxLongExecutionCost = applyCost
+				if len(reuseResult) > 0 {
+					cache.MaxLongExecutionReuseCost = cache.Reuse[len(cache.Reuse)-1]
 				}
 			}
-			cache.LongExecutionCost += cache.Apply[len(cache.Apply)-1]
-			log.Info("Long execution", "number", block.Number(), "hash", block.Hash(), "index", i, "tx", tx.Hash().Hex(),
-				"status", statusStr, "cost", common.PrettyDuration(cache.Apply[len(cache.Apply)-1]), "cum cost", common.PrettyDuration(cache.LongExecutionCost))
+			context := []interface{}{
+				"number", block.Number(), "hash", block.Hash(), "index", i, "tx", tx.Hash().Hex(),
+				//"now time", fmt.Sprintf("%.3fs", float64(runtime.GetNanoTime()-runtime.GetRunTimeInitTime())/1e9),
+				"apply cost", common.PrettyDuration(applyCost),
+				"cum cost", common.PrettyDuration(cache.LongExecutionCost),
+				"max cost", common.PrettyDuration(cache.MaxLongExecutionCost),
+			}
+			if len(reuseResult) > 0 {
+				context = append(context,
+					"getRW cost", common.PrettyDuration(cache.GetRW[len(cache.GetRW)-1]),
+					"setDB cost", common.PrettyDuration(cache.SetDB[len(cache.SetDB)-1]),
+					"reuse cost", common.PrettyDuration(cache.Reuse[len(cache.Reuse)-1]),
+					"max reuse cost", common.PrettyDuration(cache.MaxLongExecutionReuseCost),
+				)
+
+				var status = reuseResult[len(reuseResult)-1]
+				var statusStr = status.BaseStatus.String()
+				if status.BaseStatus == cmptypes.Hit {
+					statusStr += "-" + status.HitType.String()
+					if status.HitType == cmptypes.MixHit {
+						statusStr += "-" + status.MixHitStatus.MixHitType.String()
+					}
+					if status.HitType == cmptypes.TraceHit {
+						statusStr += "-" + status.TraceHitStatus.String()
+					}
+				}
+				context = append(context, "status", statusStr)
+			}
+			log.Info("Long execution", context...)
 		}
 	}
 	if cfg.MSRAVMSettings.CmpReuse && cfg.MSRAVMSettings.ParallelizeReuse {

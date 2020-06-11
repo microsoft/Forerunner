@@ -852,22 +852,29 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
 	}
 	if txPreplay == nil {
+		d0 = time.Since(t0)
 		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
 		return
 	}
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
 
-	if status == nil {
-		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
-		if ok {
-			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
-		} else if isAbort {
-			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
+	if isBlockProcess {
+		if !txPreplay.Mu.TryLockTimeout(0) {
+			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TxPreplayLock} // return because txPreplay is locked
 			return
 		}
+	} else {
+		txPreplay.Mu.Lock()
+	}
+	defer txPreplay.Mu.Unlock()
+
+	round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, blockPre, abort, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
+	if ok {
+		d0 = time.Since(t0)
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
+	} else if isAbort {
+		d0 = time.Since(t0)
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
+		return
 	}
 
 	if status == nil {

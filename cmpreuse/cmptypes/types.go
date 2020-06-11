@@ -23,9 +23,9 @@ type NodeTypeDiffError struct {
 	NewNodeType *AddrLocation
 }
 
-func (e *NodeTypeDiffError) Error() string{
-	curjs,_:= json.Marshal(e.CurNodeType)
-	newjs,_:= json.Marshal(e.NewNodeType)
+func (e *NodeTypeDiffError) Error() string {
+	curjs, _ := json.Marshal(e.CurNodeType)
+	newjs, _ := json.Marshal(e.NewNodeType)
 	return fmt.Sprintf("NodeTypeDiffError: \n\tCurrentNodeType:%s;\n\tNewNodeType:%s", string(curjs), string(newjs))
 }
 
@@ -38,22 +38,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit  // 6
+	GasLimit // 6
 
 	//PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance           //7
-	Nonce             //8
-	CodeHash          //9
-	Exist             // 10
-	Empty             // 11
-	Code              // 12
-	Storage           // 13
-	CommittedStorage  //14
+	Balance          //7
+	Nonce            //8
+	CodeHash         //9
+	Exist            // 10
+	Empty            // 11
+	Code             // 12
+	Storage          // 13
+	CommittedStorage //14
 
 	// Dep info
-	Dependence  //15
+	Dependence //15
 
 	// Write State
 	DirtyStorage
@@ -247,7 +247,8 @@ const (
 type AbortStage int
 
 const (
-	TraceCheck AbortStage = iota
+	TxPreplayLock AbortStage = iota
+	TraceCheck
 	MixCheck
 	DeltaCheck
 	TrieCheck
@@ -668,8 +669,8 @@ type PreplayResTrieRoundNodes struct {
 }
 
 type PreplayResTrieNode struct {
-	Value       interface{} `json:"value"` // this value is the key in its parent
-	Children    IChildren                  //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+	Value       interface{}         `json:"value"` // this value is the key in its parent
+	Children    IChildren           //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
 	NodeType    *AddrLocation       `json:"node_type"`
 	DetailChild *PreplayResTrieNode `json:"detail_child"`
 	Parent      *PreplayResTrieNode
