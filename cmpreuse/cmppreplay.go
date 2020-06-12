@@ -78,16 +78,22 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		}
 		if err != nil {
 			roundjs, _ := json.Marshal(round)
-			log.Error("", "round", string(roundjs))
+			log.Error("setMixTree error", "round", string(roundjs))
 			panic(err.Error())
 		}
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
 			if err != nil {
+				roundjs, _ := json.Marshal(round)
+				log.Error("setRWRecordTrie error", "round", string(roundjs))
+				panic(err.Error())
 			}
 			if txPreplay.PreplayResults.IsExternalTransfer {
 				err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
 				if err != nil {
+					roundjs, _ := json.Marshal(round)
+					log.Error("setDeltaTree error", "round", string(roundjs))
+					panic(err.Error())
 				}
 			}
 			if trace != nil {

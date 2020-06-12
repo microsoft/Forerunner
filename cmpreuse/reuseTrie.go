@@ -9,7 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/google/go-cmp/cmp"
 	"math/big"
 )
 
@@ -38,7 +37,7 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 					AddLoc: &cmptypes.AddrLocation{
 						Address: addrFieldValue.AddLoc.Address,
 						Field:   cmptypes.MinBalance,
-						Loc:     BIGINT{minB},
+						Loc:     minB,
 					},
 					Value: true,
 				}
@@ -126,7 +125,6 @@ func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.
 	return SearchTree(trie, db, bc, header, abort, false)
 }
 
-
 func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) error {
 
 	currentNode := trie.Root
@@ -136,7 +134,7 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) err
 	var err error
 	for _, readDep := range round.ReadDepSeq {
 		currentNode, isNew, err = insertNode(currentNode, readDep)
-		if err!=nil{
+		if err != nil {
 			return err
 		}
 		if isNew {
@@ -403,7 +401,7 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 								AddLoc: &cmptypes.AddrLocation{
 									Address: detailReadAddr,
 									Field:   cmptypes.MinBalance,
-									Loc:     BIGINT{minB},
+									Loc:     minB,
 								},
 								Value: true,
 							}
@@ -463,18 +461,18 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 	}
 	return nil
 }
-
-type BIGINT struct {
-	B *big.Int
-}
-
-func (a BIGINT) Equal(b BIGINT) bool {
-	return a.B.Cmp(b.B) == 0
-}
-
-func (a BIGINT) BiggerThan(b BIGINT) bool {
-	return a.B.Cmp(b.B) > 0
-}
+//
+//type BIGINT struct {
+//	B *big.Int
+//}
+//
+//func (a BIGINT) Equal(b BIGINT) bool {
+//	return a.B.Cmp(b.B) == 0
+//}
+//
+//func (a BIGINT) BiggerThan(b BIGINT) bool {
+//	return a.B.Cmp(b.B) > 0
+//}
 
 //	 @return    *cmptypes.PreplayResTrieNode	"the child node(which is supposed to be inserted)"
 //				bool 	"whether a new node is inserted"
@@ -485,15 +483,15 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 	} else {
 
 		////TODO: debug code, test well(would not be touched), can be removed
-		key := currentNode.NodeType
-		if !cmp.Equal(key, alv.AddLoc) {
-
-			log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
-			log.Warn("addrfield", "addr", alv.AddLoc.Address, "filed",
-				alv.AddLoc.Field, "loc", alv.AddLoc.Loc)
-
-			return nil, false, &cmptypes.NodeTypeDiffError{CurNodeType: key, NewNodeType: alv.AddLoc}
-		}
+		//key := currentNode.NodeType
+		//if !cmp.Equal(key, alv.AddLoc) {
+		//
+		//	log.Warn("nodekey", "addr", key.Address, "field", key.Field, "loc", key.Loc)
+		//	log.Warn("addrfield", "addr", alv.AddLoc.Address, "filed",
+		//		alv.AddLoc.Field, "loc", alv.AddLoc.Loc)
+		//
+		//	return nil, false, &cmptypes.NodeTypeDiffError{CurNodeType: key, NewNodeType: alv.AddLoc}
+		//}
 	}
 
 	var child *cmptypes.PreplayResTrieNode
@@ -778,7 +776,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 
 		return child, ok
 	case cmptypes.MinBalance:
-		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(BIGINT).B) > 0
+		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) > 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
 
 		if debug {
