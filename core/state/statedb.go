@@ -75,6 +75,13 @@ func newDeltaDB() *deltaDB {
 	}
 }
 
+type TxPerfAndStatus struct {
+	Receipt *types.Receipt
+	Time time.Duration
+	ReuseStatus *cmptypes.ReuseStatus
+	Delay float64
+}
+
 // StateDBs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -154,6 +161,8 @@ type StateDB struct {
 	nextDeltaObjectIndex        int
 	preAllocatedBigInt          []*big.Int
 	nextBigIntIndex             int
+	preAllocatedTxPerfs         []*TxPerfAndStatus
+	nextTxPerfIndex             int
 
 	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
 	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
@@ -167,6 +176,16 @@ type StateDB struct {
 
 	UnknownTxs        []*types.Transaction
 	UnknownTxReceipts []*types.Receipt
+	TxPerfs           []*TxPerfAndStatus
+}
+
+func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64) {
+	tf := self.GetNewTxPerf()
+	tf.ReuseStatus = status
+	tf.Receipt = receipt
+	tf.Time = time
+	tf.Delay = delayInSecond
+	self.TxPerfs = append(self.TxPerfs, tf)
 }
 
 func (self *StateDB) GetPendingStateObject() map[common.Address]*stateObject {
@@ -190,6 +209,7 @@ func (self *StateDB) PreAllocateObjects() {
 	prePendingCount := 100
 	preDeltaCount := 100
 	preBigIntCount := 600
+	preTxPerfCount := 300
 	self.preAllocatedOriginStorages = make([]Storage, preOriginCount)
 	self.preAllocatedPendingStorages = make([]Storage, prePendingCount)
 	self.preAllocatedDeltaObjects = make([]*deltaObject, preDeltaCount)
@@ -208,6 +228,11 @@ func (self *StateDB) PreAllocateObjects() {
 		bi := big.NewInt(0)
 		bi.Set(aBigInt) // increase the capacity of the underlying buffer
 		self.preAllocatedBigInt[i] = bi
+	}
+	self.TxPerfs = make([]*TxPerfAndStatus, 0, preTxPerfCount)
+	self.preAllocatedTxPerfs = make([]*TxPerfAndStatus, preTxPerfCount)
+	for i := range self.preAllocatedTxPerfs {
+		self.preAllocatedTxPerfs[i] = &TxPerfAndStatus{}
 	}
 }
 
@@ -245,6 +270,15 @@ func (self *StateDB) GetNewBigInt() *big.Int {
 	b := self.preAllocatedBigInt[self.nextBigIntIndex]
 	self.nextBigIntIndex++
 	return b
+}
+
+func (self *StateDB) GetNewTxPerf() *TxPerfAndStatus {
+	if self.nextTxPerfIndex >= len(self.preAllocatedTxPerfs) {
+		return &TxPerfAndStatus{}
+	}
+	tf := self.preAllocatedTxPerfs[self.nextTxPerfIndex]
+	self.nextTxPerfIndex++
+	return tf
 }
 
 func (self *StateDB) StateObjectCountInDelta() int {

@@ -200,12 +200,12 @@ var (
 		utils.LogRootFlag,
 		utils.PreplayEnabledChainheadFlag,
 		utils.PreplayDirChainheadFlag,
-		utils.CmpResseEnabledFlag,
+		utils.CmpReuseEnabledFlag,
 		utils.CmpReuseCheckFlag,
-		utils.CmpReusePerfTestFlag,
+		utils.TxApplyPerfLogFlag,
+		utils.PerfLogFlag,
 		utils.CmpReuseLogFlag,
 		utils.CmpReuseLogDirFlag,
-		utils.ReuseTracerCheckFlag,
 		utils.CacheRecordEnabledFlag,
 		utils.GroundRecordEnabledFlag,
 		utils.PreplayRecordEnabledFlag,
@@ -228,6 +228,7 @@ var (
 		utils.ParallelizeReuseFlag,
 		utils.CalWarmupMissFlag,
 		utils.ReportMissDetailFlag,
+		utils.ReuseTracerCheckFlag,
 		alliedNodeFileFlag,
 	}
 )

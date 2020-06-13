@@ -67,11 +67,11 @@ type MSRAVMConfig struct {
 	EmulateFromBlock     uint64
 	EmulateFile          string
 	EnableReuseTracer    bool
-	CmpReusePerfTest     bool
-
-	ParallelizeReuse bool
-	CalWarmupMiss    bool
-	ReportMissDetail bool
+	TxApplyPerfLogging   bool
+	PerfLogging          bool
+	ParallelizeReuse     bool
+	CalWarmupMiss        bool
+	ReportMissDetail     bool
 }
 
 func (p *MSRAVMConfig) IsPrintRecord() bool {

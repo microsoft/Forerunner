@@ -574,7 +574,7 @@ func AllocateVirtualRegisterForNonConstVariables(stats []*Statement) (registerMa
 type ISRefCountNode interface {
 	GetRefCount() uint
 	AddRef() uint                // add a ref and return the new ref count
-	RemoveRef(value interface{}) // remove a ref
+	RemoveRef(value uint64) // remove a ref
 }
 
 type SRefCount struct {
@@ -612,7 +612,7 @@ type AccountNodeJumpDef struct {
 	SRefCount
 }
 
-func (jd *AccountNodeJumpDef) RemoveRef(roundID interface{}) {
+func (jd *AccountNodeJumpDef) RemoveRef(roundID uint64) {
 	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
@@ -638,10 +638,10 @@ func NewAccountSearchTrieNode(node *SNode) *AccountSearchTrieNode {
 	}
 }
 
-func (n *AccountSearchTrieNode) RemoveRef(roundID interface{}) {
+func (n *AccountSearchTrieNode) RemoveRef(roundID uint64) {
 	n.SRemoveRef()
 	if n.Rounds != nil {
-		_removeRound(n.Rounds, roundID.(uint64))
+		_removeRound(n.Rounds, roundID)
 	}
 }
 
@@ -687,7 +687,7 @@ type FieldNodeJumpDef struct {
 	SRefCount
 }
 
-func (jd *FieldNodeJumpDef) RemoveRef(roundID interface{}) {
+func (jd *FieldNodeJumpDef) RemoveRef(roundID uint64) {
 	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
@@ -719,7 +719,7 @@ func NewFieldSearchTrieNode(node *SNode) *FieldSearchTrieNode {
 	return fn
 }
 
-func (n *FieldSearchTrieNode) RemoveRef(roundID interface{}) {
+func (n *FieldSearchTrieNode) RemoveRef(roundID uint64) {
 	n.SRemoveRef()
 }
 
@@ -780,7 +780,7 @@ type OpNodeJumpDef struct {
 	SRefCount
 }
 
-func (jd *OpNodeJumpDef) RemoveRef(roundID interface{}) {
+func (jd *OpNodeJumpDef) RemoveRef(roundID uint64) {
 	newRefCount := jd.SRemoveRef()
 	if newRefCount == 0 {
 		if jd.InJumpNode != nil && jd.InJumpNode.GetRefCount() != 0 {
@@ -836,7 +836,7 @@ func NewOpSearchTrieNode(node *SNode) *OpSearchTrieNode {
 	return fn
 }
 
-func (n *OpSearchTrieNode) RemoveRef(roundID interface{}) {
+func (n *OpSearchTrieNode) RemoveRef(roundID uint64) {
 	n.SRemoveRef()
 }
 
@@ -1519,7 +1519,7 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	return n
 }
 
-func (n *SNode) RemoveRef(roundID interface{}) {
+func (n *SNode) RemoveRef(roundID uint64) {
 	newRefCount := n.SRemoveRef()
 	if newRefCount == 0 {
 		if n.Prev != nil && n.Prev.GetRefCount() != 0 {
@@ -1530,7 +1530,7 @@ func (n *SNode) RemoveRef(roundID interface{}) {
 		}
 	}
 	if n.roundResults != nil {
-		n.roundResults.ClearRound(roundID.(uint64))
+		n.roundResults.ClearRound(roundID)
 	}
 }
 
@@ -1917,7 +1917,9 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 		var key string
 		if s.op.isLoadOp {
 			key = s.inputs[0].BAddress().Hex()
-			cmptypes.MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
+			if DEBUG_TRACER {
+				cmptypes.MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
+			}
 			ret[nodeIndex] = temp[key]
 		}
 		//} else {
@@ -3362,6 +3364,14 @@ func (j *JumpInserter) SetupOpJumpLane() {
 
 	jumpStations := j.trace.RLNodeIndices[:]
 	jumpStations = append(jumpStations, j.trace.FirstStoreNodeIndex)
+
+	fDeps := make(InputDependence, 0, 100)
+	fDepBuffer := make(InputDependence, 0, 100)
+	newFDeps := make(InputDependence, 0, 100)
+	aDeps := make(InputDependence, 0, 100)
+	aDepBuffer := make(InputDependence, 0, 100)
+	newADeps := make(InputDependence, 0, 100)
+
 	for i, nodeIndex := range jumpStations[:len(jumpStations)-1] {
 		targetNodeIndex := jumpStations[i+1]
 		targetNode := snodes[targetNodeIndex]
@@ -3407,9 +3417,12 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			var jdFromFKey OpJumpKey
 			fNodeSeq := 0
 
-			fDeps := make(InputDependence, 0, 100)
-			fDepBuffer := make(InputDependence, 0, 100)
-			newFDeps := make(InputDependence, 0, 100)
+			fDeps = fDeps[:0]
+			fDepBuffer = fDepBuffer[:0]
+			newFDeps = newFDeps[:0]
+			//fDeps := make(InputDependence, 0, 100)
+			//fDepBuffer := make(InputDependence, 0, 100)
+			//newFDeps := make(InputDependence, 0, 100)
 			for {
 				if jumpDes != targetNode {
 					newFDeps = jumpDes.FieldDependencies.SetDiffWithPreallocation(fDeps, newFDeps[:0])
@@ -3529,10 +3542,13 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			j.AddRefNode(jd)
 			jdHead := jd
 			newCreatedJd = false
-			aDeps := make(InputDependence, 0, 100)
-			aDepBuffer := make(InputDependence, 0, 100)
+			//aDeps := make(InputDependence, 0, 100)
+			//aDepBuffer := make(InputDependence, 0, 100)
+			//newADeps := make(InputDependence, 0, 100)
+			aDeps = aDeps[:0] //make(InputDependence, 0, 100)
+			aDepBuffer = aDepBuffer[:0] //make(InputDependence, 0, 100)
+			newADeps = newADeps[:0] //make(InputDependence, 0, 100)
 			aNodeSeq := 0
-			newADeps := make(InputDependence, 0, 100)
 			for {
 
 				if jumpDes != targetNode {

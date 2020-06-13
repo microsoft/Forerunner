@@ -119,7 +119,7 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 
 	var statedb *state.StateDB
 	statedbInstance, err := e.chain.StateAt(parent.Root())
-	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
+	if e.chain.GetVMConfig().MSRAVMSettings.EnablePreplay {
 		statedb = state.NewRWStateDB(statedbInstance)
 		if !e.basicPreplay {
 			statedb.SetAllowObjCopy(false)
@@ -180,7 +180,7 @@ func (e *Executor) commitUncle(env *environment, uncle *types.Header) error {
 func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Address) (*types.Receipt, error) {
 	var err error
 	var receipt *types.Receipt
-	if e.chain.GetVMConfig().MSRAVMSettings.CmpReuse {
+	if e.chain.GetVMConfig().MSRAVMSettings.EnablePreplay {
 		// snapshot-revert will be done in PreplayTransaction if it's necessary
 		vmconfig := *e.chain.GetVMConfig()
 		if e.EnableReuseTracer {

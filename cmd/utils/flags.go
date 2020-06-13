@@ -776,7 +776,8 @@ var (
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "preplaydata", "chainhead-driven")),
 	}
 
-	CmpResseEnabledFlag = cli.BoolFlag{
+
+	CmpReuseEnabledFlag = cli.BoolFlag{
 		Name:  "cmpreuse",
 		Usage: "Enable computation reuse",
 	}
@@ -784,9 +785,13 @@ var (
 		Name:  "cmpreuse.check",
 		Usage: "Enable computation reuse dirty write checking",
 	}
-	CmpReusePerfTestFlag = cli.BoolFlag{
-		Name:  "cmpreuse.perf",
-		Usage: "Enable perf testing for reuse and realapply",
+	TxApplyPerfLogFlag = cli.BoolFlag{
+		Name:  "txapplyperflog",
+		Usage: "Enable tx perf measurement and log",
+	}
+	PerfLogFlag = cli.BoolFlag{
+		Name:  "perflog",
+		Usage: "Enable block perf measurement and log",
 	}
 	CmpReuseLogFlag = cli.BoolFlag{
 		Name:  "cmpreuse.log",
@@ -1754,9 +1759,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
 		Silent:              ctx.GlobalBool(SilentFlag.Name),
 		LogRoot:             "/datadrive/reuse",
-		CmpReuse:            ctx.GlobalBool(CmpResseEnabledFlag.Name),
+		CmpReuse:            ctx.GlobalBool(CmpReuseEnabledFlag.Name),
 		CmpReuseChecking:    ctx.GlobalBool(CmpReuseCheckFlag.Name),
-		CmpReusePerfTest:    ctx.GlobalBool(CmpReusePerfTestFlag.Name),
+		TxApplyPerfLogging:  ctx.GlobalBool(TxApplyPerfLogFlag.Name),
+		PerfLogging:         ctx.GlobalBool(PerfLogFlag.Name),
 		CmpReuseLogging:     ctx.GlobalBool(CmpReuseLogFlag.Name),
 		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
 		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),
@@ -1776,7 +1782,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		CalWarmupMiss:    ctx.GlobalBool(CalWarmupMissFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
-	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
+    if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpReuseLogDirFlag.Name)
 	}
 	if ctx.GlobalIsSet(LogRootFlag.Name) {
@@ -1787,6 +1793,15 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	}
 	if ctx.GlobalIsSet(EmulateFileFlag.Name) {
 		cfg.MSRAVMSettings.EmulateFile = ctx.GlobalString(EmulateFileFlag.Name)
+	}
+	// Enable parallel hasher and bloom by default if cmpreuse is enabled
+	if cfg.MSRAVMSettings.CmpReuse {
+		if !ctx.GlobalIsSet(HasherParallelismFlag.Name) {
+			cfg.MSRAVMSettings.HasherParallelism = 16
+		}
+		if !ctx.GlobalIsSet(ParallelBloomFlag.Name) {
+			cfg.MSRAVMSettings.PipelinedBloom = true
+		}
 	}
 }
 

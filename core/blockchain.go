@@ -21,13 +21,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"io"
 	"math/big"
 	mrand "math/rand"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -193,7 +196,9 @@ type BlockChain struct {
 
 	InsertChainRecorder InsertChainRecorder
 
-	EmulateHook rawdb.EmulateHook
+	EmulateHook  rawdb.EmulateHook
+	blockLogFile *os.File
+	txLogFile    *os.File
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -318,8 +323,33 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 			}
 		}
 	}
+
+	if bc.vmConfig.MSRAVMSettings.PerfLogging {
+		var logFileName = "/tmp/PerfBlockLog.baseline.txt"
+		if bc.vmConfig.MSRAVMSettings.CmpReuse {
+			logFileName = "/tmp/PerfBlockLog.reuse.txt"
+		}else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
+			logFileName = "/tmp/PerfBlockLog.preplay.txt"
+		}
+		f, _ := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
+		bc.blockLogFile = f
+
+		logFileName = "/tmp/PerfTxLog.baseline.txt"
+		if bc.vmConfig.MSRAVMSettings.CmpReuse {
+			logFileName = "/tmp/PerfTxLog.reuse.txt"
+		}else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
+			logFileName = "/tmp/PerfTxLog.preplay.txt"
+		}
+
+		f, _ = os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
+		bc.txLogFile = f
+	}
+
+
 	// Take ownership of this particular state
 	go bc.update()
+
+
 	return bc, nil
 }
 
@@ -1819,7 +1849,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if parent == nil {
 			parent = bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
 		}
-		statedb := bc.Warmuper.GetStateDB(parent.Root)
+		var statedb *state.StateDB
+		if bc.vmConfig.MSRAVMSettings.CmpReuse {
+			statedb = bc.Warmuper.GetStateDB(parent.Root)
+		}
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
 		} else {
@@ -1868,8 +1901,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			defer bp.Stop()
 			statedb.SetBloomProcessor(bp)
 		}
+
+		// Try to increase the heap size temporarily to stop a new gc from happening with process
+		// and to reduce the gc activities if there is an ongoing one.
+		LARGE_GC_PERCENTAGE := 10000
+		prevPercent := debug.SetGCPercent(LARGE_GC_PERCENTAGE)
+		if prevPercent >= LARGE_GC_PERCENTAGE {
+			debug.SetGCPercent(10 * prevPercent)
+		}
+
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
 		cache.Process = time.Since(substart)
+
+		debug.SetGCPercent(prevPercent)
 
 		runtime.ReadMemStats(&memStats)
 		afterTotalPausedNs := memStats.PauseTotalNs
@@ -1913,7 +1957,64 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			bc.Warmuper.Continue()
 			return it.index, err
 		}
-		proctime := time.Since(start)
+		verifyTime := time.Since(start)
+
+		if bc.vmConfig.MSRAVMSettings.PerfLogging {
+			processInMicroSeconds := cache.Process.Microseconds()
+			verifyInMicroSeconds := verifyTime.Microseconds()
+			txPerfs := statedb.TxPerfs
+
+			go func() {
+				timeStr := time.Now().Format("01-02|15:04:05.000")
+				blockResult := fmt.Sprintf("[%s] block %v process %v process+verify %v gas %v\n",
+					timeStr, block.Hash().Hex(),
+					processInMicroSeconds, processInMicroSeconds+verifyInMicroSeconds, block.GasUsed())
+				bc.blockLogFile.WriteString(blockResult)
+
+				for _, tf := range txPerfs {
+					if bc.vmConfig.MSRAVMSettings.CmpReuse {
+						reuseStatus := tf.ReuseStatus
+						reuseStr := reuseStatus.BaseStatus.String()
+						if tf.Delay < 0 && reuseStatus.BaseStatus == cmptypes.NoPreplay {
+							reuseStr = "NoListen"
+						}
+						if reuseStatus.BaseStatus == cmptypes.Hit {
+							reuseStr += "-" + reuseStatus.HitType.String()
+							if reuseStatus.HitType == cmptypes.MixHit {
+								reuseStr += "-" + reuseStatus.MixHitStatus.MixHitType.String()
+							}
+							if reuseStatus.HitType == cmptypes.TraceHit {
+								reuseStr += "-" + reuseStatus.TraceHitStatus.String()
+							}
+						}
+						txResult := fmt.Sprintf("[%s] id %v tx %v reuse %v gas %v delay %v status %v\n",
+							timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+							tf.Receipt.TxHash.Hex(),
+							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
+						bc.txLogFile.WriteString(txResult)
+					}else {
+						if bc.vmConfig.MSRAVMSettings.EnablePreplay {
+							reuseStr := "IgnorePreplay"
+							if tf.Delay < 0 {
+								reuseStr = "NoListen"
+							}
+							txResult := fmt.Sprintf("[%s] id %v tx %v base %v gas %v delay %v status %v\n",
+								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+								tf.Receipt.TxHash.Hex(),
+								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
+							bc.txLogFile.WriteString(txResult)
+						}else {
+							txResult := fmt.Sprintf("[%s] id %v tx %v base %v gas %v\n",
+								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+								tf.Receipt.TxHash.Hex(),
+								tf.Time.Nanoseconds(), tf.Receipt.GasUsed)
+							bc.txLogFile.WriteString(txResult)
+						}
+					}
+				}
+
+			}()
+		}
 
 		// Update the metrics touched during block validation
 		accountHashTimer.Update(statedb.AccountHashes) // Account hashes are complete, we can mark them
@@ -1955,7 +2056,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			lastCanon = block
 
 			// Only count canonical blocks for GC processing time
-			bc.gcproc += proctime
+			bc.gcproc += verifyTime
 
 		case SideStatTy:
 			log.Debug("Inserted forked block", "number", block.Number(), "hash", block.Hash(),

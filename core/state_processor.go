@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -91,8 +92,21 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 		engine:         engine,
 		asyncProcessor: types.NewSingleThreadAsyncProcessor(),
 	}
-	f, _ := os.OpenFile("/tmp/perfLog.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
-	sp.logFile = f
+
+	if bc.vmConfig.MSRAVMSettings.TxApplyPerfLogging && bc.vmConfig.MSRAVMSettings.PerfLogging {
+		panic("Cannot measure tx perf and block perf at the same time!")
+
+	}
+
+	if bc.vmConfig.MSRAVMSettings.TxApplyPerfLogging {
+		var logFileName = "/tmp/txApplyPerfLog.baseline.txt"
+		if bc.vmConfig.MSRAVMSettings.CmpReuse {
+			logFileName = "/tmp/txApplyPerfLog.reuse.txt"
+		}
+		f, _ := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
+		sp.logFile = f
+	}
+
 	return sp
 }
 
@@ -270,7 +284,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		groundStatedb.SetRWMode(true)
 	}
-	if cfg.MSRAVMSettings.CmpReuseChecking || cfg.MSRAVMSettings.CmpReusePerfTest {
+	if cfg.MSRAVMSettings.CmpReuse && (cfg.MSRAVMSettings.CmpReuseChecking || cfg.MSRAVMSettings.TxApplyPerfLogging) {
 		var err error
 		groundStatedb, err = state.New(p.bc.GetBlockByHash(block.ParentHash()).Root(), p.bc.stateCache)
 		if err != nil {
@@ -347,7 +361,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				pMsg = (*types.Message)(atomic.LoadPointer(&txMsgs[i]))
 			}
 
-			if cfg.MSRAVMSettings.CmpReusePerfTest {
+			if cfg.MSRAVMSettings.TxApplyPerfLogging {
 				var reuseDuration, applyDuration time.Duration
 				receipt, err, reuseStatus, reuseDuration, applyDuration = p.bc.Cmpreuse.ReuseTransactionPerfTest(
 					p.config, p.bc, nil, gp, statedb, header,
@@ -384,19 +398,30 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				sar := float64(applyDuration) / float64(reuseDuration)
 				sgr := float64(groundApply) / float64(reuseDuration)
 				sga := float64(groundApply) / float64(applyDuration)
+				uniqId := block.Hash().Hex() + "_" + strconv.Itoa(i)
 				go func() {
-					result := fmt.Sprintf("[%s] CmpReusePerf tx %v delay %.1f reuse %v apply %v groundApply %v rs %v gas %v speedup-g/a %v speedup-a/r %v speedup-g/r %v\n",
-						time.Now().Format("01-02|15:04:05.000"), txHash, confirmationDelaySecond, rd, ad, gad, reuseStr, gu, sga, sar, sgr)
+					result := fmt.Sprintf("[%s] CmpReusePerf id %v tx %v delay %.1f reuse %v apply %v groundApply %v status %v gas %v speedup-g/a %v speedup-a/r %v speedup-g/r %v\n",
+						time.Now().Format("01-02|15:04:05.000"), uniqId, txHash, confirmationDelaySecond, rd, ad, gad, reuseStr, gu, sga, sar, sgr)
 					p.logFile.WriteString(result)
 				}()
 			} else {
-
+				txStart := time.Now()
 				if cfg.MSRAVMSettings.ParallelizeReuse {
 					receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
 						tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
 				} else {
 					receipt, err, reuseStatus = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header,
 						tx, usedGas, &cfg, blockPre, getHashFunc, precompiles, pMsg, signer)
+				}
+				txDuration := time.Since(txStart)
+				if cfg.MSRAVMSettings.PerfLogging {
+					txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+					confirmationDelaySecond := -1.0
+					if txListen != nil && txListen.ListenTimeNano < blockPre.ListenTimeNano {
+						confirmationDelayNano := blockPre.ListenTimeNano - txListen.ListenTimeNano
+						confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
+					}
+					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond)
 				}
 			}
 			reuseResult = append(reuseResult, reuseStatus)
@@ -454,7 +479,35 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}
 			}
 		} else {
-			receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+			if cfg.MSRAVMSettings.TxApplyPerfLogging {
+				var baseApply time.Duration
+				receipt, _, baseApply, _ = ApplyTransactionPerfTest(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+				txHash := tx.Hash().Hex()
+				bad := baseApply.Microseconds()
+				gu := receipt.GasUsed
+				uniqId := block.Hash().Hex() + "_" + strconv.Itoa(i)
+				go func() {
+					result := fmt.Sprintf("[%s] BaselinePerf id %v tx %v baselineApply %v gas %v\n",
+						time.Now().Format("01-02|15:04:05.000"), uniqId, txHash, bad, gu)
+					p.logFile.WriteString(result)
+				}()
+			} else {
+				txStart := time.Now()
+				receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+				txDuration := time.Since(txStart)
+				if cfg.MSRAVMSettings.PerfLogging {
+					confirmationDelaySecond := -1.0
+					if cfg.MSRAVMSettings.EnablePreplay {
+						txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+						if txListen != nil && txListen.ListenTimeNano < blockPre.ListenTimeNano {
+							confirmationDelayNano := blockPre.ListenTimeNano - txListen.ListenTimeNano
+							confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
+						}
+					}
+					statedb.AddTxPerf(receipt, txDuration, nil, confirmationDelaySecond)
+				}
+
+			}
 		}
 		t1 := time.Now()
 		cache.Apply = append(cache.Apply, t1.Sub(t0))

@@ -82,6 +82,7 @@ type ReuseTracer struct {
 	blockHashNumIDMVar         *Variable
 	hasNonConstBlockHashNum    bool
 	methodCache                map[string]reflect.Value
+	execEnv                    *ExecEnv
 }
 
 var ReuseTracerTracedTxCount uint64
@@ -112,6 +113,8 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 		methodCache:            make(map[string]reflect.Value),
 		byteArrayCachedSize:    make(map[*Variable]*Variable),
 		byteArrayOriginCells:   make(map[*Variable][]*MemByteCell),
+		execEnv: &ExecEnv{inputs: make([]interface{}, 0, 10), state: statedb, header: header, getHash: hashFunc,
+			precompiles: vm.GetPrecompiledMapping(&(chainRules))},
 	}
 
 	rt.snapshotStartingPoints[0] = 0
@@ -372,16 +375,7 @@ func (rt *ReuseTracer) VarWithName(val interface{}, name string) *Variable {
 }
 
 func (rt *ReuseTracer) NewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {
-	return NewStatement(f, outputVar, inputVars...)
-	//s := &Statement{
-	//	output: outputVar,
-	//	inputs: inputVars,
-	//	op:     f,
-	//}
-	//if outputVar != nil {
-	//	outputVar.originStatement = s
-	//}
-	//return s
+	return NewStatement(f, rt.DebugFlag, outputVar, inputVars...)
 }
 
 func (rt *ReuseTracer) AppendNewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {
@@ -458,9 +452,10 @@ func (rt *ReuseTracer) TraceWithName(f *OpDef, output interface{}, outputVarName
 	}
 
 	if output == nil {
-		inputs := GetInputValues(inputVars)
-		env := &ExecEnv{inputs: inputs, state: rt.statedb, config: &(f.config), header: rt.header, getHash: rt.getHashFunc,
-			precompiles: vm.GetPrecompiledMapping(&(rt.chainRules))}
+		//inputs := GetInputValues(inputVars, rt.execEnv.inputs[:0])
+		env := rt.execEnv // &ExecEnv{inputs: inputs, state: rt.statedb, config: &(f.config), header: rt.header, getHash: rt.getHashFunc, precompiles: vm.GetPrecompiledMapping(&(rt.chainRules))}
+		env.inputs = GetInputValues(inputVars, rt.execEnv.inputs[:0])
+		env.config = &(f.config)
 		output = f.impFuc(env)
 		if output == nil {
 			panic(fmt.Sprintf("do not get any output from %s", *(f.name)))
@@ -698,7 +693,7 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 
 	var ret *Variable
 
-	if arrayLen > 0  && singleCellVariable && offsetFullCoverage {
+	if arrayLen > 0 && singleCellVariable && offsetFullCoverage {
 		ret = cells[0].variable
 	} else {
 		ret = rt.TraceWithName(OP_ConcatBytes, nil, "[]byte", inputs...)
@@ -712,13 +707,18 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 				cmptypes.MyAssert(len(oldCells) == len(cells))
 				for i, oldCell := range oldCells {
 					cell := cells[i]
+
 					if oldCell == nil {
 						cmptypes.MyAssert(cell == nil)
 					} else {
-						cmptypes.MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
-							ret.Name(), i, oldCell.variable.Name(), cell.variable.Name())
-						cmptypes.MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
-							ret.Name(), i, oldCell.variable.Name(), oldCell.offset, cell.offset)
+						if oldCell.variable != cell.variable {
+							cmptypes.MyAssert(oldCell.variable == cell.variable, "%v mismatch @%v: old var %v, var %v",
+								ret.Name(), i, oldCell.variable.Name(), cell.variable.Name())
+						}
+						if oldCell.offset != cell.offset {
+							cmptypes.MyAssert(oldCell.offset == cell.offset, "%v mismatch @%v %v: old offset %v, offset %v",
+								ret.Name(), i, oldCell.variable.Name(), oldCell.offset, cell.offset)
+						}
 					}
 				}
 			}

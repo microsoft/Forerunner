@@ -925,22 +925,32 @@ func (op *OpDef) IsVirtual() bool {
 	return variant == VIRTUAL_GASUSED || variant == VIRTUAL_FAILED
 }
 
-type Statement struct {
-	output                                    *Variable
-	inputs                                    []*Variable
-	op                                        *OpDef
-	Reverted                                  bool
+type DebugStatsForStatement struct {
 	cachedRecordValueString                   string
 	cachedSimpleNameString                    string
 	cachedSimpleNameStringWithRegisterMapping map[*map[uint32]uint]string
 }
 
-func NewStatement(op *OpDef, outVar *Variable, inVars ...*Variable) *Statement {
+type Statement struct {
+	output                                    *Variable
+	inputs                                    []*Variable
+	op                                        *OpDef
+	Reverted                                  bool
+	DebugStats                                *DebugStatsForStatement
+}
+
+func NewStatement(op *OpDef, debug bool, outVar *Variable, inVars ...*Variable) *Statement {
 	s := &Statement{
 		output: outVar,
 		inputs: inVars,
 		op:     op,
-		cachedSimpleNameStringWithRegisterMapping: make(map[*map[uint32]uint]string),
+	}
+	if debug {
+		s.DebugStats = &DebugStatsForStatement{
+			cachedRecordValueString:                   "",
+			cachedSimpleNameString:                    "",
+			cachedSimpleNameStringWithRegisterMapping: make(map[*map[uint32]uint]string),
+		}
 	}
 	if outVar != nil {
 		outVar.originStatement = s
@@ -997,12 +1007,12 @@ func (s *Statement) SimpleNameString() string {
 
 func (s *Statement) SimpleNameStringWithRegisterAnnotation(registerMapping *map[uint32]uint) string {
 	if registerMapping == nil {
-		if s.cachedSimpleNameString != "" {
-			return s.cachedSimpleNameString
+		if s.DebugStats.cachedSimpleNameString != "" {
+			return s.DebugStats.cachedSimpleNameString
 		}
 	} else {
-		if s.cachedSimpleNameStringWithRegisterMapping[registerMapping] != "" {
-			return s.cachedSimpleNameStringWithRegisterMapping[registerMapping]
+		if s.DebugStats.cachedSimpleNameStringWithRegisterMapping[registerMapping] != "" {
+			return s.DebugStats.cachedSimpleNameStringWithRegisterMapping[registerMapping]
 		}
 	}
 
@@ -1015,17 +1025,17 @@ func (s *Statement) SimpleNameStringWithRegisterAnnotation(registerMapping *map[
 	}
 
 	if registerMapping == nil {
-		s.cachedSimpleNameString = result
+		s.DebugStats.cachedSimpleNameString = result
 	} else {
-		s.cachedSimpleNameStringWithRegisterMapping[registerMapping] = result
+		s.DebugStats.cachedSimpleNameStringWithRegisterMapping[registerMapping] = result
 	}
 
 	return result
 }
 
 func (s *Statement) RecordedValueString() string {
-	if s.cachedRecordValueString != "" {
-		return s.cachedRecordValueString
+	if s.DebugStats.cachedRecordValueString != "" {
+		return s.DebugStats.cachedRecordValueString
 	}
 
 	inputs := make([]interface{}, len(s.inputs))
@@ -1047,7 +1057,7 @@ func (s *Statement) RecordedValueString() string {
 	}
 
 	ret := s.ValueString(inputs, output)
-	s.cachedRecordValueString = ret
+	s.DebugStats.cachedRecordValueString = ret
 	return ret
 }
 
@@ -1084,34 +1094,38 @@ func (s *Statement) TypeConvert(variable *Variable, val interface{}) interface{}
 	}
 }
 
-func (s *Statement) NewIfInputsReplaced(replaceMapping map[uint32]*Variable) *Statement {
-	newInputs := make([]*Variable, len(s.inputs))
-	var replaced bool
-	for i, v := range s.inputs {
-		if newV, ok := replaceMapping[v.id]; ok {
-			newInputs[i] = newV
-			replaced = true
-		} else {
-			newInputs[i] = v
-		}
-	}
-	if replaced {
-		newOut := s.output
-		if newOut != nil {
-			newOut = newOut.Copy()
-		}
-		return NewStatement(s.op, newOut, newInputs...)
-	} else {
-		return nil
-	}
-}
+//func (s *Statement) NewIfInputsReplaced(replaceMapping map[uint32]*Variable) *Statement {
+//	newInputs := make([]*Variable, len(s.inputs))
+//	var replaced bool
+//	for i, v := range s.inputs {
+//		if newV, ok := replaceMapping[v.id]; ok {
+//			newInputs[i] = newV
+//			replaced = true
+//		} else {
+//			newInputs[i] = v
+//		}
+//	}
+//	if replaced {
+//		newOut := s.output
+//		if newOut != nil {
+//			newOut = newOut.Copy()
+//		}
+//		return NewStatement(s.op, newOut, newInputs...)
+//	} else {
+//		return nil
+//	}
+//}
 
-func GetInputValues(inputVars []*Variable) []interface{} {
-	values := make([]interface{}, len(inputVars))
-	for i, v := range inputVars {
-		values[i] = v.val
+func GetInputValues(inputVars []*Variable, valueBuffer []interface{}) []interface{} {
+	if len(valueBuffer) != 0 {
+		panic("Buffer initial size should be zero")
 	}
-	return values
+	//values := make([]interface{}, len(inputVars))
+	for _, v := range inputVars {
+		valueBuffer = append(valueBuffer, v.val)
+		//values[i] = v.val
+	}
+	return valueBuffer
 }
 
 func IsAllConstants(inputVars []*Variable) bool {
@@ -1271,7 +1285,8 @@ func (m *TracerMem) Set32(offsetVar, bigIntVal *Variable) {
 
 func (m *TracerMem) Resize(size uint64) {
 	if uint64(m.Len()) < size {
-		m.store = append(m.store, make([]*MemByteCell, size-uint64(m.Len()))...)
+		extension := make([]*MemByteCell, size-uint64(m.Len()))
+		m.store = append(m.store, extension...)
 	}
 }
 

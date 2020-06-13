@@ -331,7 +331,7 @@ func EliminateSuicidedStore(inputStats []*Statement, debugOut DebugOutFunc) []*S
 
 func EliminateUnusedStatement(inputStats []*Statement, debugOut DebugOutFunc) []*Statement {
 	reversedOutStats := make([]*Statement, 0, len(inputStats))
-	usedVariables := map[uint32]struct{}{}
+	usedVariables := make(map[uint32]struct{}, len(inputStats))
 
 	appendOut := func(s *Statement) {
 		reversedOutStats = append(reversedOutStats, s)
