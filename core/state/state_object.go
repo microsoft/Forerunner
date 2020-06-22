@@ -289,7 +289,7 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 		value.SetBytes(content)
 		if s.db.CalWarmupMiss {
 			s.db.KeyWarmupMiss++
-			if !s.db.IsKeyWarmup(s.address, key) {
+			if s.db.WarmupMissDetail && !s.db.IsKeyWarmup(s.address, key) {
 				s.db.KeyNoWarmup++
 			}
 		}

@@ -226,7 +226,7 @@ var (
 		utils.GenerateEmulatorLogFromFlag,
 		utils.GenerateEmulatorLogToFlag,
 		utils.ParallelizeReuseFlag,
-		utils.CalWarmupMissFlag,
+		utils.WarmupMissDetailFlag,
 		utils.ReportMissDetailFlag,
 		utils.ReuseTracerCheckFlag,
 		alliedNodeFileFlag,

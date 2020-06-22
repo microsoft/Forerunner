@@ -19,51 +19,60 @@ const k = 10
 
 // LogBlockInfo define blockInfo log format
 type LogBlockInfo struct {
-	TxnApply           int64         `json:"apply"`
-	BlockFinalize      int64         `json:"finalize"`
-	Reuse              int64         `json:"reuse"`
-	RealApply          int64         `json:"realApply"`
-	TxnFinalize        int64         `json:"txFinalize"`
-	Update             int64         `json:"updatePair"`
-	GetRW              int64         `json:"getRW"`
-	SetDB              int64         `json:"setDB"`
-	WaitRealApplyEnd   int64         `json:"waitRealApplyEnd"`
-	RunTx              int64         `json:"runTx"`
-	WaitReuseEnd       int64         `json:"waitReuseEnd"`
-	NoListen           int           `json:"L"`
-	NoPackage          int           `json:"Pa"`
-	NoEnqueue          int           `json:"E"`
-	NoPreplay          int           `json:"Pr"`
-	Hit                int           `json:"H"`
-	Miss               int           `json:"M"`
-	Unknown            int           `json:"U"`
-	TxPreplayLock      int           `json:"tL"`
-	AbortedTrace       int           `json:"aR"`
-	AbortedMix         int           `json:"aM"`
-	AbortedDelta       int           `json:"aD"`
-	AbortedTrie        int           `json:"aT"`
-	MixHit             int           `json:"MH"`
-	AllDepMixHit       int           `json:"DMH"`
-	AllDetailMixHit    int           `json:"TMH"`
-	PartialMixHit      int           `json:"PMH"`
-	AllDeltaMixHit     int           `json:"AMH"`
-	PartialDeltaMixHit int           `json:"MMH"`
-	UnhitHeadCount     [10]int       `json:"UHC"`
-	TrieHit            int           `json:"TH"`
-	DeltaHit           int           `json:"EH"`
-	TraceHit           int           `json:"RH"`
-	ReuseGas           int           `json:"reuseGas"`
-	ProcTime           int64         `json:"procTime"`
-	RunMode            string        `json:"runMode"`
-	TxnCount           int           `json:"txnCount"`
-	Header             *types.Header `json:"header"`
+	TxnApply         int64 `json:"apply"`
+	BlockFinalize    int64 `json:"finalize"`
+	Reuse            int64 `json:"reuse"`
+	RealApply        int64 `json:"realApply"`
+	TxnFinalize      int64 `json:"txFinalize"`
+	Update           int64 `json:"updatePair"`
+	GetRW            int64 `json:"getRW"`
+	SetDB            int64 `json:"setDB"`
+	WaitRealApplyEnd int64 `json:"waitRealApplyEnd"`
+	RunTx            int64 `json:"runTx"`
+	WaitReuseEnd     int64 `json:"waitReuseEnd"`
+
+	NoListen               int `json:"L"`
+	NoListenAndNoEthermine int `json:"L&NoEthermine"`
+	NoEnpool               int `json:"Ep"`
+	NoPackage              int `json:"Pa"`
+	NoEnqueue              int `json:"Eq"`
+	NoPreplay              int `json:"Pr"`
+	Hit                    int `json:"H"`
+	Miss                   int `json:"M"`
+	Unknown                int `json:"U"`
+
+	MixHit              int     `json:"MH"`
+	AllDepMixHit        int     `json:"DMH"`
+	AllDetailMixHit     int     `json:"TMH"`
+	PartialDetailMixHit int     `json:"PMH"`
+	AllDeltaMixHit      int     `json:"AMH"`
+	PartialDeltaMixHit  int     `json:"MMH"`
+	UnhitHeadCount      [10]int `json:"UHC"`
+	TraceHit            int     `json:"RH"`
+	DeltaHit            int     `json:"EH"`
+	TrieHit             int     `json:"TH"`
+
+	TraceMiss   int `json:"TM"`
+	NoMatchMiss int `json:"NMM"`
+
+	TxPreplayLock int `json:"tL"`
+	AbortedTrace  int `json:"aR"`
+	AbortedMix    int `json:"aM"`
+	AbortedDelta  int `json:"aD"`
+	AbortedTrie   int `json:"aT"`
+
+	ReuseGas int           `json:"reuseGas"`
+	ProcTime int64         `json:"procTime"`
+	RunMode  string        `json:"runMode"`
+	TxnCount int           `json:"txnCount"`
+	Header   *types.Header `json:"header"`
 }
 
 type MissReporter interface {
 	SetBlock(block *types.Block)
 	SetNoPreplayTxn(txn *types.Transaction, enqueue uint64)
 	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{}, txnType int)
-	ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64)
+	ReportMiss(noListen, noListenAndEthermine, noEnpool, noPackage, noEnqueue, noPreplay uint64)
 }
 
 // LogBlockCache define blockCache log format
@@ -128,11 +137,12 @@ type LogPreplayItem struct {
 type LogBlockGround []*LogRWrecord
 
 var (
-	ToScreen bool
+	ethermine = common.HexToAddress("0xEA674fdDe714fd979de3EdF0F56AA9716B898ec8")
+	ToScreen  bool
 
-	Process          time.Duration
+	Process time.Duration
+
 	Apply            []time.Duration
-	Finalize         time.Duration
 	Reuse            []time.Duration
 	RealApply        []time.Duration
 	TxFinalize       []time.Duration
@@ -143,6 +153,11 @@ var (
 	RunTx            []time.Duration
 	WaitReuseEnd     []time.Duration
 
+	Finalize       time.Duration
+	WaitUpdateRoot time.Duration
+	UpdateObj      time.Duration
+	HashTrie       time.Duration
+
 	ReuseGasCount uint64
 
 	MaxLongExecutionCost      time.Duration
@@ -152,6 +167,7 @@ var (
 	ReuseResult []*cmptypes.ReuseStatus
 
 	WarmupMissTxnCount = make(map[string]int)
+	AccountCreate      = make(map[string]int)
 	AddrWarmupMiss     = make(map[string]int)
 	AddrNoWarmup       = make(map[string]int)
 	AddrWarmupHelpless = make(map[string]int)
@@ -160,6 +176,7 @@ var (
 	KeyWarmupHelpless  = make(map[string]int)
 
 	CumWarmupMissTxnCount = make(map[string]int)
+	CumAccountCreate      = make(map[string]int)
 	CumAddrWarmupMiss     = make(map[string]int)
 	CumAddrNoWarmup       = make(map[string]int)
 	CumAddrWarmupHelpless = make(map[string]int)
@@ -168,7 +185,6 @@ var (
 	CumKeyWarmupHelpless  = make(map[string]int)
 
 	cumApply            time.Duration
-	cumFinalize         time.Duration
 	cumReuse            time.Duration
 	cumRealApply        time.Duration
 	cumTxFinalize       time.Duration
@@ -179,23 +195,43 @@ var (
 	cumRunTx            time.Duration
 	cumWaitReuseEnd     time.Duration
 
-	blkCount      uint64
-	txnCount      uint64
-	listen        uint64
-	Package       uint64
-	enqueue       uint64
-	preplay       uint64
-	hit           uint64
-	unknown       uint64
-	mixHitCount   uint64
-	trieHitCount  uint64
-	deltaHitCount uint64
-	traceHitCount uint64
-	TxPreplayLock uint64
-	AbortedTrace  uint64
-	AbortedMix    uint64
-	AbortedDelta  uint64
-	AbortedTrie   uint64
+	cumFinalize       time.Duration
+	cumWaitUpdateRoot time.Duration
+	cumUpdateObj      time.Duration
+	cumHashTrie       time.Duration
+
+	blkCount          uint64
+	txnCount          uint64
+	listen            uint64
+	listenOrEthermine uint64
+	enpool            uint64
+	Package           uint64
+	enqueue           uint64
+	preplay           uint64
+	hit               uint64
+	unknown           uint64
+	miss              uint64
+
+	mixHit              uint64
+	allDepMixHit        uint64
+	allDetailMixHit     uint64
+	partialDetailMixHit uint64
+	allDeltaMixHit      uint64
+	partialDeltaMixHit  uint64
+	traceHit            uint64
+	deltaHit            uint64
+	trieHit             uint64
+
+	txPreplayLock uint64
+	abortedTrace  uint64
+	abortedMix    uint64
+	abortedDelta  uint64
+	abortedTrie   uint64
+
+	traceMiss   uint64
+	noMatchMiss uint64
+
+	LockCount [4]uint64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -214,6 +250,7 @@ func SumCount(counts []int64) (sum int64) {
 
 func ResetLogVar(size int) {
 	WarmupMissTxnCount = make(map[string]int)
+	AccountCreate = make(map[string]int)
 	AddrWarmupMiss = make(map[string]int)
 	AddrNoWarmup = make(map[string]int)
 	AddrWarmupHelpless = make(map[string]int)
@@ -222,7 +259,6 @@ func ResetLogVar(size int) {
 	KeyWarmupHelpless = make(map[string]int)
 
 	Apply = make([]time.Duration, 0, size)
-	Finalize = 0
 	Reuse = make([]time.Duration, 0, size)
 	RealApply = make([]time.Duration, 0, size)
 	TxFinalize = make([]time.Duration, 0, size)
@@ -232,6 +268,11 @@ func ResetLogVar(size int) {
 	WaitRealApplyEnd = make([]time.Duration, 0, size)
 	RunTx = make([]time.Duration, 0, size)
 	WaitReuseEnd = make([]time.Duration, 0, size)
+
+	Finalize = 0
+	WaitUpdateRoot = 0
+	UpdateObj = 0
+	HashTrie = 0
 
 	ReuseGasCount = 0
 }
@@ -268,7 +309,7 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 }
 
 // InfoPrint block info to block folder
-func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, reporter MissReporter, statedb *state.StateDB) {
+func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.Config, synced bool, reporter MissReporter, statedb *state.StateDB) {
 
 	var (
 		sumApply            = SumDuration(Apply)
@@ -313,9 +354,16 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 					txPackage := r.GetTxPackage(tx.Hash())
 					if txPackage == 0 || txPackage > processTimeNano {
 						infoResult.NoPackage++
-						txListen := r.GetTxListen(tx.Hash())
-						if txListen == nil || txListen.ListenTimeNano > processTimeNano {
-							infoResult.NoListen++
+						txEnpool := r.GetTxEnpool(tx.Hash())
+						if txEnpool == 0 || txEnpool > processTimeNano {
+							infoResult.NoEnpool++
+							txListen := r.GetTxListen(tx.Hash())
+							if txListen == nil || txListen.ListenTimeNano > processTimeNano {
+								infoResult.NoListen++
+								if sender, _ := types.Sender(signer, tx); sender != ethermine {
+									infoResult.NoListenAndNoEthermine++
+								}
+							}
 						}
 					}
 				}
@@ -330,7 +378,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 					case cmptypes.AllDetailHit:
 						infoResult.AllDetailMixHit++
 					case cmptypes.PartialHit:
-						infoResult.PartialMixHit++
+						infoResult.PartialDetailMixHit++
 						unHitHead := ReuseResult[index].MixHitStatus.DepUnmatchedInHead
 						if unHitHead < 9 {
 							infoResult.UnhitHeadCount[unHitHead]++
@@ -352,6 +400,12 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 				}
 			case cmptypes.Miss:
 				infoResult.Miss++
+				switch ReuseResult[index].MissType {
+				case cmptypes.TraceMiss:
+					infoResult.TraceMiss++
+				case cmptypes.NoMatchMiss:
+					infoResult.NoMatchMiss++
+				}
 			case cmptypes.Unknown:
 				infoResult.Unknown++
 				switch ReuseResult[index].AbortStage {
@@ -399,49 +453,68 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 		return
 	}
 
-	if cfg.MSRAVMSettings.CalWarmupMiss {
-		for word := range WarmupMissTxnCount {
-			CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
-			CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
-			CumAddrNoWarmup[word] += AddrNoWarmup[word]
-			CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
-			CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
-			CumKeyNoWarmup[word] += KeyNoWarmup[word]
-			CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
-		}
+	for word := range WarmupMissTxnCount {
+		CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
+		CumAccountCreate[word] += AccountCreate[word]
+		CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
+		CumAddrNoWarmup[word] += AddrNoWarmup[word]
+		CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
+		CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
+		CumKeyNoWarmup[word] += KeyNoWarmup[word]
+		CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
+	}
 
-		var keySort []string
-		for word := range CumWarmupMissTxnCount {
-			keySort = append(keySort, word)
-		}
-		sort.Strings(keySort)
+	var keySort []string
+	for word := range CumWarmupMissTxnCount {
+		keySort = append(keySort, word)
+	}
+	sort.Strings(keySort)
 
-		for _, word := range keySort {
-			if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
-				context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word]}
-				if CumAddrWarmupMiss[word] > 0 {
+	for _, word := range keySort {
+		if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
+			context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word],
+				"cum addr create", CumAccountCreate[word], "addr create", AccountCreate[word]}
+			if CumAddrWarmupMiss[word] > 0 {
+				if cfg.MSRAVMSettings.WarmupMissDetail {
 					context = append(context, "cum addr miss-helpless",
 						fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrWarmupHelpless[word]))
-					if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
+				} else {
+					context = append(context, "cum addr miss-helpless",
+						fmt.Sprintf("%d-%d", CumAddrWarmupMiss[word], CumAddrWarmupHelpless[word]))
+				}
+				if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
+					if cfg.MSRAVMSettings.WarmupMissDetail {
 						context = append(context, "addr miss-helpless",
 							fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrWarmupHelpless[word]))
+					} else {
+						context = append(context, "addr miss-helpless",
+							fmt.Sprintf("%d-%d", AddrWarmupMiss[word], AddrWarmupHelpless[word]))
 					}
 				}
-				if CumKeyWarmupMiss[word] > 0 {
-					context = append(context, "cum key miss",
-						fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
-					if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
-						context = append(context, "key miss",
-							fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
-					}
-				}
-				log.Info("Warmup miss statistics", context...)
 			}
+			if CumKeyWarmupMiss[word] > 0 {
+				if cfg.MSRAVMSettings.WarmupMissDetail {
+					context = append(context, "cum key miss-helpless",
+						fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
+				} else {
+					context = append(context, "cum key miss-helpless",
+						fmt.Sprintf("%d-%d", CumKeyWarmupMiss[word], CumKeyWarmupHelpless[word]))
+				}
+				if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
+					if cfg.MSRAVMSettings.WarmupMissDetail {
+						context = append(context, "key miss-helpless",
+							fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
+					} else {
+						context = append(context, "key miss-helpless",
+							fmt.Sprintf("%d-%d", KeyWarmupMiss[word], KeyWarmupHelpless[word]))
+					}
+				}
+			}
+			log.Info("Warmup miss statistics", context...)
 		}
 	}
 
 	cumApply += sumApply
-	cumFinalize += Finalize
 	cumReuse += sumReuse
 	cumRealApply += sumRealApply
 	cumTxFinalize += sumTxFinalize
@@ -452,7 +525,12 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 	cumRunTx += sumRunTx
 	cumWaitReuseEnd += sumWaitReuseEnd
 
-	context := []interface{}{"apply", common.PrettyDuration(sumApply), "finalize", common.PrettyDuration(Finalize)}
+	cumFinalize += Finalize
+	cumWaitUpdateRoot += WaitUpdateRoot
+	cumUpdateObj += UpdateObj
+	cumHashTrie += HashTrie
+
+	context := []interface{}{"apply", common.PrettyDuration(sumApply)}
 	if sumApply != 0 {
 		context = append(context,
 			"reuse/apply", fmt.Sprintf("%.2f", float64(sumReuse)/float64(sumApply)),
@@ -478,9 +556,17 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			)
 		}
 	}
+	if Finalize != 0 {
+		context = append(context,
+			"finalize", common.PrettyDuration(Finalize),
+			"waitUpdateRoot/finalize", fmt.Sprintf("%.2f", float64(WaitUpdateRoot)/float64(Finalize)),
+			"updateObj/finalize", fmt.Sprintf("%.2f", float64(UpdateObj)/float64(Finalize)),
+			"hashTrie/finalize", fmt.Sprintf("%.2f", float64(HashTrie)/float64(Finalize)),
+		)
+	}
 	log.Info("Time consumption detail", context...)
 
-	context = []interface{}{"apply", common.PrettyDuration(cumApply), "finalize", common.PrettyDuration(cumFinalize)}
+	context = []interface{}{"apply", common.PrettyDuration(cumApply)}
 	if cumApply != 0 {
 		context = append(context,
 			"reuse/apply", fmt.Sprintf("%.2f", float64(cumReuse)/float64(cumApply)),
@@ -506,17 +592,32 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			)
 		}
 	}
+	if cumFinalize != 0 {
+		context = append(context,
+			"finalize", common.PrettyDuration(cumFinalize),
+			"waitUpdateRoot/finalize", fmt.Sprintf("%.2f", float64(cumWaitUpdateRoot)/float64(cumFinalize)),
+			"updateObj/finalize", fmt.Sprintf("%.2f", float64(cumUpdateObj)/float64(cumFinalize)),
+			"hashTrie/finalize", fmt.Sprintf("%.2f", float64(cumHashTrie)/float64(cumFinalize)),
+		)
+	}
 	log.Info("Cumulative time consumption detail", context...)
 
 	if cfg.MSRAVMSettings.EnablePreplay && cfg.MSRAVMSettings.CmpReuse {
+		context = []interface{}{"Total", fmt.Sprintf("%03d", infoResult.TxnCount)}
+
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
+		enpoolCnt := infoResult.TxnCount - infoResult.NoEnpool
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		enqueueCnt := infoResult.TxnCount - infoResult.NoEnqueue
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
-		var listenRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate, mixHitRate, trieHitRate, deltaHitRate, traceHitRate float64
-		var reuseGasRate float64
+
 		if infoResult.TxnCount > 0 {
+			var listenRate, enpoolRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate,
+			mixHitRate, trieHitRate, deltaHitRate, traceHitRate float64
+			var reuseGasRate float64
+
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
+			enpoolRate = float64(enpoolCnt) / float64(infoResult.TxnCount)
 			packageRate = float64(packageCnt) / float64(infoResult.TxnCount)
 			enqueueRate = float64(enqueueCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -527,78 +628,99 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 			trieHitRate = float64(infoResult.TrieHit) / float64(infoResult.TxnCount)
 			deltaHitRate = float64(infoResult.DeltaHit) / float64(infoResult.TxnCount)
 			traceHitRate = float64(infoResult.TraceHit) / float64(infoResult.TxnCount)
+
 			reuseGasRate = float64(infoResult.ReuseGas) / float64(infoResult.Header.GasUsed)
-		}
-		context := []interface{}{
-			"Total", fmt.Sprintf("%03d", infoResult.TxnCount),
-			"Listen", fmt.Sprintf("%03d(%.2f)", listenCnt, listenRate),
-			"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
-			"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
-			"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
-			"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-			"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|Mix:%03d|AllDelta:%03d|DeltaMix:%03d]", infoResult.MixHit, mixHitRate,
-				infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialMixHit, infoResult.AllDeltaMixHit, infoResult.PartialDeltaMixHit),
-			"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount),
-		}
-		if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 || infoResult.TraceHit > 0 {
-			context = append(context, "RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				infoResult.TraceHit, traceHitRate, infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate))
-		}
-		if infoResult.Miss > 0 {
-			context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)", infoResult.Miss, missRate))
-		}
-		if infoResult.Unknown > 0 {
-			context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate))
-			context = append(context, "TxPreplayLock", infoResult.TxPreplayLock)
-			if cfg.MSRAVMSettings.ParallelizeReuse {
-				context = append(context, "AbortStage(R-M-D-T)", fmt.Sprintf("%03d-%03d-%03d-%03d",
-					infoResult.AbortedTrace, infoResult.AbortedMix, infoResult.AbortedDelta, infoResult.AbortedTrie))
+
+			context = append(context, "Total", fmt.Sprintf("%03d", infoResult.TxnCount),
+				"Listen", fmt.Sprintf("%03d(%.2f)", listenCnt, listenRate),
+				"Enpool", fmt.Sprintf("%03d(%.2f)", enpoolCnt, enpoolRate),
+				"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
+				"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
+				"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
+				"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
+				"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|PartialDetail:%03d|AllDelta:%03d|PartialDelta:%03d]", infoResult.MixHit, mixHitRate,
+					infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialDetailMixHit, infoResult.AllDeltaMixHit, infoResult.PartialDeltaMixHit),
+				"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount))
+			if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 || infoResult.TraceHit > 0 {
+				context = append(context, "RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
+					infoResult.TraceHit, traceHitRate, infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate))
 			}
+			if infoResult.Miss > 0 {
+				context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)-[TraceMiss:%03d|NoMatchMiss:%03d]",
+					infoResult.Miss, missRate, infoResult.TraceMiss, infoResult.NoMatchMiss))
+			}
+			if infoResult.Unknown > 0 {
+				context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
+					"TxPreplayLock", infoResult.TxPreplayLock)
+				if cfg.MSRAVMSettings.ParallelizeReuse {
+					context = append(context, "AbortStage(R-M-D-T)", fmt.Sprintf("%03d-%03d-%03d-%03d",
+						infoResult.AbortedTrace, infoResult.AbortedMix, infoResult.AbortedDelta, infoResult.AbortedTrie))
+				}
+			}
+
+			context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
 		}
-		context = append(context, "ReuseGas", fmt.Sprintf("%d(%.2f)", infoResult.ReuseGas, reuseGasRate))
 
 		log.Info("Block reuse", context...)
 
 		blkCount++
 		txnCount += uint64(infoResult.TxnCount)
 		listen += uint64(listenCnt)
+		listenOrEthermine += uint64(infoResult.TxnCount - infoResult.NoListenAndNoEthermine)
+		enpool += uint64(enpoolCnt)
 		Package += uint64(packageCnt)
 		enqueue += uint64(enqueueCnt)
 		preplay += uint64(preplayCnt)
 		hit += uint64(infoResult.Hit)
+		miss += uint64(infoResult.Miss)
 		unknown += uint64(infoResult.Unknown)
-		mixHitCount += uint64(infoResult.MixHit)
-		trieHitCount += uint64(infoResult.TrieHit)
-		deltaHitCount += uint64(infoResult.DeltaHit)
-		traceHitCount += uint64(infoResult.TraceHit)
-		mixHitRate = float64(mixHitCount) / float64(txnCount)
-		trieHitRate = float64(trieHitCount) / float64(txnCount)
-		deltaHitRate = float64(deltaHitCount) / float64(txnCount)
-		traceHitRate = float64(traceHitCount) / float64(txnCount)
-		TxPreplayLock += uint64(infoResult.TxPreplayLock)
-		AbortedTrace += uint64(infoResult.AbortedTrace)
-		AbortedMix += uint64(infoResult.AbortedMix)
-		AbortedDelta += uint64(infoResult.AbortedDelta)
-		AbortedTrie += uint64(infoResult.AbortedTrie)
+
+		mixHit += uint64(infoResult.MixHit)
+		allDepMixHit += uint64(infoResult.AllDepMixHit)
+		allDetailMixHit += uint64(infoResult.AllDetailMixHit)
+		partialDetailMixHit += uint64(infoResult.PartialDetailMixHit)
+		allDeltaMixHit += uint64(infoResult.AllDeltaMixHit)
+		partialDeltaMixHit += uint64(infoResult.PartialDeltaMixHit)
+		traceHit += uint64(infoResult.TraceHit)
+		deltaHit += uint64(infoResult.DeltaHit)
+		trieHit += uint64(infoResult.TrieHit)
+
+		traceMiss += uint64(infoResult.TraceMiss)
+		noMatchMiss += uint64(infoResult.NoMatchMiss)
+
+		txPreplayLock += uint64(infoResult.TxPreplayLock)
+		abortedTrace += uint64(infoResult.AbortedTrace)
+		abortedMix += uint64(infoResult.AbortedMix)
+		abortedDelta += uint64(infoResult.AbortedDelta)
+		abortedTrie += uint64(infoResult.AbortedTrie)
+
 		context = []interface{}{
 			"block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
+			"enpool", fmt.Sprintf("%d(%.3f)", enpool, float64(enpool)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
 			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
-			"MH-RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-				mixHitCount, mixHitRate, traceHitCount, traceHitRate, deltaHitCount, deltaHitRate, trieHitCount, trieHitRate),
+			"MixHit", fmt.Sprintf("%d(%.3f)-[AllDep:%d|AllDetail:%d|PartialDetail:%d|AllDelta:%d|PartialDelta:%d]",
+				mixHit, float64(mixHit)/float64(txnCount), allDepMixHit, allDetailMixHit,
+				partialDetailMixHit, allDeltaMixHit, partialDeltaMixHit),
+			"RH-DH-TH", fmt.Sprintf("%d(%.3f)-%d(%.3f)-%d(%.3f)", traceHit, float64(traceHit)/float64(txnCount),
+				deltaHit, float64(deltaHit)/float64(txnCount), trieHit, float64(trieHit)/float64(txnCount)),
+			"miss", fmt.Sprintf("%d(%.3f)-[TraceMiss:%03d|NoMatchMiss:%03d]", miss, float64(miss)/float64(txnCount),
+				traceMiss, noMatchMiss),
 		}
 		if unknown > 0 {
-			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)))
-			context = append(context, "txPreplayLock", TxPreplayLock)
+			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
+				"txPreplayLock", txPreplayLock)
 			if cfg.MSRAVMSettings.ParallelizeReuse {
-				context = append(context, "AM-AR-AD-AT", fmt.Sprintf("%03d-%03d-%03d-%03d",
-					AbortedMix, AbortedTrace, AbortedDelta, AbortedTrie))
+				context = append(context, "abortStage(R-M-D-T)", fmt.Sprintf("%d-%d-%d-%d",
+					abortedMix, abortedTrace, abortedDelta, abortedTrie))
 			}
 		}
 		log.Info("Cumulative block reuse", context...)
+
+		log.Info("Tries lock", "count", fmt.Sprintf("%d-%d-%d-%d", LockCount[0], LockCount[1], LockCount[2], LockCount[3]))
 
 		var (
 			enqueues      = make([]uint64, 0)
@@ -642,7 +764,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, cfg vm.Config, synced bool, 
 				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
 			}
 		}
-		reporter.ReportMiss(txnCount-listen, listen-Package, Package-enqueue, enqueue-preplay)
+		reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-Package, Package-enqueue, enqueue-preplay)
 	}
 }
 
@@ -695,26 +817,16 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 
 			txPreplay := r.PeekTxPreplay(tx.Hash())
 			if txPreplay != nil {
-
-				txPreplay.Mu.Lock()
-
-				var keys []uint64
-				roundKeys := txPreplay.PreplayResults.Rounds.Keys()
-				for _, raw := range roundKeys {
-					keys = append(keys, raw.(uint64))
-				}
-				var reducedKeys []uint64
-				for _, key := range keys {
+				txPreplay.RLockRound()
+				txCache.Rounds = txPreplay.KeysOfRound()
+				for _, key := range txCache.Rounds {
 					round, _ := txPreplay.PeekRound(key)
 					if round.Filled != -1 {
 						continue
 					}
-					reducedKeys = append(reducedKeys, key)
+					txCache.ReducedRounds = append(txCache.ReducedRounds, key)
 				}
-				txCache.Rounds = keys
-				txCache.ReducedRounds = reducedKeys
-
-				txPreplay.Mu.Unlock()
+				txPreplay.RUnlockRound()
 			} else {
 				txCache.Rounds = nil
 				txCache.ReducedRounds = nil
@@ -807,15 +919,13 @@ func (r *GlobalCache) PreplayPrint(RoundID uint64, executionOrder []*types.Trans
 			continue
 		}
 
-		txPreplay.Mu.Lock()
+		txPreplay.RLockRound()
 
 		round, _ := txPreplay.PeekRound(RoundID)
-
 		if round == nil {
 			log.Debug("[PreplayPrint] getRoundID Error", "txHash", tx.Hash(), "roundID", RoundID)
 			preplayResult.Result = append(preplayResult.Result, nil)
-
-			txPreplay.Mu.Unlock()
+			txPreplay.RUnlockRound()
 			continue
 		}
 
@@ -843,7 +953,7 @@ func (r *GlobalCache) PreplayPrint(RoundID uint64, executionOrder []*types.Trans
 		// 	currentState = round.CurrentState
 		// }
 
-		txPreplay.Mu.Unlock()
+		txPreplay.RUnlockRound()
 	}
 
 	// General Log

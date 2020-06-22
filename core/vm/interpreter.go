@@ -70,7 +70,7 @@ type MSRAVMConfig struct {
 	TxApplyPerfLogging   bool
 	PerfLogging          bool
 	ParallelizeReuse     bool
-	CalWarmupMiss        bool
+	WarmupMissDetail     bool
 	ReportMissDetail     bool
 }
 

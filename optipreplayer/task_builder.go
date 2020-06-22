@@ -20,9 +20,9 @@ const (
 	// preplayLimitForRemain is the upper limit of preplay count for transactions in remain pool.
 	preplayLimitForRemain = 2
 	// remainTxnLimit is the limit of remain txn preplay count.
-	remainTxnLimit = 20
+	remainTxnLimit = 40
 	// remainTxnTotalLimit is the total limit of remain txn preplay count between two blocks.
-	remainTxnTotalLimit = 200
+	remainTxnTotalLimit = 800
 )
 
 type TaskBuilder struct {
@@ -726,9 +726,11 @@ func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
 			if txPreplay := b.globalCache.PeekTxPreplay(txnHash); txPreplay != nil {
+				txPreplay.RLockRound()
 				if round, ok := txPreplay.PeekRound(roundID); ok {
 					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))
 				}
+				txPreplay.RUnlockRound()
 			}
 		}
 	}

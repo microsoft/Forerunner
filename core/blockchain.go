@@ -1856,14 +1856,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
 		} else {
-			if bc.vmConfig.MSRAVMSettings.CalWarmupMiss {
+			statedb.CalWarmupMiss = true
+			statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
+			if pair := statedb.GetPair(); pair != nil {
+				pair.CalWarmupMiss = true
+				pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+			}
+
+			if bc.vmConfig.MSRAVMSettings.WarmupMissDetail {
 				statedb.ProcessedForDb, statedb.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
-				statedb.CalWarmupMiss = true
-				statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
+				statedb.WarmupMissDetail = true
 				if pair := statedb.GetPair(); pair != nil {
 					pair.ProcessedForDb, pair.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
-					pair.CalWarmupMiss = true
-					pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+					pair.WarmupMissDetail = true
 				}
 			}
 		}
@@ -2034,7 +2039,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		atomic.StoreUint32(&followupInterrupt, 1)
 
 		if !bc.vmConfig.MSRAVMSettings.Silent {
-			bc.MSRACache.InfoPrint(block, bc.vmConfig, bc.MSRACache.Synced(), bc.ReportReuseMiss, statedb)
+			bc.MSRACache.InfoPrint(block, types.NewEIP155Signer(bc.chainConfig.ChainID), bc.vmConfig, bc.MSRACache.Synced(), bc.ReportReuseMiss, statedb)
 		}
 		bc.MSRACache.Continue()
 		bc.Warmuper.Continue()

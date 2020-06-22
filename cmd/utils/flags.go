@@ -907,9 +907,9 @@ var (
 		Name:  "parallelizereuse",
 		Usage: "Parallelize reuse and real apply when apply (enable only when reuse mode)",
 	}
-	CalWarmupMissFlag = cli.BoolFlag{
-		Name:  "calwarmupmiss",
-		Usage: "Calculate warmup miss count for address and key",
+	WarmupMissDetailFlag = cli.BoolFlag{
+		Name:  "warmupmissdetail",
+		Usage: "Classify warmup miss of address and key by detail",
 	}
 	ReportMissDetailFlag = cli.BoolFlag{
 		Name:  "reportmissdetail",
@@ -1779,7 +1779,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		EmulateFile:          "my.json",
 
 		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
-		CalWarmupMiss:    ctx.GlobalBool(CalWarmupMissFlag.Name),
+		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
     if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {

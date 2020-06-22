@@ -48,15 +48,15 @@ type GlobalCache struct {
 
 	TxMu           sync.RWMutex
 	TxListenCache  *lru.Cache
+	TxEnpoolCache  *lru.Cache
 	TxPackageCache *lru.Cache
 	TxEnqueueCache *lru.Cache
 
 	// Preplay result
-	PreplayMu        sync.RWMutex
-	PreplayRoundIDMu sync.RWMutex
 	PreplayCache     *lru.Cache // Result Cache
 	PreplayCacheSize int
 	PreplayRoundID   uint64
+	PreplayRoundIDMu sync.RWMutex
 	PreplayTimestamp uint64 // Last time stamp
 
 	// Gas used cache
@@ -105,7 +105,8 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.BlockPreCache, _ = lru.New(bSize)
 	g.BlockCache, _ = lru.New(bSize)
 
-	g.TxListenCache, _ = lru.New(tSize * 5)
+	g.TxListenCache, _ = lru.New(tSize * 10)
+	g.TxEnpoolCache, _ = lru.New(tSize * 5)
 	g.TxPackageCache, _ = lru.New(tSize)
 	g.TxEnqueueCache, _ = lru.New(tSize)
 
@@ -151,34 +152,29 @@ func (r *GlobalCache) FillBigIntPool() {
 func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithTraceCount int,
 	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64,
 	wobjectCount uint64, wobjectStorageSize uint64) {
-	txHashes := r.PreplayCache.Keys()
+	txHashes := r.KeysOfTxPreplay()
 	cachedTxCount = len(txHashes)
 	cachedTxWithTraceCount = 0
 	maxTrieNodeCount = 0
 	totalTrieNodeCount = 0
 	for _, key := range txHashes {
-		p, _ := r.PreplayCache.Peek(key)
-		if p != nil {
-			tp := p.(*TxPreplay)
-			wc, sc := tp.PreplayResults.GetWObjectSize()
-			wobjectCount += wc
-			wobjectStorageSize += sc
-			t := tp.PreplayResults.TraceTrie
-			if t != nil {
+		if txPreplay := r.PeekTxPreplay(key); txPreplay != nil {
+			objectSize, storageItemCount := txPreplay.PreplayResults.GetWObjectSize()
+			wobjectCount += objectSize
+			wobjectStorageSize += storageItemCount
+			if txPreplay.PreplayResults.MixTree != nil {
+				totalMixTrieNodeCount += txPreplay.PreplayResults.MixTree.GetNodeCount()
+			}
+			if txPreplay.PreplayResults.TraceTrie != nil {
 				cachedTxWithTraceCount++
-				nc := t.GetNodeCount()
-				totalTrieNodeCount += nc
-				if nc > maxTrieNodeCount {
-					maxTrieNodeCount = nc
+				nodeCount := txPreplay.PreplayResults.TraceTrie.GetNodeCount()
+				totalTrieNodeCount += nodeCount
+				if nodeCount > maxTrieNodeCount {
+					maxTrieNodeCount = nodeCount
 				}
 			}
-			mt := tp.PreplayResults.MixTree
-			if mt != nil {
-				totalMixTrieNodeCount += mt.GetNodeCount()
-			}
-			rwt := tp.PreplayResults.RWRecordTrie
-			if rwt != nil {
-				totalRWTrieNodeCount += rwt.GetNodeCount()
+			if txPreplay.PreplayResults.RWRecordTrie != nil {
+				totalRWTrieNodeCount += txPreplay.PreplayResults.RWRecordTrie.GetNodeCount()
 			}
 		}
 	}
@@ -187,12 +183,10 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithT
 }
 
 func (r *GlobalCache) GCWObjects() () {
-	txHashes := r.PreplayCache.Keys()
+	txHashes := r.KeysOfTxPreplay()
 	for _, key := range txHashes {
-		p, _ := r.PreplayCache.Peek(key)
-		if p != nil {
-			tp := p.(*TxPreplay)
-			tp.PreplayResults.GCWObjects()
+		if txPreplay := r.PeekTxPreplay(key); txPreplay != nil {
+			txPreplay.PreplayResults.GCWObjects()
 		}
 	}
 }
@@ -201,12 +195,10 @@ func (r *GlobalCache) GCWObjects() () {
 func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 
 	r.BlockMu.Lock()
-	r.PreplayMu.Lock()
 	r.PreplayRoundIDMu.Lock()
 	r.TxMu.Lock()
 	defer func() {
 		r.TxMu.Unlock()
-		r.PreplayMu.Unlock()
 		r.PreplayRoundIDMu.Unlock()
 		r.BlockMu.Unlock()
 	}()
@@ -217,7 +209,8 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	}
 
 	if tSize != 0 {
-		r.TxListenCache, _ = lru.New(tSize)
+		r.TxListenCache, _ = lru.New(tSize * 10)
+		r.TxEnpoolCache, _ = lru.New(tSize * 5)
 		r.TxPackageCache, _ = lru.New(tSize)
 		r.TxEnqueueCache, _ = lru.New(tSize)
 	}

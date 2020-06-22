@@ -303,9 +303,11 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 	var rounds = make([]*cache.PreplayResult, 0, len(executor.executionOrder))
 	for _, tx := range executor.executionOrder {
 		if txPreplay := p.globalCache.PeekTxPreplay(tx.Hash()); txPreplay != nil {
+			txPreplay.RLockRound()
 			if round, _ := txPreplay.PeekRound(executor.RoundID); round != nil {
 				rounds = append(rounds, round)
 			}
+			txPreplay.RUnlockRound()
 		}
 	}
 

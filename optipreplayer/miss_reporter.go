@@ -413,10 +413,13 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	}
 }
 
-func (r *MissReporter) ReportMiss(noListen, noPackage, noEnqueue, noPreplay uint64) {
-	context := []interface{}{"NoListen", noListen, "NoPackage", noPackage, "NoEnqueue", noEnqueue,
+func (r *MissReporter) ReportMiss(noListen, noListenAndEthermine, noEnpool, noPackage, noEnqueue, noPreplay uint64) {
+	context := []interface{}{
+		"NoListen", fmt.Sprintf("%d(%d)", noListen, noListenAndEthermine),
+		"NoEnpool", noEnpool, "NoPackage", noPackage, "NoEnqueue", noEnqueue,
 		"NoPreplay", fmt.Sprintf("%d(%d-%d)", noPreplay, r.noGroupPreplay, r.noExecPreplay),
-		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2])}
+		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2]),
+	}
 	if r.groupMissCount > 0 {
 		context = append(context, "NoGroup", r.groupMissCount)
 	}
@@ -510,10 +513,13 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 			txnHash := txn.Hash()
 			txPreplay := p.globalCache.PeekTxPreplay(txnHash)
 			if txPreplay != nil {
+				txPreplay.RLockRound()
 				if round, ok := txPreplay.PeekRound(executor.RoundID); ok {
 					rwrecords[txnHash] = NewRWRecord(round.RWrecord)
+					txPreplay.RUnlockRound()
 					continue
 				}
+				txPreplay.RUnlockRound()
 			}
 			rwrecords[txnHash] = NewRWRecord(nil)
 			log.Error("Detect nil rwrecord in miss reporter", "txPreplay != nil", txPreplay != nil,
@@ -759,7 +765,7 @@ func pickOneGroup(groupMap map[common.Hash]*TxnGroup) *TxnGroup {
 }
 
 func getInterfaceValue(value interface{}) string {
-	if value == nil{ // miss_value is null
+	if value == nil { // miss_value is null
 		return ""
 	}
 	val := reflect.ValueOf(value)

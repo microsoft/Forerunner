@@ -45,8 +45,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx, rwrecord)
 	}
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
+
 	start := time.Now()
 
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
@@ -70,35 +69,51 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		}
 
 		var err error
-		if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq){
+		txPreplay.PreplayResults.MixTreeMu.Lock()
+		if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq) {
 			// if isExternalTransfer is changed from true to false, only set dep in mix tree:
 			err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
-		}else{
+		} else {
 			err = reuse.setMixTree(tx, txPreplay, round)
 		}
+		txPreplay.PreplayResults.MixTreeMu.Unlock()
+
 		if err != nil {
 			roundjs, _ := json.Marshal(round)
 			log.Error("setMixTree error", "round", string(roundjs))
 			panic(err.Error())
 		}
+
 		if reuseStatus.BaseStatus != cmptypes.Hit {
+			txPreplay.PreplayResults.RWRecordTrieMu.Lock()
 			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
+
 			if err != nil {
 				roundjs, _ := json.Marshal(round)
 				log.Error("setRWRecordTrie error", "round", string(roundjs))
 				panic(err.Error())
 			}
+
 			if txPreplay.PreplayResults.IsExternalTransfer {
+				txPreplay.PreplayResults.DeltaTreeMu.Lock()
 				err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+				txPreplay.PreplayResults.DeltaTreeMu.Unlock()
+
 				if err != nil {
 					roundjs, _ := json.Marshal(round)
 					log.Error("setDeltaTree error", "round", string(roundjs))
 					panic(err.Error())
 				}
 			}
+
 			if trace != nil {
 				traceTrieStart := time.Now()
+
+				txPreplay.PreplayResults.TraceTrieMu.Lock()
 				reuse.setTraceTrie(tx, txPreplay, round, trace)
+				txPreplay.PreplayResults.TraceTrieMu.Unlock()
+
 				cost := time.Since(traceTrieStart)
 				if cost > 14*time.Second {
 					log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
@@ -121,7 +136,6 @@ func (reuse *Cmpreuse) setRWRecordTrie(txPreplay *cache.TxPreplay, round *cache.
 	trie := txPreplay.PreplayResults.RWRecordTrie
 	return InsertRecord(trie, round, curBlockNumber)
 }
-
 
 func (reuse *Cmpreuse) setMixTreeWithOnlyDependence(txPreplay *cache.TxPreplay, round *cache.PreplayResult) error {
 	return InsertAccDep(txPreplay.PreplayResults.MixTree, round)

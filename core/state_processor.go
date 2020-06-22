@@ -448,35 +448,37 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}
 			}
 
-			if cfg.MSRAVMSettings.CalWarmupMiss {
-				var checkDb = statedb
-				if pair := statedb.GetPair(); pair != nil && reuseStatus.BaseStatus != cmptypes.Hit {
-					checkDb = pair
-				}
-				if checkDb.HaveMiss() {
-					word := "Should(Hit)"
-					if reuseStatus.BaseStatus != cmptypes.Hit {
-						word = fmt.Sprintf("May(%s)", reuseStatus.BaseStatus)
-						if reuseStatus.BaseStatus == cmptypes.NoPreplay {
-							txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
-							if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
-								word = "Cannot(NoPreplay)"
-							}
+			var checkDb = statedb
+			if pair := statedb.GetPair(); pair != nil && reuseStatus.BaseStatus != cmptypes.Hit {
+				checkDb = pair
+			}
+			if checkDb.HaveMiss() {
+				word := "Should(Hit)"
+				if reuseStatus.BaseStatus != cmptypes.Hit {
+					word = fmt.Sprintf("May(%s)", reuseStatus.BaseStatus)
+					if reuseStatus.BaseStatus == cmptypes.NoPreplay {
+						txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
+						if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
+							word = "Cannot(NoPreplay)"
 						}
 					}
-					cache.WarmupMissTxnCount[word]++
-					cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
-					cache.AddrNoWarmup[word] += statedb.AddrNoWarmup
-					cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
-					cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
-					cache.KeyNoWarmup[word] += statedb.KeyNoWarmup
-					cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
 				}
+				cache.WarmupMissTxnCount[word]++
+				cache.AccountCreate[word] += statedb.AccountCreate
+				cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
+				cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
+				cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
+				cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
 
-				statedb.ClearMiss()
-				if pair := statedb.GetPair(); pair != nil {
-					pair.ClearMiss()
+				if cfg.MSRAVMSettings.WarmupMissDetail {
+					cache.AddrNoWarmup[word] += statedb.AddrNoWarmup
+					cache.KeyNoWarmup[word] += statedb.KeyNoWarmup
 				}
+			}
+
+			statedb.ClearMiss()
+			if pair := statedb.GetPair(); pair != nil {
+				pair.ClearMiss()
 			}
 		} else {
 			if cfg.MSRAVMSettings.TxApplyPerfLogging {
@@ -520,18 +522,19 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 		if cache.ToScreen && cache.Apply[len(cache.Apply)-1] > time.Millisecond*50 {
-			applyCost := cache.Apply[len(cache.Apply)-1]
-			cache.LongExecutionCost += applyCost
-			if applyCost > cache.MaxLongExecutionCost {
-				cache.MaxLongExecutionCost = applyCost
-				if len(reuseResult) > 0 {
+			cache.LongExecutionCost += cache.Apply[len(cache.Apply)-1]
+			if cache.Apply[len(cache.Apply)-1] > cache.MaxLongExecutionCost {
+				cache.MaxLongExecutionCost = cache.Apply[len(cache.Apply)-1]
+			}
+			if len(reuseResult) > 0 {
+				if cache.Reuse[len(cache.Reuse)-1] > cache.MaxLongExecutionReuseCost {
 					cache.MaxLongExecutionReuseCost = cache.Reuse[len(cache.Reuse)-1]
 				}
 			}
 			context := []interface{}{
 				"number", block.Number(), "hash", block.Hash(), "index", i, "tx", tx.Hash().Hex(),
 				//"now time", fmt.Sprintf("%.3fs", float64(runtime.GetNanoTime()-runtime.GetRunTimeInitTime())/1e9),
-				"apply cost", common.PrettyDuration(applyCost),
+				"apply cost", common.PrettyDuration(cache.Apply[len(cache.Apply)-1]),
 				"cum cost", common.PrettyDuration(cache.LongExecutionCost),
 				"max cost", common.PrettyDuration(cache.MaxLongExecutionCost),
 			}
@@ -574,7 +577,8 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	p.engine.Finalize(p.bc, header, statedb, block.Transactions(), block.Uncles())
-	cache.Finalize += time.Since(t0)
+	cache.WaitUpdateRoot, cache.UpdateObj, cache.HashTrie = statedb.DumpFinalizeDetail()
+	cache.Finalize = time.Since(t0)
 	cache.ReuseResult = reuseResult
 	return receipts, allLogs, *usedGas, nil
 }

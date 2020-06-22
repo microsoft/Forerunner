@@ -34,11 +34,7 @@ type TxDistributionList struct {
 
 // GetDistributionList RPC for get distribution list
 func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionList {
-
-	r.PreplayMu.RLock()
-	defer r.PreplayMu.RUnlock()
-
-	// defult round ID
+	// default round ID
 	roundID := uint64(0)
 	result := &TxDistributionList{}
 
@@ -47,12 +43,12 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 		return result
 	}
 
-	var err error
-	// rawPending, err := r.eth.TxPool().Pending()
+	//var err error
+	//rawPending, err := r.eth.TxPool().Pending()
+	//if err != nil {
+	//	return result
+	//}
 	rawPending := map[common.Address]types.Transactions{}
-	if err != nil {
-		return result
-	}
 
 	calList := map[uint64]*TxDistributionItem{}
 
@@ -60,19 +56,21 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 		for _, tx := range rawPending[acc] {
 			txHash := tx.Hash()
 
-			tx := r.PeekTxPreplay(txHash)
-			if tx == nil {
+			txPreplay := r.PeekTxPreplay(txHash)
+			if txPreplay == nil {
 				continue
 			}
 
-			round, _ := tx.PeekRound(roundID)
+			txPreplay.RLockRound()
+			round, _ := txPreplay.PeekRound(roundID)
 			// Dont consider will not in & already in
 			if round.ExtraResult.Status != "will in" {
+				txPreplay.RUnlockRound()
 				continue
 			}
 
-			if tx.GasPrice.Cmp(queryTx.GasPrice) >= 0 {
-				txPrice := tx.GasPrice.Uint64()
+			if txPreplay.GasPrice.Cmp(queryTx.GasPrice) >= 0 {
+				txPrice := txPreplay.GasPrice.Uint64()
 				if dItem, ok := calList[txPrice]; ok {
 					dItem.GasCount = dItem.GasCount + 1
 					dItem.GasUsed = dItem.GasUsed + round.Receipt.GasUsed
@@ -80,10 +78,11 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 					calList[txPrice] = &TxDistributionItem{
 						GasCount: 1,
 						GasUsed:  round.Receipt.GasUsed,
-						GasPrice: tx.GasPrice,
+						GasPrice: txPreplay.GasPrice,
 					}
 				}
 			}
+			txPreplay.RUnlockRound()
 		}
 	}
 

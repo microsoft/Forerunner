@@ -76,10 +76,10 @@ func newDeltaDB() *deltaDB {
 }
 
 type TxPerfAndStatus struct {
-	Receipt *types.Receipt
-	Time time.Duration
+	Receipt     *types.Receipt
+	Time        time.Duration
 	ReuseStatus *cmptypes.ReuseStatus
-	Delay float64
+	Delay       float64
 }
 
 // StateDBs within the ethereum protocol are used to store anything
@@ -167,6 +167,8 @@ type StateDB struct {
 	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
 	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
 	CalWarmupMiss      bool
+	WarmupMissDetail   bool
+	AccountCreate      int
 	AddrWarmupMiss     int
 	AddrNoWarmup       int
 	AddrWarmupHelpless map[common.Address]struct{}
@@ -177,6 +179,11 @@ type StateDB struct {
 	UnknownTxs        []*types.Transaction
 	UnknownTxReceipts []*types.Receipt
 	TxPerfs           []*TxPerfAndStatus
+
+	//Time consumption detail in finalize
+	waitUpdateRoot time.Duration
+	updateObj      time.Duration
+	hashTrie       time.Duration
 }
 
 func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64) {
@@ -943,7 +950,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	}
 	if s.CalWarmupMiss {
 		s.AddrWarmupMiss++
-		if !s.IsAddrWarmup(addr) {
+		if s.WarmupMissDetail && !s.IsAddrWarmup(addr) {
 			s.AddrNoWarmup++
 		}
 	}
@@ -996,6 +1003,7 @@ func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) 
 	} else {
 		s.setStateObject(newobj)
 	}
+	s.AccountCreate++
 	return newobj, prev
 }
 
@@ -1390,6 +1398,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
+	var start time.Time
 	if s.IsParallelHasher {
 		toDelete := make([]*stateObject, 0, len(s.stateObjectsPending))
 		toUpdateRoot := make([]*stateObject, 0, len(s.stateObjectsPending))
@@ -1444,13 +1453,18 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 				trie.ExecuteInParallelPool(job)
 			}
 		}
+
+		start = time.Now()
 		allJobs.Wait()
+		s.waitUpdateRoot = time.Since(start)
+		start = time.Now()
 		// this has to be done in serial
 		//for i, obj := range toUpdateRoot {
 		//	//s.updateStateObject(obj)
 		//	s.updateStateObjectWithHashedKeyAndEncodedData(obj, encodedData[i], hashedKeys[i])
 		//}
 		s.updateStateObjectsInBatch(keyCopies, hexKeys, encodedData, hashedStrings)
+		s.updateObj = time.Since(start)
 	} else {
 		for addr := range s.stateObjectsPending {
 			obj := s.stateObjects[addr]
@@ -1473,9 +1487,21 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if s.IsParallelHasher {
 		s.trie.UseParallelHasher(true)
 		defer s.trie.UseParallelHasher(false)
+
+		start = time.Now()
+		defer func() {
+			s.hashTrie = time.Since(start)
+		}()
 	}
 
 	return s.trie.Hash()
+}
+
+func (s *StateDB) DumpFinalizeDetail() (waitUpdateRoot, updateObj, hashTrie time.Duration) {
+	waitUpdateRoot, s.waitUpdateRoot = s.waitUpdateRoot, 0
+	updateObj, s.updateObj = s.updateObj, 0
+	hashTrie, s.hashTrie = s.hashTrie, 0
+	return
 }
 
 // Prepare sets the current transaction hash and index and block hash which is

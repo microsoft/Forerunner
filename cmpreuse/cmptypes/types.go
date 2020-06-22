@@ -217,9 +217,9 @@ type MixHitType int
 const (
 	AllDepHit MixHitType = iota
 	AllDetailHit
-	PartialHit
+	PartialHit // partial dep and partial detail hit
 	AllDeltaHit
-	PartialDeltaHit
+	PartialDeltaHit // partial dep and partial delta hit
 	NotMixHit
 )
 
@@ -231,6 +231,10 @@ func (m MixHitType) String() string {
 		return "AllDetail"
 	case PartialHit:
 		return "Partial"
+	case AllDeltaHit:
+		return "AllDelta"
+	case PartialDeltaHit:
+		return "PartialDelta"
 	case NotMixHit:
 		return "NotMix"
 	}
@@ -240,7 +244,7 @@ func (m MixHitType) String() string {
 type MissType int
 
 const (
-	NoInMiss MissType = iota
+	TraceMiss MissType = iota
 	NoMatchMiss
 )
 

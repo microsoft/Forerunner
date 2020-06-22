@@ -48,31 +48,39 @@ type TxPreplay struct {
 
 	// Setting Info
 	FlagStatus bool // Flag: 0: not in, 1: already in
-	Mu         trylock.TryLocker
 }
 
 // NewTxPreplay create new RWRecord
 func NewTxPreplay(tx *types.Transaction) *TxPreplay {
-	preplayResults := &PreplayResults{}
-	preplayResults.Rounds, _ = lru.New(roundLimit)
-	//preplayResults.RWrecords, _ = lru.New(roundLimit)
+	rounds, _ := lru.New(roundLimit)
+	//RWrecords, _ := lru.New(roundLimit)
 
-	preplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
-	preplayResults.ReadDepTree = cmptypes.NewPreplayResTrie()
-	preplayResults.MixTree = cmptypes.NewPreplayResTrie()
-	preplayResults.DeltaTree = cmptypes.NewPreplayResTrie()
-	preplayResults.wobjectHolderMap = make(state.ObjectHolderMap)
-	preplayResults.objectPointerToObjID = make(map[uintptr]uintptr)
-
-	return &TxPreplay{
-		PreplayResults: preplayResults,
-		TxHash:         tx.Hash(),
-		GasPrice:       tx.GasPrice(),
-		GasLimit:       tx.Gas(),
-		Tx:             tx,
-		Timestamp:      time.Now(),
-		Mu:             trylock.New(),
+	preplayResults := &PreplayResults{
+		Rounds: rounds,
+		//ReadDepTree:          cmptypes.NewPreplayResTrie(),
+		MixTree:              cmptypes.NewPreplayResTrie(),
+		MixTreeMu:            trylock.New(),
+		DeltaTree:            cmptypes.NewPreplayResTrie(),
+		DeltaTreeMu:          trylock.New(),
+		TraceTrieMu:          trylock.New(),
+		RWRecordTrie:         cmptypes.NewPreplayResTrie(),
+		RWRecordTrieMu:       trylock.New(),
+		wobjectHolderMap:     make(state.ObjectHolderMap),
+		objectPointerToObjID: make(map[uintptr]uintptr),
+		//RWrecords:            RWrecords,
 	}
+
+	txPreplay := &TxPreplay{
+		TxHash:    tx.Hash(),
+		GasPrice:  tx.GasPrice(),
+		GasLimit:  tx.Gas(),
+		Tx:        tx,
+		Timestamp: time.Now(),
+	}
+
+	txPreplay.PreplayResults, preplayResults.txPreplay = preplayResults, txPreplay
+
+	return txPreplay
 }
 
 func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
@@ -112,7 +120,38 @@ func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord) {
 	}
 }
 
-// CreateRound create new round preplay for tx;
+func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
+	result := make(WObjectWeakRefMap)
+	for addr, obj := range objMap {
+		cmptypes.MyAssert(obj != nil)
+		id := t.PreplayResults.GetOrNewObjectID((uintptr)((unsafe.Pointer)(obj)))
+		ref := NewWObjectWeakReference(t.TxHash, addr, t.Timestamp, id, roundId)
+		if _, hasHolder := t.PreplayResults.GetHolder(ref); !hasHolder {
+			holder := state.NewObjectHolder(obj, id)
+			t.PreplayResults.SetHolder(ref, holder)
+			result[addr] = ref
+		}
+	}
+	return result
+}
+
+func (t *TxPreplay) RLockRound() {
+	t.PreplayResults.RoundsMu.RLock()
+}
+
+func (t *TxPreplay) RUnlockRound() {
+	t.PreplayResults.RoundsMu.RUnlock()
+}
+
+func (t *TxPreplay) LockRound() {
+	t.PreplayResults.RoundsMu.Lock()
+}
+
+func (t *TxPreplay) UnlockRound() {
+	t.PreplayResults.RoundsMu.Unlock()
+}
+
+// CreateOrGetRound get round by roundID, if not exists, create new round for txPreplay.
 func (t *TxPreplay) CreateOrGetRound(roundID uint64) (*PreplayResult, bool) {
 	round, ok := t.PreplayResults.Rounds.Get(roundID)
 	if ok {
@@ -130,31 +169,7 @@ func (t *TxPreplay) CreateOrGetRound(roundID uint64) (*PreplayResult, bool) {
 	return roundNew, true // true means this roundId is just created
 }
 
-func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
-	result := make(WObjectWeakRefMap)
-	for addr, obj := range objMap {
-		cmptypes.MyAssert(obj != nil)
-		id := t.PreplayResults.GetOrNewObjectID((uintptr)((unsafe.Pointer)(obj)))
-		ref := NewWObjectWeakReference(t.TxHash, addr, t.Timestamp, id, roundId)
-		if _, hasHolder := t.PreplayResults.GetHolder(ref); !hasHolder {
-			holder := state.NewObjectHolder(obj, id)
-			t.PreplayResults.SetHolder(ref, holder)
-			result[addr] = ref
-		}
-	}
-	return result
-}
-
-// GetRound get round by roundID
-func (t *TxPreplay) GetRound(roundID uint64) (*PreplayResult, bool) {
-	rawRound, ok := t.PreplayResults.Rounds.Get(roundID)
-	if !ok {
-		return nil, false
-	}
-	return rawRound.(*PreplayResult), true
-}
-
-// PeekRound peek round by roundID
+// PeekRound peek round by roundID.
 func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 	rawRound, ok := t.PreplayResults.Rounds.Peek(roundID)
 	if !ok {
@@ -163,19 +178,37 @@ func (t *TxPreplay) PeekRound(roundID uint64) (*PreplayResult, bool) {
 	return rawRound.(*PreplayResult), true
 }
 
+// KeysOfRound get a slice of the roundID, from oldest to newest.
+func (t *TxPreplay) KeysOfRound() []uint64 {
+	var keys []uint64
+	roundKeys := t.PreplayResults.Rounds.Keys()
+	for _, raw := range roundKeys {
+		keys = append(keys, raw.(uint64))
+	}
+	return keys
+}
+
 // PreplayResults record results of several rounds
 type PreplayResults struct {
-	Rounds             *lru.Cache `json:"-"`
-	RWRecordTrie       *cmptypes.PreplayResTrie
-	ReadDepTree        *cmptypes.PreplayResTrie
-	MixTree            *cmptypes.PreplayResTrie
-	DeltaTree          *cmptypes.PreplayResTrie
-	TraceTrie          ITracerTrie
+	Rounds   *lru.Cache `json:"-"`
+	RoundsMu sync.RWMutex
+
+	// deprecated
+	ReadDepTree    *cmptypes.PreplayResTrie `json:"-"`
+	MixTree        *cmptypes.PreplayResTrie
+	MixTreeMu      trylock.TryLocker
+	TraceTrie      ITracerTrie
+	TraceTrieMu    trylock.TryLocker
+	DeltaTree      *cmptypes.PreplayResTrie
+	DeltaTreeMu    trylock.TryLocker
+	RWRecordTrie   *cmptypes.PreplayResTrie
+	RWRecordTrieMu trylock.TryLocker
+
 	IsExternalTransfer bool
 	DeltaWrites        map[common.Address]*WStateDelta
 
 	wobjectHolderMap     state.ObjectHolderMap
-	holderMapMutex       sync.Mutex
+	wobjectHolderMapMu   sync.Mutex
 	wobjectIDCounter     uintptr
 	objectPointerToObjID map[uintptr]uintptr
 
@@ -183,11 +216,13 @@ type PreplayResults struct {
 	RWrecords *lru.Cache `json:"-"`
 	// deprecated
 	ReadDeps *lru.Cache `json:"-"`
+
+	txPreplay *TxPreplay
 }
 
 func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; ok {
 		return objID
 	}
@@ -198,8 +233,8 @@ func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
 }
 
 func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	holder, hok := rs.wobjectHolderMap.GetAndDelete(wref.ObjectID)
 	if hok {
 		objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
@@ -212,15 +247,15 @@ func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state
 }
 
 func (rs *PreplayResults) GetHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	h, ok := rs.wobjectHolderMap[wref.ObjectID]
 	return h, ok
 }
 
 func (rs *PreplayResults) SetHolder(wref *WObjectWeakReference, holder *state.ObjectHolder) {
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	_, ok := rs.wobjectHolderMap[wref.ObjectID]
 	cmptypes.MyAssert(!ok)
 	rs.wobjectHolderMap[wref.ObjectID] = holder
@@ -247,8 +282,8 @@ func (rs *PreplayResults) GCWObjects() {
 		}
 	}
 
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	for objID, _ := range rs.wobjectHolderMap {
 		if !activeHolderIDs[objID] {
 			holder := rs.wobjectHolderMap[objID]
@@ -263,8 +298,8 @@ func (rs *PreplayResults) GCWObjects() {
 }
 
 func (rs *PreplayResults) GetWObjectSize() (objectCount uint64, storageItemCount uint64) {
-	rs.holderMapMutex.Lock()
-	defer rs.holderMapMutex.Unlock()
+	rs.wobjectHolderMapMu.Lock()
+	defer rs.wobjectHolderMapMu.Unlock()
 	for _, holder := range rs.wobjectHolderMap {
 		objectCount++
 		storageItemCount += uint64(len(holder.Obj.GetOriginStorage()))
@@ -787,7 +822,7 @@ func (m *TxPreplayMap) RemoveCheapest(remove int) {
 }
 
 // GetTxPreplay returns the result of preplay and updates the "recently used"-ness of the key
-func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
+func (r *GlobalCache) GetTxPreplay(txHash interface{}) *TxPreplay {
 
 	result, response := r.PreplayCache.Get(txHash)
 
@@ -803,7 +838,7 @@ func (r *GlobalCache) GetTxPreplay(txHash common.Hash) *TxPreplay {
 }
 
 // PeekTxPreplay returns the result of preplay and will not update the "recently used"-ness of the key
-func (r *GlobalCache) PeekTxPreplay(txHash common.Hash) *TxPreplay {
+func (r *GlobalCache) PeekTxPreplay(txHash interface{}) *TxPreplay {
 
 	result, response := r.PreplayCache.Peek(txHash)
 
@@ -818,7 +853,11 @@ func (r *GlobalCache) PeekTxPreplay(txHash common.Hash) *TxPreplay {
 	return nil
 }
 
-func (r *GlobalCache) GetTxPreplayLen() int {
+func (r *GlobalCache) KeysOfTxPreplay() []interface{} {
+	return r.PreplayCache.Keys()
+}
+
+func (r *GlobalCache) LenOfTxPreplay() int {
 	return r.PreplayCache.Len()
 }
 
@@ -924,6 +963,9 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 		return nil, false
 	}
 
+	txPreplay.LockRound()
+	defer txPreplay.UnlockRound()
+
 	round, _ := txPreplay.CreateOrGetRound(roundID)
 
 	round.RWrecord = rwRecord
@@ -983,8 +1025,8 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 		return false
 	}
 
-	txPreplay.Mu.Lock()
-	defer txPreplay.Mu.Unlock()
+	txPreplay.LockRound()
+	defer txPreplay.UnlockRound()
 
 	round, _ := txPreplay.CreateOrGetRound(roundID)
 

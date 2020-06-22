@@ -303,6 +303,7 @@ type TxPool struct {
 	chainconfig *params.ChainConfig
 	chain       blockChain
 	gasPrice    *big.Int
+	listenFeed  event.Feed
 	txFeed      event.Feed
 	scope       event.SubscriptionScope
 	signer      types.Signer
@@ -688,6 +689,12 @@ func (pool *TxPool) Stop() {
 		pool.journal.close()
 	}
 	log.Info("Transaction pool stopped")
+}
+
+// SubscribeListenTxsEvent registers a subscription of ListenTxsEvent and
+// starts sending event to the given channel.
+func (pool *TxPool) SubscribeListenTxsEvent(ch chan<- ListenTxsEvent) event.Subscription {
+	return pool.scope.Track(pool.listenFeed.Subscribe(ch))
 }
 
 // SubscribeNewTxsEvent registers a subscription of NewTxsEvent and
@@ -1124,6 +1131,9 @@ func (pool *TxPool) AddLocal(tx *types.Transaction) error {
 // This method is used to add transactions from the p2p network and does not wait for pool
 // reorganization and internal event propagation.
 func (pool *TxPool) AddRemotes(txs []*types.Transaction) []error {
+	go func(txs []*types.Transaction) {
+		pool.listenFeed.Send(ListenTxsEvent{txs})
+	}(txs)
 	return pool.addTxs(txs, false, false)
 }
 

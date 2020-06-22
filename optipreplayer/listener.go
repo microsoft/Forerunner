@@ -31,7 +31,8 @@ func NewListener(eth Backend) *Listener {
 	}
 
 	go listener.cacheEvictionLoop()
-	go listener.commitLoop()
+	go listener.listenCommitLoop()
+	go listener.enpoolCommitLoop()
 
 	return listener
 }
@@ -46,7 +47,7 @@ func (l *Listener) cacheEvictionLoop() {
 		currentBlock := chainHeadEvent.Block
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
-		oldSize := l.globalCache.GetTxPreplayLen()
+		oldSize := l.globalCache.LenOfTxPreplay()
 		startNodeCount, startWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
 		inc := oldSize - newSize
 
@@ -57,7 +58,7 @@ func (l *Listener) cacheEvictionLoop() {
 			l.removeBefore(currentBlock.NumberU64() - 2)
 		}
 		l.globalCache.GCWObjects()
-		saveSize := l.globalCache.GetTxPreplayLen()
+		saveSize := l.globalCache.LenOfTxPreplay()
 
 		nodeCountAfterBigRemove, _ := l.globalCache.GetTotalNodeCountAndWObjectSize()
 
@@ -71,7 +72,7 @@ func (l *Listener) cacheEvictionLoop() {
 			}
 		}
 
-		newSize = l.globalCache.GetTxPreplayLen()
+		newSize = l.globalCache.LenOfTxPreplay()
 		oldRemoved = saveSize - newSize
 		removed = oldSize - newSize
 
@@ -81,7 +82,7 @@ func (l *Listener) cacheEvictionLoop() {
 			"removed", fmt.Sprintf("%d(%d)", removed, oldRemoved),
 			"newSize", newSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
 			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
-			)
+		)
 	}
 }
 
@@ -98,32 +99,46 @@ func (l *Listener) removeBefore(remove uint64) {
 	}
 }
 
-func (l *Listener) commitLoop() {
+func (l *Listener) listenCommitLoop() {
+	listenTxsCh := make(chan core.ListenTxsEvent, chanSize)
+	listenTxsSub := l.txPool.SubscribeListenTxsEvent(listenTxsCh)
+	defer listenTxsSub.Unsubscribe()
+
+	for txsEvent := range listenTxsCh {
+
+		if len(txsEvent.Txs) == 0 {
+			continue
+		}
+
+		nowTime := time.Now()
+
+		for _, tx := range txsEvent.Txs {
+			l.globalCache.CommitTxListen(&cache.TxListen{
+				Tx:             tx,
+				ListenTime:     uint64(nowTime.Unix()),
+				ListenTimeNano: uint64(nowTime.UnixNano()),
+			})
+		}
+	}
+}
+
+func (l *Listener) enpoolCommitLoop() {
 	newTxsCh := make(chan core.NewTxsEvent, chanSize)
 	newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
 	defer newTxsSub.Unsubscribe()
 
 	for txsEvent := range newTxsCh {
-		l.commitNewTxs(txsEvent.Txs)
-	}
-}
 
-func (l *Listener) commitNewTxs(txs types.Transactions) bool {
-	if len(txs) == 0 {
-		return false
-	}
+		if len(txsEvent.Txs) == 0 {
+			continue
+		}
 
-	nowTime := time.Now()
-	for _, tx := range txs {
-		l.globalCache.CommitTxListen(&cache.TxListen{
-			Tx:              tx,
-			ListenTime:      uint64(nowTime.Unix()),
-			ListenTimeNano:  uint64(nowTime.UnixNano()),
-			ConfirmTime:     0,
-			ConfirmBlockNum: 0,
-		})
+		nowTime := uint64(time.Now().UnixNano())
+
+		for _, tx := range txsEvent.Txs {
+			l.globalCache.CommitTxEnpool(tx.Hash(), nowTime)
+		}
 	}
-	return true
 }
 
 func (l *Listener) register() (func(*big.Int), func()) {

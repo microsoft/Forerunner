@@ -212,7 +212,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	var cmpr *cmpreuse.Cmpreuse
 	var msracache *cache.GlobalCache
 
-	msracache = cache.NewGlobalCache(60*6, 60*6000, int(float64(config.TxPool.GlobalSlots) * 1.5), config.MSRAVMSettings.LogRoot)
+	msracache = cache.NewGlobalCache(60*6, 60*6000, 6144, config.MSRAVMSettings.LogRoot)
 	msracache.Synced = eth.Synced
 	if vmConfig.MSRAVMSettings.EnablePreplay || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
