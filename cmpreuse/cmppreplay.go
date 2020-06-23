@@ -47,6 +47,10 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	}
 
 	start := time.Now()
+	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
+	if ok {
+		round.Trace = trace
+	}
 
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
 	// To set results more effectively, we should
@@ -56,10 +60,6 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
 	if reuseStatus.BaseStatus != cmptypes.Hit ||
 		!(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
-		round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
-		if ok {
-			round.Trace = trace
-		}
 
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
@@ -106,19 +106,19 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 					panic(err.Error())
 				}
 			}
+		}
 
-			if trace != nil {
-				traceTrieStart := time.Now()
+		if trace != nil {
+			traceTrieStart := time.Now()
 
-				txPreplay.PreplayResults.TraceTrieMu.Lock()
-				reuse.setTraceTrie(tx, txPreplay, round, trace)
-				txPreplay.PreplayResults.TraceTrieMu.Unlock()
+			txPreplay.PreplayResults.TraceTrieMu.Lock()
+			reuse.setTraceTrie(tx, txPreplay, round, trace)
+			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
-				cost := time.Since(traceTrieStart)
-				if cost > 14*time.Second {
-					log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
-						"traceLen", len(trace.Stats), "traceRLCount", len(trace.RLNodeSet), "traceJSPCount", len(trace.JSPSet))
-				}
+			cost := time.Since(traceTrieStart)
+			if cost > 14*time.Second {
+				log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
+					"traceLen", len(trace.Stats), "traceRLCount", len(trace.RLNodeSet), "traceJSPCount", len(trace.JSPSet))
 			}
 		}
 

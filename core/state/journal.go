@@ -55,6 +55,12 @@ func (j *journal) append(entry journalEntry) {
 	}
 }
 
+func (j *journal) addDirty(addr *common.Address) {
+	if addr != nil {
+		j.dirties[*addr]++
+	}
+}
+
 // revert undoes a batch of journalled modifications along with any reverted
 // dirty handling too.
 func (j *journal) revert(statedb *StateDB, snapshot int) {
@@ -216,9 +222,11 @@ func (ch codeChange) dirtied() *common.Address {
 
 func (ch storageChange) revert(s *StateDB) {
 	so := s.getStateObject(*ch.account)
-	so.dirtyStorageCount[ch.key]--
-	if so.dirtyStorageCount[ch.key] == 0 {
-		delete(so.dirtyStorageCount, ch.key)
+	if s.IsRWMode() {
+		so.dirtyStorageCount[ch.key]--
+		if so.dirtyStorageCount[ch.key] == 0 {
+			delete(so.dirtyStorageCount, ch.key)
+		}
 	}
 	so.setState(ch.key, ch.prevalue)
 }

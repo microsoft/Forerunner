@@ -58,6 +58,10 @@ func (b *StatedbBox) warmupDbLoop() {
 		case task := <-b.dbWarmupCh:
 			usableDbList := b.statedbList[b.usableDb:]
 			for _, statedb := range usableDbList {
+
+				// turn on warmup mode to pre-creation non-existence account
+				statedb.InWarmupMode = true
+
 				for addr, keyMap := range task.contentForDb {
 					if exist := statedb.Exist(addr); exist {
 						statedb.GetCode(addr)
@@ -68,8 +72,13 @@ func (b *StatedbBox) warmupDbLoop() {
 							statedb.GetCommittedState(addr, key)
 							b.processedForDb[addr][key] = struct{}{}
 						}
+					}else {
+						panic("addr should always exist in warmup mode")
 					}
 				}
+
+				statedb.InWarmupMode = false
+
 				if pairdb := statedb.GetPair(); pairdb != nil {
 					for addr, keyMap := range task.contentForDb {
 						if exist := pairdb.Exist(addr); exist {
@@ -80,6 +89,7 @@ func (b *StatedbBox) warmupDbLoop() {
 						}
 					}
 				}
+
 			}
 		case <-b.exitCh:
 			b.wg.Done()

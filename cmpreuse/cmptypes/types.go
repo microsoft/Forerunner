@@ -130,11 +130,17 @@ type TraceHitStatus struct {
 	TotalNodes    uint64
 	ExecutedNodes uint64
 	TotalJumps    uint64
+	AJumps        uint64
+	FJumps        uint64
+	OJumps        uint64
+	TotalJumpKeys uint64
 	FailedJumps   uint64
 }
 
 func (th *TraceHitStatus) String() string {
-	return fmt.Sprintf("E/N: %v %v F/J: %v %v", th.ExecutedNodes, th.TotalNodes, th.FailedJumps, th.TotalJumps)
+	return fmt.Sprintf("E/N: %v %v F/J: %v %v K: %v A/F/O: %v %v %v",
+		th.ExecutedNodes, th.TotalNodes, th.FailedJumps, th.TotalJumps, th.TotalJumpKeys,
+		th.AJumps, th.FJumps, th.OJumps)
 }
 
 func (s ReuseStatus) String() string {

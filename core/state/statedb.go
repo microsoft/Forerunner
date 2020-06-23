@@ -92,9 +92,10 @@ type StateDB struct {
 	trie Trie
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
-	stateObjects        map[common.Address]*stateObject
-	stateObjectsPending map[common.Address]struct{} // State objects finalized but not yet written to the trie
-	stateObjectsDirty   map[common.Address]struct{} // State objects modified in the current execution
+	stateObjects           map[common.Address]*stateObject
+	stateObjectsPending    map[common.Address]struct{} // State objects finalized but not yet written to the trie
+	stateObjectsDirty      map[common.Address]struct{} // State objects modified in the current execution
+	createdObjectsInWarmup map[common.Address]*stateObject
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -137,6 +138,7 @@ type StateDB struct {
 	addrNotCopy         map[common.Address]struct{}
 	copyForShare        bool       // default false
 	rwRecorder          RWRecorder // RWRecord mode
+	rwRecorderEnabled   bool
 
 	ReuseTracer cmptypes.IReuseTracer
 
@@ -163,6 +165,8 @@ type StateDB struct {
 	nextBigIntIndex             int
 	preAllocatedTxPerfs         []*TxPerfAndStatus
 	nextTxPerfIndex             int
+	//preAllocatedJournals        []*journal
+	//nextJournalIndex            int
 
 	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
 	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
@@ -184,6 +188,9 @@ type StateDB struct {
 	waitUpdateRoot time.Duration
 	updateObj      time.Duration
 	hashTrie       time.Duration
+
+	IgnoreJournalEntry bool
+	InWarmupMode       bool
 }
 
 func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64) {
@@ -217,10 +224,12 @@ func (self *StateDB) PreAllocateObjects() {
 	preDeltaCount := 100
 	preBigIntCount := 600
 	preTxPerfCount := 300
+	//preJournalCount := 400
 	self.preAllocatedOriginStorages = make([]Storage, preOriginCount)
 	self.preAllocatedPendingStorages = make([]Storage, prePendingCount)
 	self.preAllocatedDeltaObjects = make([]*deltaObject, preDeltaCount)
 	self.preAllocatedBigInt = make([]*big.Int, preBigIntCount)
+	//self.preAllocatedJournals = make([]*journal, preJournalCount)
 	for i := range self.preAllocatedOriginStorages {
 		self.preAllocatedOriginStorages[i] = make(Storage)
 	}
@@ -241,6 +250,9 @@ func (self *StateDB) PreAllocateObjects() {
 	for i := range self.preAllocatedTxPerfs {
 		self.preAllocatedTxPerfs[i] = &TxPerfAndStatus{}
 	}
+	//for i := range self.preAllocatedJournals {
+	//	self.preAllocatedJournals[i] = newJournal()
+	//}
 }
 
 func (self *StateDB) GetNewOriginStorage() Storage {
@@ -288,6 +300,15 @@ func (self *StateDB) GetNewTxPerf() *TxPerfAndStatus {
 	return tf
 }
 
+//func (self *StateDB) GetNewJournal() *journal {
+//	if self.nextJournalIndex >= len(self.preAllocatedJournals) {
+//		return newJournal()
+//	}
+//	tf := self.preAllocatedJournals[self.nextJournalIndex]
+//	self.nextJournalIndex++
+//	return tf
+//}
+
 func (self *StateDB) StateObjectCountInDelta() int {
 	return len(self.delta.stateObjects)
 }
@@ -303,6 +324,12 @@ func (self *StateDB) SetBloomProcessor(bp *types.ParallelBloomProcessor) {
 	}
 }
 
+const PRE_STATE_OBJECT_SLOTS = 400
+const PRE_DIRTY_SLOTS = 100
+const PRE_LOG_SLOTS = 1000
+const PRE_TX_SLOTS = 500
+const PRE_JOURNAL_ENTRY_SLOTS = 1000
+
 // Create a new state from a given trie.
 func New(root common.Hash, db Database) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
@@ -310,14 +337,15 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		return nil, err
 	}
 	return &StateDB{
-		db:                  db,
-		trie:                tr,
-		stateObjects:        make(map[common.Address]*stateObject),
-		stateObjectsPending: make(map[common.Address]struct{}, 300),
-		stateObjectsDirty:   make(map[common.Address]struct{}),
-		logs:                make(map[common.Hash][]*types.Log, 100),
-		preimages:           make(map[common.Hash][]byte),
-		journal:             newJournal(),
+		db:                     db,
+		trie:                   tr,
+		stateObjects:           make(map[common.Address]*stateObject),
+		stateObjectsPending:    make(map[common.Address]struct{}, 300),
+		stateObjectsDirty:      make(map[common.Address]struct{}),
+		createdObjectsInWarmup: make(map[common.Address]*stateObject),
+		logs:                   make(map[common.Hash][]*types.Log, 100),
+		preimages:              make(map[common.Hash][]byte),
+		journal:                newJournal(),
 
 		EnableFeeToCoinbase: true,
 		allowObjCopy:        true,
@@ -353,8 +381,10 @@ func (self *StateDB) SetCopyForShare(copyForShare bool) {
 func (self *StateDB) SetRWMode(enabled bool) {
 	if enabled {
 		self.rwRecorder = newRWHook(self)
+		self.rwRecorderEnabled = true
 	} else {
 		self.rwRecorder = emptyRWRecorder{}
+		self.rwRecorderEnabled = false
 	}
 }
 
@@ -374,12 +404,13 @@ func (self *StateDB) RWRecorder() RWRecorder {
 }
 
 func (self *StateDB) IsRWMode() bool {
-	switch self.rwRecorder.(type) {
-	case *rwRecorderImpl:
-		return true
-	default:
-		return false
-	}
+	return self.rwRecorderEnabled
+	//switch self.rwRecorder.(type) {
+	//case *rwRecorderImpl:
+	//	return true
+	//default:
+	//	return false
+	//}
 }
 
 // Reset clears out all ephemeral state objects from the state db, but keeps
@@ -404,7 +435,11 @@ func (s *StateDB) Reset(root common.Hash) error {
 }
 
 func (s *StateDB) AddLog(log *types.Log) {
-	s.journal.append(addLogChange{txhash: s.thash})
+	if s.IgnoreJournalEntry {
+		// no dirty account to add
+	} else {
+		s.journal.append(addLogChange{txhash: s.thash})
+	}
 
 	log.TxHash = s.thash
 	log.BlockHash = s.bhash
@@ -446,7 +481,11 @@ func (s *StateDB) AddPreimage(hash common.Hash, preimage []byte) {
 		}
 	}
 	if _, ok := s.preimages[hash]; !ok {
-		s.journal.append(addPreimageChange{hash: hash})
+		if s.IgnoreJournalEntry {
+			// no dirty address to add
+		} else {
+			s.journal.append(addPreimageChange{hash: hash})
+		}
 		pi := make([]byte, len(preimage))
 		copy(pi, preimage)
 		if s.IsShared() {
@@ -464,14 +503,22 @@ func (s *StateDB) Preimages() map[common.Hash][]byte {
 
 // AddRefund adds gas to the refund counter
 func (s *StateDB) AddRefund(gas uint64) {
-	s.journal.append(refundChange{prev: s.refund})
+	if s.IgnoreJournalEntry {
+		// no dirty addr to add
+	} else {
+		s.journal.append(refundChange{prev: s.refund})
+	}
 	s.refund += gas
 }
 
 // SubRefund removes gas from the refund counter.
 // This method will panic if the refund counter goes below zero
 func (s *StateDB) SubRefund(gas uint64) {
-	s.journal.append(refundChange{prev: s.refund})
+	if s.IgnoreJournalEntry {
+		// no dirty addr to add
+	} else {
+		s.journal.append(refundChange{prev: s.refund})
+	}
 	if gas > s.refund {
 		panic("Refund counter below zero")
 	}
@@ -840,11 +887,15 @@ func (s *StateDB) Suicide(addr common.Address) bool {
 	if stateObject == nil {
 		return false
 	}
-	s.journal.append(suicideChange{
-		account:     &addr,
-		prev:        stateObject.suicided,
-		prevbalance: new(big.Int).Set(stateObject.Balance()),
-	})
+	if s.IgnoreJournalEntry {
+		s.journal.addDirty(&addr)
+	} else {
+		s.journal.append(suicideChange{
+			account:     &addr,
+			prev:        stateObject.suicided,
+			prevbalance: new(big.Int).Set(stateObject.Balance()),
+		})
+	}
 	stateObject.markSuicided()
 	stateObject.data.Balance = new(big.Int)
 
@@ -929,14 +980,35 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		if obj := s.stateObjects[addr]; obj != nil {
 			return obj
 		}
+		if s.InWarmupMode {
+			if obj := s.createdObjectsInWarmup[addr]; obj != nil {
+				return obj
+			}
+		}
 	}
 	// Track the amount of time wasted on loading the object from the database
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountReads += time.Since(start) }(time.Now())
 	}
+
+	// if the address is in the warmup cache for non-existent accounts,
+	// no need to read the Trie again
+	if _, ok := s.createdObjectsInWarmup[addr]; ok {
+		//enc, _ := s.trie.TryGet(addr[:])
+		//if len(enc) != 0 {
+		//	panic("The enc should be zero!")
+		//}
+		return  nil
+	}
+
 	// Load the object from the database
 	enc, err := s.trie.TryGet(addr[:])
 	if len(enc) == 0 {
+		if s.InWarmupMode {
+			newobj := newObject(s, addr, Account{})
+			s.createdObjectsInWarmup[addr] = newobj
+			return newobj
+		}
 		s.setError(err)
 		if s.CalWarmupMiss {
 			s.AddrWarmupHelpless[addr] = struct{}{}
@@ -988,15 +1060,30 @@ func (s *StateDB) GetOrNewStateObject(addr common.Address) *stateObject {
 func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) {
 	prev = s.getDeletedStateObject(addr) // Note, prev might have been deleted, we need that!
 
-	newobj = newObject(s, addr, Account{})
+	// Todo: add support for new object warmup
+	if prev == nil && !s.IsShared() {
+		newobj = s.createdObjectsInWarmup[addr]
+		delete(s.createdObjectsInWarmup, addr)
+	}
+	if newobj == nil {
+		newobj = newObject(s, addr, Account{})
+	}
 	if s.IsShared() {
 		newobj.addDelta()
 	}
 	newobj.setNonce(0) // sets the object to dirty
 	if prev == nil {
-		s.journal.append(createObjectChange{account: &addr})
+		if s.IgnoreJournalEntry {
+			s.journal.addDirty(&addr)
+		} else {
+			s.journal.append(createObjectChange{account: &addr})
+		}
 	} else {
-		s.journal.append(resetObjectChange{prev: prev, account: &addr})
+		if s.IgnoreJournalEntry {
+			// no dirty addr to add
+		} else {
+			s.journal.append(resetObjectChange{prev: prev, account: &addr})
+		}
 	}
 	if s.IsShared() {
 		s.setDeltaStateObject(newobj)
@@ -1067,6 +1154,7 @@ func (s *StateDB) Copy() *StateDB {
 		stateObjects:        make(map[common.Address]*stateObject, len(s.journal.dirties)),
 		stateObjectsPending: make(map[common.Address]struct{}, len(s.stateObjectsPending)),
 		stateObjectsDirty:   make(map[common.Address]struct{}, len(s.journal.dirties)),
+		createdObjectsInWarmup: make(map[common.Address]*stateObject),
 		refund:              s.refund,
 		logs:                make(map[common.Hash][]*types.Log, len(s.logs)),
 		logSize:             s.logSize,
@@ -1197,17 +1285,9 @@ func (s *StateDB) Update() {
 }
 
 func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
-	var obj *stateObject
-	var ok bool
-	if s.IsShared() {
-		obj, ok = s.delta.stateObjects[address]
-	} else {
-		obj, ok = s.stateObjects[address]
-	}
-	if ok && obj != nil {
-		if obj.snap != nil {
-			return obj.snap
-		}
+	obj := s.getStateObject(address)
+	if obj != nil && obj.snap != nil {
+		return obj.snap
 	}
 
 	snap, err := s.trie.TryGet(address[:])
@@ -1215,6 +1295,25 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 		return &cmptypes.AccountSnap{}
 	}
 	return cmptypes.BytesToAccountSnap(snap)
+
+	//var obj *stateObject
+	//var ok bool
+	//if s.IsShared() {
+	//	obj, ok = s.delta.stateObjects[address]
+	//} else {
+	//	obj, ok = s.stateObjects[address]
+	//}
+	//if ok && obj != nil {
+	//	if obj.snap != nil {
+	//		return obj.snap
+	//	}
+	//}
+	//
+	//snap, err := s.trie.TryGet(address[:])
+	//if err != nil { // this address does not exist
+	//	return &cmptypes.AccountSnap{}
+	//}
+	//return cmptypes.BytesToAccountSnap(snap)
 }
 
 func (s *StateDB) TrieGet(address common.Address) ([]byte, error) {
@@ -1519,7 +1618,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 }
 
 func (s *StateDB) clearJournalAndRefund() {
-	if len(s.journal.entries) > 0 {
+	if len(s.journal.entries) > 0 || len(s.journal.dirties) > 0 {
 		s.savedDirties = s.journal.dirties
 		s.journal = newJournal()
 		s.refund = 0

@@ -768,10 +768,19 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 
 // setStateDB use RW to update stateDB, add logs, benefit miner and deduct gas from the pool
 func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, statedb *state.StateDB, header *types.Header,
-	tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, status *cmptypes.ReuseStatus, sr *TraceTrieSearchResult, abort func() bool) {
+	tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, status *cmptypes.ReuseStatus,
+	isBlockProcess bool, cfg *vm.Config,
+	sr *TraceTrieSearchResult, abort func() bool) {
 	if status.BaseStatus != cmptypes.Hit {
 		panic("wrong call")
 	}
+	if isBlockProcess && !cfg.MSRAVMSettings.ParallelizeReuse {
+		if statedb.IgnoreJournalEntry != false {
+			panic("Unmatched ignoreJournalEntry")
+		}
+		statedb.IgnoreJournalEntry = true
+	}
+
 	if !statedb.IsRWMode() {
 		switch {
 		case status.HitType == cmptypes.DeltaHit:
@@ -832,6 +841,14 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		}
 		statedb.AddBalance(beneficiary, new(big.Int).Mul(new(big.Int).SetUint64(round.Receipt.GasUsed), tx.GasPrice()))
 	}
+
+	if isBlockProcess && !cfg.MSRAVMSettings.ParallelizeReuse {
+		if statedb.IgnoreJournalEntry != true {
+			panic("Unmatched ignoreJournalEntry")
+		}
+		statedb.IgnoreJournalEntry = false
+	}
+
 }
 
 func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
@@ -1078,7 +1095,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 
 	t1 := time.Now()
-	reuse.setStateDB(bc, author, statedb, header, tx, txPreplay, round, status, sr, abort)
+	reuse.setStateDB(bc, author, statedb, header, tx, txPreplay, round, status, isBlockProcess, cfg, sr, abort)
 	d1 = time.Since(t1)
 	return
 }

@@ -573,7 +573,7 @@ func AllocateVirtualRegisterForNonConstVariables(stats []*Statement) (registerMa
 
 type ISRefCountNode interface {
 	GetRefCount() uint
-	AddRef() uint                // add a ref and return the new ref count
+	AddRef() uint           // add a ref and return the new ref count
 	RemoveRef(value uint64) // remove a ref
 }
 
@@ -1735,8 +1735,8 @@ func GetGuardKey(a interface{}) interface{} {
 		return ta
 	case bool:
 		return ta
-	case cmptypes.AccountSnap:
-		return ta
+	//case cmptypes.AccountSnap:
+	//	return ta
 	case common.Hash:
 		return ta
 	case uint32:
@@ -2097,6 +2097,10 @@ type TraceTrieSearchResult struct {
 	accountIndexToAppliedWObject map[uint]bool
 	TotalJumps                   uint64
 	FailedJumps                  uint64
+	AJumps                       uint64
+	FJumps                       uint64
+	OJumps                       uint64
+	TotalJumpKeys                uint64
 	ExecutedNodes                uint64
 	TraceHitStatus               *cmptypes.TraceHitStatus
 }
@@ -2240,6 +2244,10 @@ func NewTraceHitStatusFromSearchResult(sr *TraceTrieSearchResult) *cmptypes.Trac
 		TotalNodes:    uint64(sr.Node.Seq) + 1,
 		ExecutedNodes: sr.ExecutedNodes,
 		TotalJumps:    sr.TotalJumps,
+		AJumps:        sr.AJumps,
+		FJumps:        sr.FJumps,
+		OJumps:        sr.OJumps,
+		TotalJumpKeys: sr.TotalJumpKeys,
 		FailedJumps:   sr.FailedJumps,
 	}
 }
@@ -2273,7 +2281,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	var accountLaneRounds []*cache.PreplayResult
 	var aborted bool
-	var totalJumps, failedJumps, executedNodes uint64
+	var totalJumps, failedJumps, aJumps, fJumps, oJumps, totalJumpKeys, executedNodes uint64
 
 	defer func() {
 		result = &TraceTrieSearchResult{
@@ -2290,6 +2298,10 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			aborted:           aborted,
 			TotalJumps:        totalJumps,
 			FailedJumps:       failedJumps,
+			AJumps:            aJumps,
+			FJumps:            fJumps,
+			OJumps:            oJumps,
+			TotalJumpKeys:     totalJumpKeys,
 			ExecutedNodes:     executedNodes,
 		}
 		if ok {
@@ -2318,6 +2330,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		}
 		jd := aNode.GetAJumpDef(aVId)
 		totalJumps++
+		totalJumpKeys++
 		if jd == nil {
 			failedJumps++
 			if debugOut != nil {
@@ -2344,6 +2357,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
 			aNode = jd.Dest
 			node = aNode.LRNode
+			aJumps++
 			if debug {
 				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
 				if !aNode.LRNode.Op.isStoreOp {
@@ -2387,6 +2401,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			}
 			jd := fNode.GetAJumpDef(aVId)
 			totalJumps++
+			totalJumpKeys++
 			if jd == nil {
 				failedJumps++
 				if debugOut != nil {
@@ -2409,6 +2424,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 				fieldHistory.AppendSegment(fNode.LRNode.FieldIndex, jd.FieldHistorySegment)
 				fNode = jd.Dest
 				node = fNode.LRNode
+				fJumps++
 				if debug {
 					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
@@ -2428,6 +2444,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
 			jd := fNode.GetFJumpDef(fVId)
 			totalJumps++
+			totalJumpKeys++
 			if jd == nil {
 				failedJumps++
 				if debugOut != nil {
@@ -2452,6 +2469,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 				registers.ApplySnapshot(jd.RegisterSnapshot)
 				fNode = jd.Dest
 				node = fNode.LRNode
+				fJumps++
 				if debug {
 					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 				}
@@ -2486,7 +2504,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			jNode := jHead
 			// try to jump
 			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut,
-				fieldHistory, registers, fCheckCount, beforeJumpNode, &totalJumps, &failedJumps)
+				fieldHistory, registers, fCheckCount, beforeJumpNode, &totalJumps, &totalJumpKeys, &failedJumps)
 		}
 
 		// if jump failed, execute
@@ -2522,6 +2540,8 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			}
 
 			node = node.GetNextNode(registers)
+		} else {
+			oJumps++
 		}
 
 		if node == nil {
@@ -2576,7 +2596,7 @@ func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int,
 	accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}),
 	fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode,
-	pTotalJumps, pFailedJumps *uint64) *SNode {
+	pTotalJumps, pTotalJumpKeys, pFailedJumps *uint64) *SNode {
 	for {
 		if debug {
 			cmptypes.MyAssert(jNode.OpNode == node)
@@ -2586,6 +2606,7 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 
 			aKey, aOk := GetOpJumKey(accountHistory, jNode.VIndices)
 			*pTotalJumps++
+			*pTotalJumpKeys += uint64(len(jNode.VIndices))
 			var jd *OpNodeJumpDef
 			if aOk {
 				jd = jNode.GetMapJumpDef(&aKey)
@@ -2645,6 +2666,7 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 			fCheckCount += len(jNode.VIndices)
 			fKey, fOk := GetOpJumKey(fieldHistory, jNode.VIndices)
 			*pTotalJumps++
+			*pTotalJumpKeys += uint64(len(jNode.VIndices))
 			var jd *OpNodeJumpDef
 			if fOk {
 				jd = jNode.GetMapJumpDef(&fKey)
@@ -3545,9 +3567,9 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			//aDeps := make(InputDependence, 0, 100)
 			//aDepBuffer := make(InputDependence, 0, 100)
 			//newADeps := make(InputDependence, 0, 100)
-			aDeps = aDeps[:0] //make(InputDependence, 0, 100)
+			aDeps = aDeps[:0]           //make(InputDependence, 0, 100)
 			aDepBuffer = aDepBuffer[:0] //make(InputDependence, 0, 100)
-			newADeps = newADeps[:0] //make(InputDependence, 0, 100)
+			newADeps = newADeps[:0]     //make(InputDependence, 0, 100)
 			aNodeSeq := 0
 			for {
 

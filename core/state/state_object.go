@@ -73,15 +73,15 @@ const stateObjectLen = 10
 type ObjectMap map[common.Address]*stateObject
 
 type ObjectHolder struct {
-	Obj     *stateObject
-	ObjID   uintptr
+	Obj   *stateObject
+	ObjID uintptr
 }
 type ObjectHolderList []*ObjectHolder
 
 func NewObjectHolder(obj *stateObject, objID uintptr) *ObjectHolder {
 	return &ObjectHolder{
-		Obj:     obj,
-		ObjID:   objID,
+		Obj:   obj,
+		ObjID: objID,
 	}
 }
 
@@ -208,9 +208,13 @@ func (s *stateObject) markSuicided() {
 }
 
 func (s *stateObject) touch() {
-	s.db.journal.append(touchChange{
-		account: &s.address,
-	})
+	if s.db.IgnoreJournalEntry {
+		s.db.journal.addDirty(&s.address)
+	} else {
+		s.db.journal.append(touchChange{
+			account: &s.address,
+		})
+	}
 	if s.address == ripemd {
 		// Explicitly put it in the dirty-cache, which is otherwise generated from
 		// flattened journals.
@@ -336,14 +340,20 @@ func (s *stateObject) SetState(db Database, key, value common.Hash) {
 	//	return
 	//}
 
-	// New value is different, update and journal the change
-	s.db.journal.append(storageChange{
-		account:    &s.address,
-		key:        key,
-		prevalue:   prev,
-		aftervalue: value,
-	})
-	s.dirtyStorageCount[key]++
+	if s.db.IgnoreJournalEntry {
+		s.db.journal.addDirty(&s.address)
+	} else {
+		// New value is different, update and journal the change
+		s.db.journal.append(storageChange{
+			account:    &s.address,
+			key:        key,
+			prevalue:   prev,
+			aftervalue: value,
+		})
+	}
+	if s.db.IsRWMode() {
+		s.dirtyStorageCount[key]++
+	}
 	s.setState(key, value)
 }
 
@@ -483,11 +493,15 @@ func (s *stateObject) SubBalance(amount *big.Int) {
 }
 
 func (s *stateObject) SetBalance(amount *big.Int) {
-	s.db.journal.append(balanceChange{
-		account: &s.address,
-		prev:    new(big.Int).Set(s.data.Balance),
-		after:   new(big.Int).Set(amount),
-	})
+	if s.db.IgnoreJournalEntry {
+		s.db.journal.addDirty(&s.address)
+	} else {
+		s.db.journal.append(balanceChange{
+			account: &s.address,
+			prev:    new(big.Int).Set(s.data.Balance),
+			after:   new(big.Int).Set(amount),
+		})
+	}
 	s.dirtyBalanceCount++
 	s.setBalance(amount)
 }
@@ -658,14 +672,19 @@ func (s *stateObject) Code(db Database) []byte {
 }
 
 func (s *stateObject) SetCode(codeHash common.Hash, code []byte) {
-	prevcode := s.Code(s.db.db)
-	s.db.journal.append(codeChange{
-		account:   &s.address,
-		prevhash:  s.CodeHash(),
-		prevcode:  prevcode,
-		afterhash: &codeHash,
-		aftercode: code,
-	})
+	if s.db.IgnoreJournalEntry {
+		s.db.journal.addDirty(&s.address)
+	} else {
+		prevcode := s.Code(s.db.db)
+		s.db.journal.append(codeChange{
+			account:   &s.address,
+			prevhash:  s.CodeHash(),
+			prevcode:  prevcode,
+			afterhash: &codeHash,
+			aftercode: code,
+		})
+	}
+
 	s.dirtyCodeCount++
 	s.setCode(codeHash, code)
 }
@@ -677,11 +696,15 @@ func (s *stateObject) setCode(codeHash common.Hash, code []byte) {
 }
 
 func (s *stateObject) SetNonce(nonce uint64) {
-	s.db.journal.append(nonceChange{
-		account: &s.address,
-		prev:    s.data.Nonce,
-		after:   nonce,
-	})
+	if s.db.IgnoreJournalEntry {
+		s.db.journal.addDirty(&s.address)
+	} else {
+		s.db.journal.append(nonceChange{
+			account: &s.address,
+			prev:    s.data.Nonce,
+			after:   nonce,
+		})
+	}
 	s.dirtyNonceCount++
 	s.setNonce(nonce)
 }
