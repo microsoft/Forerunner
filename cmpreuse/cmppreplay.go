@@ -409,7 +409,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 
 		if trace != nil {
-			trace.Stats[0].inputs[0].tracer.ClearDebugBuffer()
+			//trace.Stats[0].inputs[0].tracer.ClearDebugBuffer()
 		}
 
 	} else {

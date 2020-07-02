@@ -8,27 +8,14 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
 	"math/bits"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"unsafe"
 )
-
-type StringID *string
-
-var internedStrings = make(map[string]StringID)
-
-func ToStringID(s string) StringID {
-	interned, ok := internedStrings[s]
-	if !ok {
-		internedStrings[s] = &s
-		interned = &s
-	}
-	return interned
-}
 
 func GetFuncNameStr(f interface{}) string {
 	name := runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
@@ -54,7 +41,6 @@ type Variable struct {
 	id              uint32
 	customNamePart  string
 	tracer          *ReuseTracer
-	tVal            interface{} // hold the original value when we convert it to big.Int for evm internal processing
 	cachedName      string
 }
 
@@ -75,11 +61,6 @@ func (v *Variable) IsPureConst() bool {
 	return v.constant
 }
 
-func (v *Variable) SetTypedVal(tv interface{}) *Variable {
-	v.tVal = tv
-	return v
-}
-
 func (v *Variable) Copy() *Variable {
 	return &Variable{
 		varType:         v.varType,
@@ -90,7 +71,6 @@ func (v *Variable) Copy() *Variable {
 		id:              v.id,
 		customNamePart:  v.customNamePart,
 		tracer:          v.tracer,
-		tVal:            v.tVal,
 	}
 }
 
@@ -134,12 +114,18 @@ func GetValueString(val interface{}) string {
 	typeName := vt.String()
 	valueString := ""
 	switch typedValue := val.(type) {
+	case *MultiTypedValue:
+		valueString = typedValue.GetValueString()
+		typeName += typedValue.TypeId.String()
 	case common.Address:
-		valueString = typedValue.Hex()
+		//valueString = typedValue.Hex()
+		panic("")
 	case common.Hash:
-		valueString = typedValue.Hex()
+		//valueString = typedValue.Hex()
+		panic("")
 	case *big.Int:
-		valueString = typedValue.String()
+		//valueString = typedValue.String()
+		panic("")
 	case *StateIDM:
 		valueString = fmt.Sprintf("SID{%v}", len(typedValue.mapping))
 	case *AddrIDM:
@@ -153,15 +139,11 @@ func GetValueString(val interface{}) string {
 }
 
 func (v *Variable) SimpleValueString() string {
-	val := v.val
-	if v.tVal != nil {
-		val = v.tVal
-	}
-	return GetValueString(val)
+	return GetValueString(v.val)
 }
 
 func (v *Variable) BigInt() *big.Int {
-	return v.val.(*big.Int)
+	return v.val.(*MultiTypedValue).GetBigInt(nil)
 }
 
 func (v *Variable) Bool() bool {
@@ -169,7 +151,7 @@ func (v *Variable) Bool() bool {
 }
 
 func (v *Variable) BAddress() common.Address {
-	return common.BigToAddress(v.val.(*big.Int))
+	return v.val.(*MultiTypedValue).GetAddress()
 }
 
 func (v *Variable) Int() int {
@@ -225,9 +207,9 @@ func (v *Variable) LoadCodeHash(result *common.Hash) *Variable {
 	//v = v.MarkBigIntAsAddress().NGuard("account_addr")
 	name := "CodeHash"
 	if result == nil {
-		return v.tracer.TraceWithName(OP_LoadCodeHash, nil, name, v).MarkBigIntAsHash()
+		return v.tracer.TraceWithName(OP_LoadCodeHash, nil, name, v)
 	}
-	return v.tracer.TraceWithName(OP_LoadCodeHash, *result, name, v).MarkBigIntAsHash()
+	return v.tracer.TraceWithName(OP_LoadCodeHash, *result, name, v)
 }
 
 func (v *Variable) LoadCodeSize(result *int) *Variable {
@@ -244,10 +226,6 @@ func (v *Variable) LoadCodeSize(result *int) *Variable {
 		return v.tracer.TraceWithName(OP_LoadCodeSize, nil, name, v, codeHash)
 	}
 	return v.tracer.TraceWithName(OP_LoadCodeSize, *result, name, v, codeHash)
-}
-
-func (v *Variable) IntToBigInt() *Variable {
-	return v.tracer.Trace(OP_IntToBigInt, nil, v)
 }
 
 func (v *Variable) LoadCode(result []byte) *Variable {
@@ -340,7 +318,7 @@ func (v *Variable) StoreCode(codeVar *Variable) *Variable {
 	// CodeSize and CodeHash
 	v.tracer.world.TWStore(ACCOUNT_CODESIZE, v, v.tracer.ConstVarWithName(new(big.Int).SetInt64(int64(newLen)), "codeSize"))
 	newHash := crypto.Keccak256Hash(codeVar.ByteArray()).Big()
-	v.tracer.world.TWStore(ACCOUNT_CODEHASH, v, v.tracer.ConstVarWithName(newHash, "codeHash").MarkBigIntAsHash())
+	v.tracer.world.TWStore(ACCOUNT_CODEHASH, v, v.tracer.ConstVarWithName(newHash, "codeHash"))
 
 	return nil
 }
@@ -448,29 +426,9 @@ func (v *Variable) AddUint64(rhs *Variable) *Variable {
 	return v.tracer.Trace(OP_AddUint64, nil, v, rhs)
 }
 
-//func (v *Variable) MarkBigIntAsHash() *Variable {
-//	return v.tracer.Trace(OP_BigIntToHash, nil, v)
-//}
-
-func (v *Variable) MarkBigIntAsHash() *Variable {
-	hash := v.BHash()
-	return v.SetTypedVal(hash)
-	//return v.tracer.Trace(OP_HashToBigInt, nil, v)
-}
-
 func (v *Variable) BitLenBigInt() *Variable {
 	return v.tracer.Trace(OP_BitLenBigInt, nil, v)
 }
-
-func (v *Variable) MarkBigIntAsAddress() *Variable {
-	addr := common.BigToAddress(v.BigInt())
-	return v.SetTypedVal(addr)
-	//return v.tracer.Trace(OP_BigIntToAddress, nil, v)
-}
-
-//func (v *Variable) MarkBigIntAsAddress() *Variable {
-//	return v.tracer.Trace(OP_AddressToBigInt, nil, v)
-//}
 
 func (v *Variable) ByteArrayToBigInt() *Variable {
 	t := v.tracer
@@ -539,11 +497,11 @@ func (v *Variable) ArrayBoundCheck(end *Variable) *Variable {
 }
 
 func (v *Variable) CreateAddress(nonceVar *Variable) *Variable {
-	return v.tracer.Trace(OP_CreateAddress, nil, v, nonceVar).MarkBigIntAsAddress()
+	return v.tracer.Trace(OP_CreateAddress, nil, v, nonceVar)
 }
 
 func (v *Variable) CreateAddress2(saltBigInt, code *Variable) *Variable {
-	return v.tracer.Trace(OP_CreateAddress2, nil, v, saltBigInt, code).MarkBigIntAsAddress()
+	return v.tracer.Trace(OP_CreateAddress2, nil, v, saltBigInt, code)
 }
 
 func (v *Variable) GetDataBig(start, size *Variable) *Variable {
@@ -618,9 +576,6 @@ func (v *Variable) GetDataBig(start, size *Variable) *Variable {
 }
 
 func (v *Variable) LenByteArray() *Variable {
-	//if v.IsConst() {
-	//	return v.tracer.ConstVar(new(big.Int).SetInt64(int64(len(v.ByteArray()))))
-	//}
 	if size, ok := v.tracer.byteArrayCachedSize[v]; ok {
 		cmptypes.MyAssert(size.IsConst())
 		return size
@@ -678,23 +633,7 @@ func (v *Variable) ByteArray() []byte {
 }
 
 func (v *Variable) BHash() common.Hash {
-	return common.BigToHash(v.val.(*big.Int))
-}
-
-func (v *Variable) VEqual(rhsV *Variable) bool {
-	if v.varType != rhsV.varType {
-		return false
-	}
-
-	switch lhs := v.val.(type) {
-	case *big.Int:
-		rhs := rhsV.BigInt()
-		return lhs.Cmp(rhs) == 0
-	case []byte:
-		rhs := rhsV.ByteArray()
-		return string(lhs) == string(rhs)
-	}
-	return v.val == rhsV.val
+	return v.val.(*MultiTypedValue).GetHash()
 }
 
 func (v *Variable) Uint32() uint32 {
@@ -702,36 +641,109 @@ func (v *Variable) Uint32() uint32 {
 }
 
 type ExecEnv struct {
-	state         *state.StateDB
-	inputs        []interface{}
-	config        *OpConfig
-	hasher        keccakState
-	header        *types.Header
-	getHash       vm.GetHashFunc
-	precompiles   map[common.Address]vm.PrecompiledContract
-	isProcess     bool
-	addrCache     map[*big.Int]common.Address
-	stateKeyCache map[*big.Int]common.Hash
-	globalCache   *cache.GlobalCache
+	state                    *state.StateDB
+	inputs                   []interface{}
+	config                   *OpConfig
+	hasher                   keccakState
+	header                   *types.Header
+	getHash                  vm.GetHashFunc
+	precompiles              map[common.Address]vm.PrecompiledContract
+	isProcess                bool
+	preAllocatedBigInt       []*big.Int
+	nextBigIntIndex          int
+	preAllocatedMultiValues  []*MultiTypedValue
+	nextMultiValueIndex      int
+	preAllocatedResMap       []cmptypes.TxResIDMap
+	nextResMapIndex          int
+	preAllocatedAIdToApplied []map[uint]bool
+	nextAIdToAppliedIndex    int
+	preAllocatedLogs         []*types.Log
+	nextLogIndex             int
+	preAllocatedHashArrays   [][]common.Hash
+	nextHashArrayIndex       int
 }
 
-func NewExecEnvWithCache() *ExecEnv {
-	return &ExecEnv{
-		addrCache:     make(map[*big.Int]common.Address, 200),
-		stateKeyCache: make(map[*big.Int]common.Hash, 200),
+func NewExecEnv() *ExecEnv {
+	return &ExecEnv{}
+}
+
+var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
+
+func (self *ExecEnv) PreAllocateObjects(size uint) {
+	for len(self.preAllocatedBigInt) < int(size) {
+		bi := big.NewInt(0)
+		bi.Set(aBigInt) // increase the capacity of the underlying buffer
+		self.preAllocatedBigInt = append(self.preAllocatedBigInt, bi)
+	}
+	for len(self.preAllocatedMultiValues) < int(size) {
+		self.preAllocatedMultiValues = append(self.preAllocatedMultiValues, &MultiTypedValue{})
+	}
+	for len(self.preAllocatedResMap) < 1 {
+		self.preAllocatedResMap = append(self.preAllocatedResMap, make(cmptypes.TxResIDMap, 30))
+	}
+	for len(self.preAllocatedAIdToApplied) < 1 {
+		self.preAllocatedAIdToApplied = append(self.preAllocatedAIdToApplied, make(map[uint]bool, 30))
+	}
+	for len(self.preAllocatedLogs) < 100 {
+		self.preAllocatedLogs = append(self.preAllocatedLogs, &types.Log{})
+	}
+	for len(self.preAllocatedHashArrays) < 100 {
+		self.preAllocatedHashArrays = append(self.preAllocatedHashArrays, make([]common.Hash, 0, 10))
 	}
 }
 
-func (env *ExecEnv) GetNewBigInt() *big.Int {
-	if env.isProcess {
-		poolSize := len(env.globalCache.BigIntPool)
-		if poolSize > 0 {
-			ret := env.globalCache.BigIntPool[poolSize-1]
-			env.globalCache.BigIntPool = env.globalCache.BigIntPool[:poolSize-1]
-			return ret
-		}
+func (self *ExecEnv) GetNewBigInt() *big.Int {
+	if self.nextBigIntIndex >= len(self.preAllocatedBigInt) {
+		return new(big.Int)
 	}
-	return new(big.Int)
+	b := self.preAllocatedBigInt[self.nextBigIntIndex]
+	self.nextBigIntIndex++
+	return b
+}
+
+func (self *ExecEnv) GetNewValue() *MultiTypedValue {
+	if self.nextMultiValueIndex >= len(self.preAllocatedMultiValues) {
+		return &MultiTypedValue{}
+	}
+	tf := self.preAllocatedMultiValues[self.nextMultiValueIndex]
+	self.nextMultiValueIndex++
+	return tf
+}
+
+func (self *ExecEnv) GetNewResMap() cmptypes.TxResIDMap {
+	if self.nextResMapIndex >= len(self.preAllocatedResMap) {
+		return make(cmptypes.TxResIDMap)
+	}
+	tf := self.preAllocatedResMap[self.nextResMapIndex]
+	self.nextResMapIndex++
+	return tf
+}
+
+func (self *ExecEnv) GetNewAIdToApplied() map[uint]bool {
+	if self.nextAIdToAppliedIndex >= len(self.preAllocatedAIdToApplied) {
+		return make(map[uint]bool)
+	}
+	tf := self.preAllocatedAIdToApplied[self.nextAIdToAppliedIndex]
+	self.nextAIdToAppliedIndex++
+	return tf
+}
+
+func (self *ExecEnv) GetNewLog() *types.Log {
+	if self.nextLogIndex >= len(self.preAllocatedLogs) {
+		return &types.Log{}
+	}
+	tf := self.preAllocatedLogs[self.nextLogIndex]
+	self.nextLogIndex++
+	return tf
+}
+
+func (self *ExecEnv) GetNewHashArray() []common.Hash {
+	if self.nextHashArrayIndex >= len(self.preAllocatedHashArrays) {
+		return make([]common.Hash, 0, 10)
+	}
+	tf := self.preAllocatedHashArrays[self.nextHashArrayIndex]
+	self.nextHashArrayIndex++
+	return tf
 }
 
 func (env *ExecEnv) HashToBig(h common.Hash) *big.Int {
@@ -746,85 +758,8 @@ func (env *ExecEnv) CopyBig(bi *big.Int) *big.Int {
 	return env.GetNewBigInt().Set(bi)
 }
 
-func (env *ExecEnv) BigToAddress(bi *big.Int) common.Address {
-	if env.addrCache != nil {
-		if addr, ok := env.addrCache[bi]; ok {
-			return addr
-		} else {
-			//addr := common.BigToAddress(bi)
-			addr := FastBigToAddress(bi)
-			env.addrCache[bi] = addr
-			return addr
-		}
-	}
-	//ret := common.BigToAddress(bi)
-	//MyAssert(ret == FastBigToAddress(bi))
-	ret := FastBigToAddress(bi)
-	return ret
-}
-
 func (env *ExecEnv) BigToHash(bi *big.Int, isLoad bool) common.Hash {
-	if isLoad {
-		//hash := common.BigToHash(bi)
-		hash := FastBigToHash(bi)
-		if env.stateKeyCache != nil {
-			env.stateKeyCache[bi] = hash
-		}
-		return hash
-	} else {
-		if env.stateKeyCache != nil {
-			if hash, ok := env.stateKeyCache[bi]; ok {
-				return hash
-			}
-		}
-		//ret := common.BigToHash(bi)
-		//MyAssert(ret == FastBigToHash(bi))
-		ret := FastBigToHash(bi)
-		return ret
-	}
-}
-
-const (
-	_S = _W / 8        // word size in bytes
-	_W = bits.UintSize // word size in bits
-)
-
-func FastBigToHash(bi *big.Int) (h common.Hash) {
-	words := bi.Bits()
-	i := len(h)
-	for _, d := range words {
-		for j := 0; j < _S; j++ {
-			i--
-			h[i] = byte(d)
-			d >>= 8
-			if i == 0 {
-				break
-			}
-		}
-		if i == 0 {
-			break
-		}
-	}
-	return
-}
-
-func FastBigToAddress(bi *big.Int) (h common.Address) {
-	words := bi.Bits()
-	i := len(h)
-	for _, d := range words {
-		for j := 0; j < _S; j++ {
-			i--
-			h[i] = byte(d)
-			d >>= 8
-			if i == 0 {
-				break
-			}
-		}
-		if i == 0 {
-			break
-		}
-	}
-	return
+	return FastBigToHash(bi)
 }
 
 type OpExecuteFunc func(*ExecEnv) interface{}
@@ -932,11 +867,11 @@ type DebugStatsForStatement struct {
 }
 
 type Statement struct {
-	output                                    *Variable
-	inputs                                    []*Variable
-	op                                        *OpDef
-	Reverted                                  bool
-	DebugStats                                *DebugStatsForStatement
+	output     *Variable
+	inputs     []*Variable
+	op         *OpDef
+	Reverted   bool
+	DebugStats *DebugStatsForStatement
 }
 
 func NewStatement(op *OpDef, debug bool, outVar *Variable, inVars ...*Variable) *Statement {
@@ -1041,19 +976,11 @@ func (s *Statement) RecordedValueString() string {
 	inputs := make([]interface{}, len(s.inputs))
 	var output interface{}
 	for i, v := range s.inputs {
-		if v.tVal != nil {
-			inputs[i] = v.tVal
-		} else {
-			inputs[i] = v.val
-		}
+		inputs[i] = v.val
 	}
 
 	if s.output != nil {
-		if s.output.tVal != nil {
-			output = s.output.tVal
-		} else {
-			output = s.output.val
-		}
+		output = s.output.val
 	}
 
 	ret := s.ValueString(inputs, output)
@@ -1073,25 +1000,6 @@ func (s *Statement) ValueString(inputs []interface{}, output interface{}) string
 		result = GetValueString(output) + " = " + result
 	}
 	return result
-}
-
-func (s *Statement) TypeConvert(variable *Variable, val interface{}) interface{} {
-	if variable.tVal == nil {
-		return val
-	}
-	switch src := val.(type) {
-	case *big.Int:
-		switch variable.tVal.(type) {
-		case common.Hash:
-			return common.BigToHash(src)
-		case common.Address:
-			return common.BigToAddress(src)
-		default:
-			panic(fmt.Sprint("tVal has type %v", reflect.TypeOf(variable.tVal).Name()))
-		}
-	default:
-		panic(fmt.Sprintf("%v has tVal!", reflect.TypeOf(val).Name()))
-	}
 }
 
 //func (s *Statement) NewIfInputsReplaced(replaceMapping map[uint32]*Variable) *Statement {
@@ -1410,7 +1318,289 @@ func (st *TracerStack) peek() *Variable {
 	return st.data[st.len()-1]
 }
 
-// helper funcs
-func CopyBigInt(bi *big.Int) *big.Int {
-	return new(big.Int).Set(bi)
+func NewBigIntValue(bi *big.Int, env *ExecEnv) *MultiTypedValue {
+	var v *MultiTypedValue
+	if env == nil {
+		v = &MultiTypedValue{}
+	} else {
+		v = env.GetNewValue()
+	}
+	v.BigInt = bi
+	v.TypeId = VTBigInt
+	return v
+}
+
+func NewAddressValue(addr common.Address, env *ExecEnv) *MultiTypedValue {
+	var v *MultiTypedValue
+	if env == nil {
+		v = &MultiTypedValue{}
+	} else {
+		v = env.GetNewValue()
+	}
+	v.Addr = &addr
+	v.TypeId = VTAddress
+	return v
+}
+
+func NewHashValue(hash common.Hash, env *ExecEnv) *MultiTypedValue {
+	var v *MultiTypedValue
+	if env == nil {
+		v = &MultiTypedValue{}
+	} else {
+		v = env.GetNewValue()
+	}
+	v.Hash = &hash
+	v.TypeId = VTHash
+	return v
+}
+
+type MVType int
+
+const (
+	VTBigInt MVType = iota
+	VTAddress
+	VTHash
+)
+
+func (m MVType) String() string {
+	switch m {
+	case VTBigInt:
+		return "BigInt"
+	case VTAddress:
+		return "Address"
+	case VTHash:
+		return "Hash"
+	default:
+		panic("Unknown type")
+	}
+	return ""
+}
+
+type MultiTypedValue struct {
+	BigInt *big.Int
+	Addr   *common.Address
+	Hash   *common.Hash
+	TypeId MVType
+}
+
+func (v *MultiTypedValue) GetBigInt(env *ExecEnv) *big.Int {
+	switch v.TypeId {
+	case VTBigInt:
+		if v.BigInt == nil {
+			panic("nil big int")
+		}
+	case VTAddress:
+		if v.BigInt == nil {
+			if env != nil {
+				v.BigInt = env.GetNewBigInt().SetBytes(v.Addr.Bytes())
+			} else {
+				v.BigInt = AddressToBigInt(*v.Addr)
+			}
+		}
+	case VTHash:
+		if v.BigInt == nil {
+			if env != nil {
+				v.BigInt = env.GetNewBigInt().SetBytes(v.Hash.Bytes())
+			} else {
+				v.BigInt = v.Hash.Big()
+			}
+		}
+	default:
+		panic(fmt.Sprintf("Get BigInt from %v", v.TypeId.String()))
+	}
+	return v.BigInt
+}
+
+func FastBigToAddress(bi *big.Int) (h common.Address) {
+	words := bi.Bits()
+	i := len(h)
+	for _, d := range words {
+		for j := 0; j < _S; j++ {
+			i--
+			h[i] = byte(d)
+			d >>= 8
+			if i == 0 {
+				break
+			}
+		}
+		if i == 0 {
+			break
+		}
+	}
+	return
+}
+
+func (v *MultiTypedValue) GetAddress() common.Address {
+	switch v.TypeId {
+	case VTAddress:
+		if v.Addr == nil {
+			panic("nil addr")
+		}
+	case VTBigInt:
+		if v.Addr == nil {
+			var addr common.Address
+			addr = FastBigToAddress(v.BigInt)
+			v.Addr = &addr
+		}
+	case VTHash:
+		if v.Addr == nil {
+			var addr common.Address
+			addr = common.BytesToAddress(v.Hash.Bytes())
+			v.Addr = &addr
+		}
+	default:
+		panic(fmt.Sprintf("Get Address from %v", v.TypeId.String()))
+	}
+	return *v.Addr
+}
+
+const (
+	_S = _W / 8        // word size in bytes
+	_W = bits.UintSize // word size in bits
+)
+
+func FastBigToHash(bi *big.Int) (h common.Hash) {
+	words := bi.Bits()
+	i := len(h)
+	for _, d := range words {
+		for j := 0; j < _S; j++ {
+			i--
+			h[i] = byte(d)
+			d >>= 8
+			if i == 0 {
+				break
+			}
+		}
+		if i == 0 {
+			break
+		}
+	}
+	return
+}
+
+func (v *MultiTypedValue) GetHash() common.Hash {
+	switch v.TypeId {
+	case VTBigInt:
+		if v.Hash == nil {
+			hash := FastBigToHash(v.BigInt)
+			v.Hash = &hash
+		}
+	case VTHash:
+		if v.Hash == nil {
+			panic("nil hash")
+		}
+	case VTAddress:
+		if v.Hash == nil {
+			hash := common.BytesToHash(v.Addr.Bytes())
+			v.Hash = &hash
+		}
+	default:
+		panic(fmt.Sprintf("Get Hash from %v", v.TypeId.String()))
+	}
+	return *v.Hash
+}
+
+func (v *MultiTypedValue) GetCacheKey() string {
+	valueString := ""
+	switch v.TypeId {
+	case VTBigInt:
+		valueString = v.BigInt.String()
+	case VTAddress:
+		valueString = v.Addr.Hex()
+	case VTHash:
+		valueString = v.Hash.Hex()
+	default:
+		panic("")
+	}
+	return v.TypeId.String() + valueString
+}
+
+func (v *MultiTypedValue) GetValueString() string {
+	valueString := ""
+	switch v.TypeId {
+	case VTBigInt:
+		if v.Addr != nil {
+			valueString = v.Addr.Hex()
+		} else if v.Hash != nil {
+			valueString = v.Hash.Hex()
+		} else {
+			valueString = v.BigInt.String()
+		}
+	case VTAddress:
+		valueString = v.Addr.Hex()
+	case VTHash:
+		valueString = v.Hash.Hex()
+	default:
+		panic("")
+	}
+	return valueString
+}
+
+func (v *MultiTypedValue) String() string {
+	return v.GetValueString()
+}
+
+func (v *MultiTypedValue) GetGuardKey() interface{} {
+	switch v.TypeId {
+	case VTBigInt:
+		return GetBigIntGuardKey(v.BigInt)
+	case VTAddress:
+		return *v.Addr
+	case VTHash:
+		return *v.Hash
+	default:
+		panic("")
+	}
+}
+
+func (v *MultiTypedValue) GetBytes() []byte {
+	switch v.TypeId {
+	case VTBigInt:
+		if v.Addr != nil {
+			return v.Addr.Bytes()
+		} else if v.Hash != nil {
+			return v.Hash.Bytes()
+		} else {
+			return v.BigInt.Bytes()
+		}
+	case VTAddress:
+		return v.Addr.Bytes()
+	case VTHash:
+		return v.Hash.Bytes()
+	default:
+		panic("")
+	}
+}
+
+type StringID *string
+
+var internedStrings = make(map[string]StringID)
+
+func ToStringID(s string) StringID {
+	interned, ok := internedStrings[s]
+	if !ok {
+		internedStrings[s] = &s
+		interned = &s
+	}
+	return interned
+}
+
+func AddressToBigInt(addr common.Address) *big.Int {
+	return new(big.Int).SetBytes(addr.Bytes())
+}
+
+func GetBigIntGuardKey(bi *big.Int) interface{} {
+	words := bi.Bits()
+	if len(words) <= 8 {
+		var key [8]big.Word
+		copy(key[:], words)
+		return key
+	} else {
+		return ImmutableBytesToString(bi.Bytes())
+	}
+}
+
+func ImmutableBytesToString(buf []byte) string {
+	return *(*string)(unsafe.Pointer(&buf))
+	//return string(buf)
 }

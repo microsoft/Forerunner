@@ -20,18 +20,18 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 		d = time.Since(t)
 	}()
 
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	snap := statedb.Snapshot()
 	if statedb.IsRWMode() {
 		statedb.RWRecorder().RWClear()
 	}
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	context := core.NewEVMContext(msg, header, bc, author)
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	evm := vm.NewEVM(context, statedb, config, *cfg)
@@ -58,7 +58,7 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 	if setEvm != nil {
 		setEvm(evm)
 	}
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	_, gas, failed, err = core.ApplyMessage(evm, msg, gp)

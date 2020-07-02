@@ -278,7 +278,9 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 	if task.basicPreplay {
 		neededPreplayCount := new(big.Int)
 		neededPreplayCount.Mul(task.orderCount, new(big.Int).SetInt64(int64(task.chainFactor)))
-		if (task.RWRecord != nil && task.isChainDep()) || neededPreplayCount.Cmp(new(big.Int).SetInt64(int64(config.TXN_PREPLAY_ROUND_LIMIT))) > 0 {
+		if (task.RWRecord != nil && task.isChainDep()) ||
+			neededPreplayCount.Cmp(new(big.Int).SetInt64(int64(config.TXN_PREPLAY_ROUND_LIMIT))) > 0 ||
+			task.getPreplayCount() == 0{
 			executor.EnableReuseTracer = true
 		}
 

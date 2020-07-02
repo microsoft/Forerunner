@@ -209,6 +209,7 @@ func (dep InputDependence) SetDiff(other InputDependence) InputDependence {
 }
 
 var DEBUG_TRACER = false
+var DEBUG_TRACER_SEARCH = false
 
 func AssertIncreasingDep(dep InputDependence) {
 	if DEBUG_TRACER {
@@ -967,6 +968,10 @@ func NewRegisterFileSnapshot(seg RegisterSegment) *RegisterFile {
 	}
 }
 
+func (rf *RegisterFile) Cap() uint {
+	return uint(cap(rf.firstSection))
+}
+
 func (rf *RegisterFile) Get(index uint) interface{} {
 	if index < rf.firstSectionSize {
 		if DEBUG_TRACER {
@@ -1066,8 +1071,12 @@ func (rf *RegisterFile) AssertSnapshotEqual(other *RegisterFile) {
 func AssertEqualRegisterValue(a, b interface{}) {
 	switch ta := a.(type) {
 	case *big.Int:
-		tb := b.(*big.Int)
-		cmptypes.MyAssert(ta.Cmp(tb) == 0, "%v : %v", a, b)
+		panic("Should never see raw big.Int in register")
+	case *MultiTypedValue:
+		tb := b.(*MultiTypedValue)
+		aStr := ta.GetCacheKey()
+		bStr := tb.GetCacheKey()
+		cmptypes.MyAssert(aStr == bStr, "%v, %v", a, b)
 		return
 	case []byte:
 		tb := b.([]byte)
@@ -1129,7 +1138,9 @@ func GetValsKey(valRegisterIds []uint, registers *RegisterFile) string {
 		v := registers.Get(rid)
 		switch tv := v.(type) {
 		case *big.Int:
-			buf.Write(tv.Bytes())
+			panic("Should never see raw big.Int")
+		case *MultiTypedValue:
+			buf.Write(tv.GetBytes())
 		case []byte:
 			buf.Write(tv)
 		case uint64:
@@ -1208,7 +1219,7 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 		case common.Address:
 			addr = a_rid
 		case uint:
-			addr = common.BigToAddress(registers.Get(a_rid).(*big.Int))
+			addr = registers.Get(a_rid).(*MultiTypedValue).GetAddress()
 		default:
 			panic(fmt.Sprintf("Unknow type %v", reflect.TypeOf(addrOrRId).Name()))
 		}
@@ -1419,6 +1430,10 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 		PrevGuardKey:                   prevGuardKey,
 	}
 
+	if !DEBUG_TRACER && !DEBUG_TRACER_SEARCH{
+		n.Statement = nil
+	}
+
 	st.ComputeDepAndJumpInfo()
 
 	if n.Op.isReadOp || n.Op.isLoadOp {
@@ -1519,6 +1534,15 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	return n
 }
 
+func (n *SNode) GetInputVal(index uint, registers *RegisterFile) interface{} {
+	rid := n.InputRegisterIndices[index]
+	if rid == 0 {
+		return n.InputVals[index]
+	}else{
+		return registers.Get(rid)
+	}
+}
+
 func (n *SNode) RemoveRef(roundID uint64) {
 	newRefCount := n.SRemoveRef()
 	if newRefCount == 0 {
@@ -1551,7 +1575,7 @@ func (n *SNode) Execute(env *ExecEnv, registers *RegisterFile) interface{} {
 		}
 	}
 	env.config = &n.Op.config
-	return n.Op.impFuc(env)
+	return CreateMultiTypedValueIfNeed(n.Op.impFuc(env), env)
 }
 
 func (n *SNode) SimpleNameString() string {
@@ -1565,7 +1589,7 @@ func (n *SNode) RegisterValueString(registers *RegisterFile) string {
 		if rindex != 0 {
 			inputs[i] = registers.Get(rindex)
 		}
-		inputs[i] = n.Statement.TypeConvert(n.Statement.inputs[i], inputs[i])
+		//inputs[i] = n.Statement.TypeConvert(n.Statement.inputs[i], inputs[i])
 	}
 	var output interface{}
 	if n.Statement.output != nil {
@@ -1574,7 +1598,7 @@ func (n *SNode) RegisterValueString(registers *RegisterFile) string {
 		} else {
 			output = n.Statement.output.val
 		}
-		output = n.Statement.TypeConvert(n.Statement.output, output)
+		//output = n.Statement.TypeConvert(n.Statement.output, output)
 	}
 
 	return n.Statement.ValueString(inputs, output)
@@ -1595,11 +1619,9 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 	} else {
 		var addr common.Address
 		if n.InputRegisterIndices[0] == 0 {
-			//addr = common.BigToAddress(n.InputVals[0].(*big.Int))
-			addr = env.BigToAddress(n.InputVals[0].(*big.Int))
+			addr = n.InputVals[0].(*MultiTypedValue).GetAddress()
 		} else {
-			//addr = common.BigToAddress(registers.Get(n.InputRegisterIndices[0]).(*big.Int))
-			addr = env.BigToAddress(registers.Get(n.InputRegisterIndices[0]).(*big.Int))
+			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
 		changedBy := env.state.GetAccountSnapOrChangedBy(addr)
 		k := GetGuardKey(changedBy)
@@ -1708,27 +1730,12 @@ func (n *SNode) AssertIsomorphic(s *Statement, nodeIndex uint, trace *STrace, pa
 	}
 }
 
-func ImmutableBytesToString(buf []byte) string {
-	return *(*string)(unsafe.Pointer(&buf))
-	//return string(buf)
-}
-
-func GetBigIntGuardKey(bi *big.Int) interface{} {
-	words := bi.Bits()
-	if len(words) <= 8 {
-		var key [8]big.Word
-		copy(key[:], words)
-		return key
-	} else {
-		return ImmutableBytesToString(bi.Bytes())
-	}
-}
-
 func GetGuardKey(a interface{}) interface{} {
 	switch ta := a.(type) {
 	case *big.Int:
-		//return ImmutableBytesToString(ta.Bytes())
-		return GetBigIntGuardKey(ta)
+		panic("Should never see raw big.Int")
+	case *MultiTypedValue:
+		return ta.GetGuardKey()
 	case []byte:
 		return ImmutableBytesToString(ta)
 	case uint64:
@@ -1821,14 +1828,35 @@ func NewTraceTrie(tx *types.Transaction) *TraceTrie {
 		PathCount:    0,
 		RegisterSize: 0,
 	}
-	tt.PreAllocatedExecEnvs = []*ExecEnv{
-		NewExecEnvWithCache(),
-		NewExecEnvWithCache(),
-	}
-	for i := 0; i < 4; i++ {
-		tt.PreAllocatedHistory = append(tt.PreAllocatedHistory, NewRegisterFile(1000))
-	}
 	return tt
+}
+
+func (tt *TraceTrie) Preallocate(size uint) {
+	if len(tt.PreAllocatedExecEnvs) < 2 {
+		for i := len(tt.PreAllocatedExecEnvs); i < 2; i++ {
+			tt.PreAllocatedExecEnvs = append(tt.PreAllocatedExecEnvs, &ExecEnv{})
+		}
+	}
+
+	for _, env := range tt.PreAllocatedExecEnvs {
+		env.PreAllocateObjects(size)
+	}
+
+	if len(tt.PreAllocatedHistory) < 4 {
+		for i := len(tt.PreAllocatedHistory); i < 4; i++ {
+			tt.PreAllocatedHistory = append(tt.PreAllocatedHistory, NewRegisterFile(1000))
+		}
+	}
+
+	if len(tt.PreAllocatedRegisters) < 2 {
+		tt.PreAllocatedRegisters = append(tt.PreAllocatedRegisters, NewRegisterFile(size))
+	}
+
+	for i, rf := range tt.PreAllocatedRegisters {
+		if rf.Cap() < size {
+			tt.PreAllocatedRegisters[i] = NewRegisterFile(size)
+		}
+	}
 }
 
 func (tt *TraceTrie) GetNodeCount() int64 {
@@ -1841,14 +1869,13 @@ func (tt *TraceTrie) GetNewExecEnv(db *state.StateDB, header *types.Header,
 		env = tt.PreAllocatedExecEnvs[0]
 		tt.PreAllocatedExecEnvs = tt.PreAllocatedExecEnvs[1:]
 	} else {
-		env = NewExecEnvWithCache()
+		env = NewExecEnv()
 	}
 	env.state = db
 	env.header = header
 	env.precompiles = precompiles
 	env.isProcess = true
 	env.getHash = getHashFunc
-	env.globalCache = globalCache
 	return
 }
 
@@ -1875,11 +1902,8 @@ func (tt *TraceTrie) GetNewRegisters() (rf *RegisterFile) {
 func (tt *TraceTrie) UpdateTraceSize(size uint) {
 	if size > tt.RegisterSize {
 		tt.RegisterSize = size
-		tt.PreAllocatedRegisters = []*RegisterFile{
-			NewRegisterFile(size),
-			NewRegisterFile(size),
-		}
 	}
+	tt.Preallocate(tt.RegisterSize)
 }
 
 func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLocValue) map[uint]interface{} {
@@ -1894,22 +1918,7 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 			key = alv.AddLoc.Address.Hex()
 			val = val.(*cmptypes.ChangedBy).Hash()
 			temp[key] = val
-			//case cmptypes.Blockhash:
-			//	key = *BLOCK_HASH + alv.AddLoc.Field.String()
-			//case cmptypes.Number:
-			//	key = *BLOCK_NUMBER
-			//case cmptypes.Timestamp:
-			//	key = *BLOCK_TIMESTAMP
-			//case cmptypes.GasLimit:
-			//	key = *BLOCK_GASLIMIT
-			//case cmptypes.Coinbase:
-			//	key = *BLOCK_COINBASE
-			//case cmptypes.Difficulty:
-			//	key = *BLOCK_DIFFICULTY
-			//default:
-			//	panic(fmt.Sprintf("Unexpected %v", alv.AddLoc.Field))
 		}
-		//temp[key] = val
 	}
 
 	for _, nodeIndex := range trace.ANodeIndices {
@@ -1922,12 +1931,6 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 			}
 			ret[nodeIndex] = temp[key]
 		}
-		//} else {
-		//	key = *(s.op.config.variant)
-		//	if s.op.config.variant == BLOCK_HASH {
-		//		key += s.inputs[0].BigInt().String()
-		//	}
-		//}
 	}
 
 	return ret
@@ -2121,7 +2124,7 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, abort fu
 	cmptypes.MyAssert(r.Node.Op.isStoreOp)
 	resMap := r.applyWObjects(txPreplay)
 	for n := r.Node; !n.Op.IsVirtual(); n = n.Next {
-		if abort() {
+		if abort != nil && abort() {
 			return true, nil
 		}
 		if !n.Op.IsLog() {
@@ -2149,26 +2152,14 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, abort fu
 
 func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay) cmptypes.TxResIDMap {
 	cmptypes.MyAssert(r.accountIndexToAppliedWObject == nil)
-	r.accountIndexToAppliedWObject = make(map[uint]bool)
+	r.accountIndexToAppliedWObject = r.env.GetNewAIdToApplied()
 
 	accountLaneHit := r.accountLaneRounds != nil
 	rounds := r.accountLaneRounds
-	resMap := make(cmptypes.TxResIDMap)
+	resMap := r.env.GetNewResMap()
 	for _, si := range r.storeInfo.StoreAccountIndices {
-		aVId := r.accountHistory.Get(si).(uint)
-		var addr common.Address
-		addrOrRId := r.storeInfo.AccountIndexToAddressOrRId[si]
-		switch a_rid := addrOrRId.(type) {
-		case common.Address:
-			addr = a_rid
-		case uint:
-			addr = common.BigToAddress(r.registers.Get(a_rid).(*big.Int))
-		default:
-			panic(fmt.Sprintf("Unknow type %v", reflect.TypeOf(addrOrRId).Name()))
-		}
-
+		aVId, addr := r.getAVIdAndAddress(si)
 		resMap[addr] = cmptypes.DEFAULT_TXRESID
-
 		if aVId != 0 {
 			if !accountLaneHit {
 				ar := r.storeInfo.StoreAccountIndexToAVIdToRoundMapping[si]
@@ -2176,67 +2167,92 @@ func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay) cmptyp
 				if rm == nil {
 					continue
 				}
-				accountDeps := r.storeInfo.StoreAccountIndexToStoreAccountDependencies[si]
-				dk, dok, dvids := GetDepsKey(accountDeps, r.accountHistory)
-				rounds = nil
-				if dok {
-					rounds = rm.AccountDepsToRounds[dk]
-					if rounds != nil && r.debugOut != nil {
-						r.debugOut("Account %v AVId %v full match by AccountDeps %v of %v with keyLen %v\n", si, aVId, accountDeps, dvids, len(dk))
-					}
-				}
-				if rounds == nil {
-					fieldDeps := r.storeInfo.StoreAccountIndexToStoreFieldDependencies[si]
-					fk, fok, fvids := GetDepsKey(fieldDeps, r.fieldHistory)
-					if fok {
-						rounds = rm.FieldDepsToRounds[fk]
-						if rounds != nil && r.debugOut != nil {
-							r.debugOut("Account %v AVId %v full match by FieldDeps %v of %v with keyLen %v\n", si, aVId, fieldDeps, fvids, len(fk))
-						}
-					}
-				}
-				if rounds == nil {
-					varIndices := r.storeInfo.StoreAccountIndexToStoreVarRegisterIndices[si]
-					vk := GetValsKey(varIndices, r.registers)
-					rounds = rm.StoreValuesToRounds[vk]
-					if rounds != nil && r.debugOut != nil {
-						r.debugOut("Account %v AVId %v full match by RegisterVals %v with keyLen %v\n", si, aVId, varIndices, len(vk))
-					}
-				}
+				rounds = r.getMatchedRounds(si, rounds, rm, aVId)
 			}
-
 			if rounds == nil {
 				continue
 			}
-
-			isAccountChangeSet := false
-			for _, round := range rounds {
-				if round != nil {
-					if !isAccountChangeSet {
-						changed, fok := round.AccountChanges[addr]
-						cmptypes.MyAssert(fok)
-						resMap[addr] = changed
-						isAccountChangeSet = true
-					}
-					if wref, refOk := round.WObjectWeakRefs.GetMatchedRef(addr, txPreplay); refOk {
-						if objHolder, hok := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hok {
-							if r.debugOut != nil {
-								r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n",
-									round.RoundID, si, aVId, addr.Hex())
-							}
-							r.env.state.ApplyStateObject(objHolder.Obj)
-							r.accountIndexToAppliedWObject[si] = true
-							break
-
-						}
-					}
-				}
-			}
-
+			r.applyObjectInRounds(txPreplay, rounds, addr, resMap, si, aVId)
 		}
 	}
-
 	return resMap
+}
+
+func (r *TraceTrieSearchResult) getAVIdAndAddress(si uint) (uint, common.Address) {
+	aVId := r.accountHistory.Get(si).(uint)
+	var addr common.Address
+	addrOrRId := r.storeInfo.AccountIndexToAddressOrRId[si]
+	switch a_rid := addrOrRId.(type) {
+	case common.Address:
+		addr = a_rid
+	case uint:
+		addr = r.registers.Get(a_rid).(*MultiTypedValue).GetAddress()
+	default:
+		panic(fmt.Sprintf("Unknow type %v", reflect.TypeOf(addrOrRId).Name()))
+	}
+	return aVId, addr
+}
+
+func (r *TraceTrieSearchResult) applyObjectInRounds(txPreplay *cache.TxPreplay, rounds []*cache.PreplayResult, addr common.Address, resMap cmptypes.TxResIDMap, si uint, aVId uint) {
+	isAccountChangeSet := false
+	roundCount := len(rounds)
+	// early rounds and wobjects might have already been removed
+	// iterate reversely to more likely find an unused wobjects
+	for i := roundCount - 1; i >= 0; i-- { //_, round := range rounds {
+		round := rounds[i]
+		if round != nil {
+			if !isAccountChangeSet {
+				changed, fok := round.AccountChanges[addr]
+				if !fok {
+					panic("")
+				}
+				resMap[addr] = changed
+				isAccountChangeSet = true
+			}
+			if wref, refOk := round.WObjectWeakRefs.GetMatchedRef(addr, txPreplay); refOk {
+				if objHolder, hok := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hok {
+					if r.debugOut != nil {
+						r.debugOut("Apply WObject from Round %v for Account %v AVID %v with Addr %v\n",
+							round.RoundID, si, aVId, addr.Hex())
+					}
+					r.env.state.ApplyStateObject(objHolder.Obj)
+					r.accountIndexToAppliedWObject[si] = true
+					break
+				}
+			}
+		}
+	}
+}
+
+func (r *TraceTrieSearchResult) getMatchedRounds(si uint, rounds []*cache.PreplayResult, rm *RoundMapping, aVId uint) []*cache.PreplayResult {
+	accountDeps := r.storeInfo.StoreAccountIndexToStoreAccountDependencies[si]
+	dk, dok, dvids := GetDepsKey(accountDeps, r.accountHistory)
+	rounds = nil
+	if dok {
+		rounds = rm.AccountDepsToRounds[dk]
+		if rounds != nil && r.debugOut != nil {
+			r.debugOut("Account %v AVId %v full match by AccountDeps %v of %v with keyLen %v\n", si, aVId, accountDeps, dvids, len(dk))
+		}
+	}
+	if rounds == nil {
+		fieldDeps := r.storeInfo.StoreAccountIndexToStoreFieldDependencies[si]
+		fk, fok, fvids := GetDepsKey(fieldDeps, r.fieldHistory)
+		if fok {
+			rounds = rm.FieldDepsToRounds[fk]
+			if rounds != nil && r.debugOut != nil {
+				r.debugOut("Account %v AVId %v full match by FieldDeps %v of %v with keyLen %v\n", si, aVId, fieldDeps, fvids, len(fk))
+			}
+		}
+	}
+	if rounds == nil {
+		varIndices := r.storeInfo.StoreAccountIndexToStoreVarRegisterIndices[si]
+		vk := GetValsKey(varIndices, r.registers)
+		rounds = rm.StoreValuesToRounds[vk]
+		if rounds != nil && r.debugOut != nil {
+			r.debugOut("Account %v AVId %v full match by RegisterVals %v with keyLen %v\n", si, aVId, varIndices, len(vk))
+		}
+	}
+	return rounds
 }
 
 func NewTraceHitStatusFromSearchResult(sr *TraceTrieSearchResult) *cmptypes.TraceHitStatus {
@@ -2253,40 +2269,19 @@ func NewTraceHitStatusFromSearchResult(sr *TraceTrieSearchResult) *cmptypes.Trac
 }
 
 func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
-	precompiles map[common.Address]vm.PrecompiledContract, abort func() bool, debug bool, globalCache *cache.GlobalCache) (result *TraceTrieSearchResult, isAbort bool, ok bool) {
+	precompiles map[common.Address]vm.PrecompiledContract, abort func() bool, debug bool, globalCache *cache.GlobalCache) (result *TraceTrieSearchResult) {
+
 	var node *SNode
-
-	globalCache.BigIntPoolMutex.Lock()
-	defer globalCache.BigIntPoolMutex.Unlock()
-	env := tt.GetNewExecEnv(db, header, getHashFunc, precompiles, globalCache)
-
-	registers := tt.GetNewRegisters() //NewRegisterFile(tt.RegisterSize) // RegisterFile // := make(RegisterFile, tt.RegisterSize)
-	fieldHistory := tt.GetNewHistory()
-	accountHistory := tt.GetNewHistory()
-
-	var debugOut func(fmtStr string, params ...interface{})
-	var fOut *os.File
-
-	if debug {
-		fOut, _ := os.OpenFile("/tmp/SearchTrieLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-
-		debugOut = func(fmtStr string, params ...interface{}) {
-			if len(fmtStr) > 0 && fmtStr[len(fmtStr)-1] != '\n' {
-				fmtStr += "\n"
-			}
-			s := fmt.Sprintf(fmtStr, params...)
-			fOut.WriteString(s)
-		}
-	}
+	debugOut, fOut, env, registers, fieldHistory, accountHistory := tt.initSearch(db, header, getHashFunc, precompiles, globalCache, debug)
 
 	var accountLaneRounds []*cache.PreplayResult
-	var aborted bool
 	var totalJumps, failedJumps, aJumps, fJumps, oJumps, totalJumpKeys, executedNodes uint64
+	var hit, aborted bool
 
 	defer func() {
 		result = &TraceTrieSearchResult{
 			Node:              node,
-			hit:               ok,
+			hit:               hit,
 			registers:         registers,
 			fieldHistory:      fieldHistory,
 			accountHistory:    accountHistory,
@@ -2304,7 +2299,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			TotalJumpKeys:     totalJumpKeys,
 			ExecutedNodes:     executedNodes,
 		}
-		if ok {
+		if hit {
 			result.TraceHitStatus = NewTraceHitStatusFromSearchResult(result)
 		}
 	}()
@@ -2313,176 +2308,26 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		debugOut("Start Search Trie for Tx %v\n", tt.Tx.Hash().Hex())
 	}
 
-	ok = false
 	// start with the AccountLane
-	aNode := tt.AccountHead
-	node = aNode.LRNode
 	var fNode *FieldSearchTrieNode
 
-	for {
-		if abort() {
-			aborted = true
-			return
-		}
-		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
-		if debug {
-			cmptypes.MyAssert(newAccount)
-		}
-		jd := aNode.GetAJumpDef(aVId)
-		totalJumps++
-		totalJumpKeys++
-		if jd == nil {
-			failedJumps++
-			if debugOut != nil {
-				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
-			}
-			if debug {
-				cmptypes.MyAssert(aNode.Exit != nil)
-			}
-			fNode = aNode.Exit
-			if debug {
-				cmptypes.MyAssert(aNode.LRNode == fNode.LRNode)
-			}
-			break
-		} else {
-			if debugOut != nil {
-				debugOut("AccountLane Jump from (#%v to #%v) %v to %v on AIndex %v AVId %v\n",
-					node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(), jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId)
-			}
-			if debug {
-				cmptypes.MyAssert(jd.RegisterSnapshot != nil)
-				cmptypes.MyAssert(jd.FieldHistorySnapshot != nil)
-			}
-			registers.ApplySnapshot(jd.RegisterSnapshot)
-			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
-			aNode = jd.Dest
-			node = aNode.LRNode
-			aJumps++
-			if debug {
-				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
-				if !aNode.LRNode.Op.isStoreOp {
-					cmptypes.MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
-				}
-			}
-		}
-		if aNode.LRNode.Op.isStoreOp {
-			if debugOut != nil {
-				debugOut("AccountLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
-			}
-			accountLaneRounds = aNode.Rounds
-			if debug {
-				cmptypes.MyAssert(len(accountLaneRounds) > 0)
-			}
-			ok = true
-			return
-		}
+	node, fNode, accountLaneRounds, aborted, hit = tt.searchAccountLane(tt.AccountHead,
+		env, registers, accountHistory, fieldHistory,
+		&totalJumps, &totalJumpKeys, &failedJumps, &aJumps,
+		debug, debugOut,
+		abort)
+
+	if aborted || hit {
+		return
 	}
 
-	if debug {
-		cmptypes.MyAssert(fNode != nil)
-	}
-	fStart := fNode
+	fNode, node, aborted, hit = tt.searchFieldLane(fNode, node,
+		env, registers, accountHistory, fieldHistory,
+		&totalJumps, &totalJumpKeys, &failedJumps, &fJumps,
+		debug, debugOut, abort)
 
-	// Now in the FieldLane
-	for {
-		if abort() {
-			aborted = true
-			return
-		}
-		if debug {
-			cmptypes.MyAssert(fNode.LRNode == node)
-		}
-
-		beforeNode := node
-		if fNode.LRNode.Op.isLoadOp {
-			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
-			if !node.IsANode {
-				cmptypes.MyAssert(!newAccount)
-			}
-			jd := fNode.GetAJumpDef(aVId)
-			totalJumps++
-			totalJumpKeys++
-			if jd == nil {
-				failedJumps++
-				if debugOut != nil {
-					debugOut("  FieldLane AJump Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
-				}
-			} else {
-				if debugOut != nil {
-					debugOut("FieldLane AJump from (#%v to #%v) %v to %v on AIndex %v AVId %v, adding fields %v\n",
-						node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(),
-						jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId, jd.FieldHistorySegment)
-				}
-				if debug {
-					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
-				}
-				registers.ApplySnapshot(jd.RegisterSnapshot)
-				if debug {
-					cmptypes.MyAssert(jd.FieldHistorySegment != nil)
-					cmptypes.MyAssert(fieldHistory.size == node.FieldIndex, "%v, %v", fieldHistory.size, node.FieldIndex)
-				}
-				fieldHistory.AppendSegment(fNode.LRNode.FieldIndex, jd.FieldHistorySegment)
-				fNode = jd.Dest
-				node = fNode.LRNode
-				fJumps++
-				if debug {
-					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
-					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
-				}
-			}
-		}
-
-		if beforeNode == node {
-			if node.Op.isReadOp {
-				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
-				if fNode != fStart {
-					cmptypes.MyAssert(newAccount)
-				}
-			}
-			var fVId uint
-			var fVal interface{}
-			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
-			jd := fNode.GetFJumpDef(fVId)
-			totalJumps++
-			totalJumpKeys++
-			if jd == nil {
-				failedJumps++
-				if debugOut != nil {
-					debugOut("  FieldLane FJump Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.FieldIndex, fVId)
-				}
-				registers.AppendRegister(node.OutputRegisterIndex, fVal)
-				node = fNode.Exit
-				if debug {
-					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
-				}
-				break
-			} else {
-				if debugOut != nil {
-					debugOut("FieldLane FJump from (#%v to #%v) %v to %v on FIndex %v FVId %v\n",
-						node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(),
-						jd.Dest.LRNode.Statement.SimpleNameString(),
-						node.FieldIndex, fVId)
-				}
-				if debug {
-					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
-				}
-				registers.ApplySnapshot(jd.RegisterSnapshot)
-				fNode = jd.Dest
-				node = fNode.LRNode
-				fJumps++
-				if debug {
-					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
-				}
-			}
-		}
-
-		if fNode.LRNode.Op.isStoreOp {
-			if debugOut != nil {
-				debugOut("FieldLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
-			}
-			ok = true
-			return
-		}
+	if aborted || hit {
+		return
 	}
 
 	// start the OpLane
@@ -2491,10 +2336,23 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		cmptypes.MyAssert(!node.Op.isStoreOp)
 	}
 
+	node, aborted, hit = tt.searchOpLane(node,
+		env, accountHistory, fieldHistory, registers,
+		&totalJumps, &totalJumpKeys, &failedJumps, &executedNodes, &oJumps,
+		debug, debugOut, abort)
+	return
+}
+
+func (tt *TraceTrie) searchOpLane(nStart *SNode,
+	env *ExecEnv, accountHistory *RegisterFile, fieldHistory *RegisterFile, registers *RegisterFile,
+	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, executedNodes *uint64, oJumps *uint64,
+    debug bool, debugOut func(fmtStr string, params ...interface{}), abort func() bool) (node *SNode, aborted, hit bool) {
+
+	node = nStart
 	for {
-		if abort() {
+		if abort != nil && abort() {
 			aborted = true
-			return
+			break
 		}
 		jHead := node.JumpHead
 		beforeJumpNode := node
@@ -2504,7 +2362,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			jNode := jHead
 			// try to jump
 			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut,
-				fieldHistory, registers, fCheckCount, beforeJumpNode, &totalJumps, &totalJumpKeys, &failedJumps)
+				fieldHistory, registers, fCheckCount, beforeJumpNode, totalJumps, totalJumpKeys, failedJumps)
 		}
 
 		// if jump failed, execute
@@ -2531,7 +2389,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			if node.IsRLNode {
 				_, fVal = node.LoadFieldValueID(env, registers, fieldHistory)
 			} else {
-				executedNodes++
+				*executedNodes++
 				fVal = node.Execute(env, registers)
 			}
 
@@ -2541,7 +2399,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 			node = node.GetNextNode(registers)
 		} else {
-			oJumps++
+			*oJumps++
 		}
 
 		if node == nil {
@@ -2562,18 +2420,229 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 					debugOut("  miss due to %v\n", s.SimpleNameString())
 				}
 			}
-			ok = false
-			return
+			hit = false
+			break
 		}
 
 		if node.Op.isStoreOp {
 			if debugOut != nil {
 				debugOut("OpLane Hit by reaching: #%v %v", node.Seq, node.Statement.SimpleNameString())
 			}
-			ok = true
-			return
+			hit = true
+			break
 		}
 	}
+	return
+}
+
+func (tt *TraceTrie) initSearch(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
+	precompiles map[common.Address]vm.PrecompiledContract, globalCache *cache.GlobalCache,
+	debug bool) (func(fmtStr string, params ...interface{}), *os.File, *ExecEnv, *RegisterFile, *RegisterFile, *RegisterFile) {
+
+	var debugOut func(fmtStr string, params ...interface{})
+	var fOut *os.File
+
+	env := tt.GetNewExecEnv(db, header, getHashFunc, precompiles, globalCache)
+	registers := tt.GetNewRegisters() //NewRegisterFile(tt.RegisterSize) // RegisterFile // := make(RegisterFile, tt.RegisterSize)
+	fieldHistory := tt.GetNewHistory()
+	accountHistory := tt.GetNewHistory()
+
+	if debug {
+		fOut, _ = os.OpenFile("/tmp/SearchTrieLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+		debugOut = func(fmtStr string, params ...interface{}) {
+			if len(fmtStr) > 0 && fmtStr[len(fmtStr)-1] != '\n' {
+				fmtStr += "\n"
+			}
+			s := fmt.Sprintf(fmtStr, params...)
+			fOut.WriteString(s)
+		}
+	}
+	return debugOut, fOut, env, registers, fieldHistory, accountHistory
+}
+
+func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
+	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
+	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, fJumps *uint64,
+	debug bool, debugOut func(fmtStr string, params ...interface{}),
+	abort func() bool) (fNode *FieldSearchTrieNode, node *SNode, aborted, ok bool) {
+
+	if debug {
+		cmptypes.MyAssert(fStart != nil)
+	}
+
+	fNode = fStart
+	node = nStart
+
+	// Now in the FieldLane
+	for {
+		if abort != nil && abort() {
+			aborted = true
+			break
+		}
+		if debug {
+			cmptypes.MyAssert(fNode.LRNode == node)
+		}
+
+		beforeNode := node
+		if fNode.LRNode.Op.isLoadOp {
+			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
+			if !node.IsANode {
+				cmptypes.MyAssert(!newAccount)
+			}
+			jd := fNode.GetAJumpDef(aVId)
+			*totalJumps++
+			*totalJumpKeys++
+			if jd == nil {
+				*failedJumps++
+				if debugOut != nil {
+					debugOut("  FieldLane AJump Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
+				}
+			} else {
+				if debugOut != nil {
+					debugOut("FieldLane AJump from (#%v to #%v) %v to %v on AIndex %v AVId %v, adding fields %v\n",
+						node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(),
+						jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId, jd.FieldHistorySegment)
+				}
+				if debug {
+					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
+				}
+				registers.ApplySnapshot(jd.RegisterSnapshot)
+				if debug {
+					cmptypes.MyAssert(jd.FieldHistorySegment != nil)
+					cmptypes.MyAssert(fieldHistory.size == node.FieldIndex, "%v, %v", fieldHistory.size, node.FieldIndex)
+				}
+				fieldHistory.AppendSegment(fNode.LRNode.FieldIndex, jd.FieldHistorySegment)
+				fNode = jd.Dest
+				node = fNode.LRNode
+				*fJumps++
+				if debug {
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
+				}
+			}
+		}
+
+		if beforeNode == node {
+			if node.Op.isReadOp {
+				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
+				if fNode != fStart {
+					cmptypes.MyAssert(newAccount)
+				}
+			}
+			var fVId uint
+			var fVal interface{}
+			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
+			jd := fNode.GetFJumpDef(fVId)
+			*totalJumps++
+			*totalJumpKeys++
+			if jd == nil {
+				*failedJumps++
+				if debugOut != nil {
+					debugOut("  FieldLane FJump Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.FieldIndex, fVId)
+				}
+				registers.AppendRegister(node.OutputRegisterIndex, fVal)
+				node = fNode.Exit
+				if debug {
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+				}
+				break
+			} else {
+				if debugOut != nil {
+					debugOut("FieldLane FJump from (#%v to #%v) %v to %v on FIndex %v FVId %v\n",
+						node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(),
+						jd.Dest.LRNode.Statement.SimpleNameString(),
+						node.FieldIndex, fVId)
+				}
+				if debug {
+					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
+				}
+				registers.ApplySnapshot(jd.RegisterSnapshot)
+				fNode = jd.Dest
+				node = fNode.LRNode
+				*fJumps++
+				if debug {
+					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+				}
+			}
+		}
+
+		if fNode.LRNode.Op.isStoreOp {
+			if debugOut != nil {
+				debugOut("FieldLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
+			}
+			ok = true
+			break
+		}
+	}
+	return
+}
+
+func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
+	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
+	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, aJumps *uint64,
+	debug bool, debugOut func(fmtStr string, params ...interface{}),
+	abort func() bool) (node *SNode, fNode *FieldSearchTrieNode, accountLaneRounds []*cache.PreplayResult, aborted bool, ok bool) {
+	node = aNode.LRNode
+	for {
+		if abort != nil && abort() {
+			aborted = true
+			break
+		}
+		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
+		if debug {
+			cmptypes.MyAssert(newAccount)
+		}
+		jd := aNode.GetAJumpDef(aVId)
+		*totalJumps++
+		*totalJumpKeys++
+		if jd == nil {
+			*failedJumps++
+			if debugOut != nil {
+				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
+			}
+			if debug {
+				cmptypes.MyAssert(aNode.Exit != nil)
+			}
+			fNode = aNode.Exit
+			if debug {
+				cmptypes.MyAssert(aNode.LRNode == fNode.LRNode)
+			}
+			break
+		} else {
+			if debugOut != nil {
+				debugOut("AccountLane Jump from (#%v to #%v) %v to %v on AIndex %v AVId %v\n",
+					node.Seq, jd.Dest.LRNode.Seq, node.Statement.SimpleNameString(), jd.Dest.LRNode.Statement.SimpleNameString(), node.AccountIndex, aVId)
+			}
+			if debug {
+				cmptypes.MyAssert(jd.RegisterSnapshot != nil)
+				cmptypes.MyAssert(jd.FieldHistorySnapshot != nil)
+			}
+			registers.ApplySnapshot(jd.RegisterSnapshot)
+			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
+			aNode = jd.Dest
+			node = aNode.LRNode
+			*aJumps++
+			if debug {
+				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
+				if !aNode.LRNode.Op.isStoreOp {
+					cmptypes.MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
+				}
+			}
+		}
+		if aNode.LRNode.Op.isStoreOp {
+			if debugOut != nil {
+				debugOut("AccountLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
+			}
+			accountLaneRounds = aNode.Rounds
+			if debug {
+				cmptypes.MyAssert(len(accountLaneRounds) > 0)
+			}
+			ok = true
+			break
+		}
+	}
+	return
 }
 
 func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
@@ -2986,8 +3055,8 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 					break
 				}
 				cmptypes.MyAssert(fDes.LRNode.Op.isLoadOp)
-				srcAddr := fSrc.LRNode.Statement.inputs[0].BAddress()
-				desAddr := fDes.LRNode.Statement.inputs[0].BAddress()
+				srcAddr := fSrc.LRNode.GetInputVal(0, j.registers).(*MultiTypedValue).GetAddress()
+				desAddr := fDes.LRNode.GetInputVal(0, j.registers).(*MultiTypedValue).GetAddress()
 				if srcAddr != desAddr {
 					break
 				}

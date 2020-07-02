@@ -165,8 +165,10 @@ type StateDB struct {
 	nextBigIntIndex             int
 	preAllocatedTxPerfs         []*TxPerfAndStatus
 	nextTxPerfIndex             int
-	//preAllocatedJournals        []*journal
-	//nextJournalIndex            int
+	preAllocatedJournals        []*journal
+	nextJournalIndex            int
+	preAllocatedLogArrays       [][]*types.Log
+	nextLogArrayIndex           int
 
 	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
 	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
@@ -224,12 +226,16 @@ func (self *StateDB) PreAllocateObjects() {
 	preDeltaCount := 100
 	preBigIntCount := 600
 	preTxPerfCount := 300
-	//preJournalCount := 400
+	preJournalCount := 300
+	preLogArrayCount := 300
+
 	self.preAllocatedOriginStorages = make([]Storage, preOriginCount)
 	self.preAllocatedPendingStorages = make([]Storage, prePendingCount)
 	self.preAllocatedDeltaObjects = make([]*deltaObject, preDeltaCount)
 	self.preAllocatedBigInt = make([]*big.Int, preBigIntCount)
-	//self.preAllocatedJournals = make([]*journal, preJournalCount)
+	self.preAllocatedJournals = make([]*journal, preJournalCount)
+	self.preAllocatedLogArrays = make([][]*types.Log, preLogArrayCount)
+
 	for i := range self.preAllocatedOriginStorages {
 		self.preAllocatedOriginStorages[i] = make(Storage)
 	}
@@ -250,9 +256,12 @@ func (self *StateDB) PreAllocateObjects() {
 	for i := range self.preAllocatedTxPerfs {
 		self.preAllocatedTxPerfs[i] = &TxPerfAndStatus{}
 	}
-	//for i := range self.preAllocatedJournals {
-	//	self.preAllocatedJournals[i] = newJournal()
-	//}
+	for i := range self.preAllocatedJournals {
+		self.preAllocatedJournals[i] = newJournal()
+	}
+	for i := range self.preAllocatedLogArrays {
+		self.preAllocatedLogArrays[i] = make([]*types.Log, 0, 30)
+	}
 }
 
 func (self *StateDB) GetNewOriginStorage() Storage {
@@ -300,14 +309,23 @@ func (self *StateDB) GetNewTxPerf() *TxPerfAndStatus {
 	return tf
 }
 
-//func (self *StateDB) GetNewJournal() *journal {
-//	if self.nextJournalIndex >= len(self.preAllocatedJournals) {
-//		return newJournal()
-//	}
-//	tf := self.preAllocatedJournals[self.nextJournalIndex]
-//	self.nextJournalIndex++
-//	return tf
-//}
+func (self *StateDB) GetNewJournal() *journal {
+	if self.nextJournalIndex >= len(self.preAllocatedJournals) {
+		return newJournal()
+	}
+	tf := self.preAllocatedJournals[self.nextJournalIndex]
+	self.nextJournalIndex++
+	return tf
+}
+
+func (self *StateDB) GetNewLogArray() []*types.Log {
+	if self.nextLogArrayIndex >= len(self.preAllocatedLogArrays) {
+		return make([]*types.Log, 0, 30)
+	}
+	tf := self.preAllocatedLogArrays[self.nextLogArrayIndex]
+	self.nextLogArrayIndex++
+	return tf
+}
 
 func (self *StateDB) StateObjectCountInDelta() int {
 	return len(self.delta.stateObjects)
@@ -343,7 +361,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		stateObjectsPending:    make(map[common.Address]struct{}, 300),
 		stateObjectsDirty:      make(map[common.Address]struct{}),
 		createdObjectsInWarmup: make(map[common.Address]*stateObject),
-		logs:                   make(map[common.Hash][]*types.Log, 100),
+		logs:                   make(map[common.Hash][]*types.Log, 300),
 		preimages:              make(map[common.Hash][]byte),
 		journal:                newJournal(),
 
@@ -448,7 +466,12 @@ func (s *StateDB) AddLog(log *types.Log) {
 	if s.IsShared() {
 		s.delta.logs = append(s.delta.logs, log)
 	} else {
-		s.logs[s.thash] = append(s.logs[s.thash], log)
+		logs, ok := s.logs[s.thash]
+		if !ok {
+			logs = s.GetNewLogArray()
+		}
+		s.logs[s.thash] = append(logs, log)
+		//s.logs[s.thash] = append(s.logs[s.thash], log)
 	}
 	s.logSize++
 }
@@ -558,7 +581,11 @@ func (s *StateDB) OriginalEmpty(addr common.Address) bool {
 // Retrieve the balance from the given address or 0 if object not found
 func (s *StateDB) GetBalance(addr common.Address) (ret *big.Int) {
 	stateObject := s.getStateObject(addr)
-	defer func() { s.rwRecorder._GetBalance(addr, stateObject, new(big.Int).Set(ret)) }()
+	if s.IsRWMode() {
+		defer func() {
+			s.rwRecorder._GetBalance(addr, stateObject, new(big.Int).Set(ret))
+		}()
+	}
 	if stateObject != nil {
 		return stateObject.Balance()
 	}
@@ -998,7 +1025,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		//if len(enc) != 0 {
 		//	panic("The enc should be zero!")
 		//}
-		return  nil
+		return nil
 	}
 
 	// Load the object from the database
@@ -1149,19 +1176,19 @@ func (db *StateDB) ForEachStorage(addr common.Address, cb func(key, value common
 func (s *StateDB) Copy() *StateDB {
 	// Copy all the basic fields, initialize the memory ones
 	state := &StateDB{
-		db:                  s.db,
-		trie:                s.db.CopyTrie(s.trie),
-		stateObjects:        make(map[common.Address]*stateObject, len(s.journal.dirties)),
-		stateObjectsPending: make(map[common.Address]struct{}, len(s.stateObjectsPending)),
-		stateObjectsDirty:   make(map[common.Address]struct{}, len(s.journal.dirties)),
+		db:                     s.db,
+		trie:                   s.db.CopyTrie(s.trie),
+		stateObjects:           make(map[common.Address]*stateObject, len(s.journal.dirties)),
+		stateObjectsPending:    make(map[common.Address]struct{}, len(s.stateObjectsPending)),
+		stateObjectsDirty:      make(map[common.Address]struct{}, len(s.journal.dirties)),
 		createdObjectsInWarmup: make(map[common.Address]*stateObject),
-		refund:              s.refund,
-		logs:                make(map[common.Hash][]*types.Log, len(s.logs)),
-		logSize:             s.logSize,
-		preimages:           make(map[common.Hash][]byte, len(s.preimages)),
-		journal:             newJournal(),
-		ProcessedTxs:        make([]common.Hash, len(s.ProcessedTxs)),
-		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
+		refund:                 s.refund,
+		logs:                   make(map[common.Hash][]*types.Log, len(s.logs)),
+		logSize:                s.logSize,
+		preimages:              make(map[common.Hash][]byte, len(s.preimages)),
+		journal:                newJournal(),
+		ProcessedTxs:           make([]common.Hash, len(s.ProcessedTxs)),
+		AccountChangedBy:       make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		allowObjCopy:        s.allowObjCopy,
@@ -1620,7 +1647,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 func (s *StateDB) clearJournalAndRefund() {
 	if len(s.journal.entries) > 0 || len(s.journal.dirties) > 0 {
 		s.savedDirties = s.journal.dirties
-		s.journal = newJournal()
+		s.journal = s.GetNewJournal()//newJournal()
 		s.refund = 0
 	}
 	s.validRevisions = s.validRevisions[:0] // Snapshots can be created without journal entires

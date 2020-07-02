@@ -66,6 +66,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 		RWRecordTrie:         cmptypes.NewPreplayResTrie(),
 		RWRecordTrieMu:       trylock.New(),
 		wobjectHolderMap:     make(state.ObjectHolderMap),
+		wobjectHolderMapMu:   trylock.New(),
 		objectPointerToObjID: make(map[uintptr]uintptr),
 		//RWrecords:            RWrecords,
 	}
@@ -208,7 +209,7 @@ type PreplayResults struct {
 	DeltaWrites        map[common.Address]*WStateDelta
 
 	wobjectHolderMap     state.ObjectHolderMap
-	wobjectHolderMapMu   sync.Mutex
+	wobjectHolderMapMu   trylock.TryLocker
 	wobjectIDCounter     uintptr
 	objectPointerToObjID map[uintptr]uintptr
 
@@ -233,17 +234,22 @@ func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
 }
 
 func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
-	rs.wobjectHolderMapMu.Lock()
-	defer rs.wobjectHolderMapMu.Unlock()
-	holder, hok := rs.wobjectHolderMap.GetAndDelete(wref.ObjectID)
-	if hok {
-		objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
-		if _, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
-			panic("unsynced wobjectHolderMap and objectPointerToObjID")
+	if rs.wobjectHolderMapMu.TryLock(nil) {
+		//rs.wobjectHolderMapMu.Lock()
+		//defer rs.wobjectHolderMapMu.Unlock()
+		holder, hok := rs.wobjectHolderMap.GetAndDelete(wref.ObjectID)
+		if hok {
+			objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
+			if _, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
+				panic("unsynced wobjectHolderMap and objectPointerToObjID")
+			}
+			delete(rs.objectPointerToObjID, objPointerAsInt)
 		}
-		delete(rs.objectPointerToObjID, objPointerAsInt)
+		rs.wobjectHolderMapMu.Unlock()
+		return holder, hok
+	}else {
+		return nil, false
 	}
-	return holder, hok
 }
 
 func (rs *PreplayResults) GetHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
@@ -956,7 +962,6 @@ func (r *GlobalCache) GetPreplayCacheTxs() map[common.Address]types.Transactions
 // SetMainResult set the result for a tx
 func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRecord *RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
 	accChanges cmptypes.TxResIDMap, readDeps []*cmptypes.AddrLocValue, preBlockHash common.Hash, txPreplay *TxPreplay) (*PreplayResult, bool) {
-	r.FillBigIntPool()
 
 	if receipt == nil || rwRecord == nil {
 		log.Debug("[PreplayCache] Nil Error", "txHash", txPreplay.TxHash)

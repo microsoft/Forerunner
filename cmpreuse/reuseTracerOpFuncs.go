@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/sha3"
@@ -13,8 +12,7 @@ import (
 )
 
 func fLoad(env *ExecEnv) interface{} {
-	//addr := common.BigToAddress(env.inputs[0].(*big.Int))
-	addr := env.BigToAddress(env.inputs[0].(*big.Int))
+	addr := env.inputs[0].(*MultiTypedValue).GetAddress()
 	switch env.config.variant {
 	case ACCOUNT_NONCE:
 		return env.state.GetNonce(addr)
@@ -25,17 +23,17 @@ func fLoad(env *ExecEnv) interface{} {
 	case ACCOUNT_EMPTY:
 		return env.state.Empty(addr)
 	case ACCOUNT_CODEHASH:
-		return env.HashToBig(env.state.GetCodeHash(addr))
+		return env.state.GetCodeHash(addr)
 	case ACCOUNT_CODESIZE:
 		return env.IntToBig(env.state.GetCodeSize(addr))
 	case ACCOUNT_CODE:
 		return env.state.GetCode(addr)
 	case ACCOUNT_STATE:
-		key := env.BigToHash(env.inputs[1].(*big.Int), true)
-		return env.HashToBig(env.state.GetState(addr, key))//.Big()
+		key := env.inputs[1].(*MultiTypedValue).GetHash()
+		return env.state.GetState(addr, key)
 	case ACCOUNT_COMMITTED_STATE:
-		key := env.BigToHash(env.inputs[1].(*big.Int), true)
-		return env.HashToBig(env.state.GetCommittedState(addr, key))//.Big()
+		key := env.inputs[1].(*MultiTypedValue).GetHash()
+		return env.state.GetCommittedState(addr, key)//.Big()
 	default:
 		panic("Unknown fLoad variant!")
 	}
@@ -44,37 +42,25 @@ func fLoad(env *ExecEnv) interface{} {
 
 func
 fStore(env *ExecEnv) interface{} {
-	addr := env.BigToAddress(env.inputs[0].(*big.Int))
+	addr := env.inputs[0].(*MultiTypedValue).GetAddress()
 	switch env.config.variant {
 	case ACCOUNT_NONCE:
 		nonce := env.inputs[1].(uint64)
 		env.state.SetNonce(addr, nonce)
 	case ACCOUNT_BALANCE:
-		balance := env.inputs[1].(*big.Int)
+		balance := _GetSecondBigInt(env)
 		env.state.SetBalance(addr, balance)
 	case ACCOUNT_CODE:
 		code := env.inputs[1].([]byte)
 		env.state.SetCode(addr, code)
 	case ACCOUNT_STATE:
-		key := env.BigToHash(env.inputs[1].(*big.Int), false)
-		value := env.BigToHash(env.inputs[2].(*big.Int), false)
+		key := env.inputs[1].(*MultiTypedValue).GetHash()
+		value := env.inputs[2].(*MultiTypedValue).GetHash()
 		env.state.SetState(addr, key, value)
 	case ACCOUNT_SUICIDE:
 		env.state.Suicide(addr)
 	case ACCOUNT_LOG:
-		log := &types.Log{
-			Address: addr,
-			Data:    env.inputs[1].([]byte),
-			BlockNumber: env.header.Number.Uint64(),
-		}
-		if len(env.inputs) > 2 {
-			topics := make([]common.Hash, len(env.inputs)-2)
-			for i, v := range env.inputs[2:] {
-				topics[i] = env.BigToHash(v.(*big.Int), false)
-			}
-			log.Topics = topics
-		}
-		env.state.AddLog(log)
+		addLog(env, addr)
 	case VIRTUAL_FAILED:
 		// pass
 	case VIRTUAL_GASUSED:
@@ -85,27 +71,49 @@ fStore(env *ExecEnv) interface{} {
 	return nil
 }
 
+func addLog(env *ExecEnv, addr common.Address) {
+	log := env.GetNewLog()
+	log.Address = addr
+	log.Data = env.inputs[1].([]byte)
+	log.BlockNumber = env.header.Number.Uint64()
+	//log := &types.Log{
+	//	Address:     addr,
+	//	Data:        env.inputs[1].([]byte),
+	//	BlockNumber: env.header.Number.Uint64(),
+	//}
+	if len(env.inputs) > 2 {
+		topics := env.GetNewHashArray() //make([]common.Hash, len(env.inputs)-2)
+		for _, v := range env.inputs[2:] {
+			topics = append(topics, v.(*MultiTypedValue).GetHash())
+			//topics[i] = v.(*MultiTypedValue).GetHash()
+		}
+		log.Topics = topics
+	}
+	env.state.AddLog(log)
+}
+
+var emptyHash = common.Hash{}
+
 func fRead(env *ExecEnv) interface{} {
 	switch env.config.variant {
 	case BLOCK_COINBASE:
-		return AddressToBigInt(env.header.Coinbase)
+		return env.header.Coinbase
 	case BLOCK_TIMESTAMP:
-		return new(big.Int).SetUint64(env.header.Time)
+		return env.GetNewBigInt().SetUint64(env.header.Time)
 	case BLOCK_NUMBER:
-		return new(big.Int).Set(env.header.Number)
+		return env.GetNewBigInt().Set(env.header.Number)
 	case BLOCK_DIFFICULTY:
-		return new(big.Int).Set(env.header.Difficulty)
+		return env.GetNewBigInt().Set(env.header.Difficulty)
 	case BLOCK_GASLIMIT:
-		return new(big.Int).SetUint64(env.header.GasLimit)
+		return env.GetNewBigInt().SetUint64(env.header.GasLimit)
 	case BLOCK_HASH:
-		num := env.inputs[0].(*big.Int)
+		num := _GetFirstBigInt(env)
 		currentBlockNumber := env.header.Number
-		n := new(big.Int).Sub(currentBlockNumber, common.Big257)
+		n := env.GetNewBigInt().Sub(currentBlockNumber, common.Big257)
 		if num.Cmp(n) > 0 && num.Cmp(currentBlockNumber) < 0 {
-			return env.getHash(num.Uint64()).Big()
+			return env.getHash(num.Uint64())
 		} else {
-			//return common.Hash{}
-			return new(big.Int).SetInt64(0)
+			return emptyHash
 		}
 	default:
 		panic("Unknown fRead variant")
@@ -115,9 +123,28 @@ func fRead(env *ExecEnv) interface{} {
 
 // big.Ints
 func _GetTwoBigInts(env *ExecEnv) (lhs, rhs *big.Int) {
-	lhs = env.inputs[0].(*big.Int)
-	rhs = env.inputs[1].(*big.Int)
+	lhs = env.inputs[0].(*MultiTypedValue).GetBigInt(env)
+	rhs = env.inputs[1].(*MultiTypedValue).GetBigInt(env)
 	return
+}
+
+func _GetThreeBigInts(env *ExecEnv) (x, y, z *big.Int) {
+	x = env.inputs[0].(*MultiTypedValue).GetBigInt(env)
+	y = env.inputs[1].(*MultiTypedValue).GetBigInt(env)
+	z = env.inputs[2].(*MultiTypedValue).GetBigInt(env)
+	return
+}
+
+func _GetFirstBigInt(env *ExecEnv) *big.Int {
+	return env.inputs[0].(*MultiTypedValue).GetBigInt(env)
+}
+
+func _GetSecondBigInt(env *ExecEnv) *big.Int {
+	return env.inputs[1].(*MultiTypedValue).GetBigInt(env)
+}
+
+func _GetThirdBigInt(env *ExecEnv) *big.Int {
+	return env.inputs[2].(*MultiTypedValue).GetBigInt(env)
 }
 
 func fCmpBigInt(env *ExecEnv) interface{} {
@@ -126,11 +153,13 @@ func fCmpBigInt(env *ExecEnv) interface{} {
 }
 
 func fEqualBigInt(env *ExecEnv) interface{} {
-	return (fCmpBigInt(env)).(int) == 0
+	lhs, rhs := _GetTwoBigInts(env)
+	return lhs.Cmp(rhs) == 0
 }
 
 func fGEBigInt(env *ExecEnv) interface{} {
-	return (fCmpBigInt(env)).(int) >= 0
+	lhs, rhs := _GetTwoBigInts(env)
+	return lhs.Cmp(rhs) >= 0
 }
 
 func fSubBigInt(env *ExecEnv) interface{} {
@@ -153,89 +182,64 @@ func fDivBigInt(env *ExecEnv) interface{} {
 	return new(big.Int).Div(lhs, rhs)
 }
 
-func fBigIntToHash(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
-	return common.BigToHash(bi)
-}
-
 func fLowestByteBigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	ba := make([]byte, 1)
 	ba[0] = byte(bi.Int64() & 0xff)
 	return ba
 }
 
-func fHashToBigInt(env *ExecEnv) interface{} {
-	h := env.inputs[0].(common.Hash)
-	return new(big.Int).SetBytes(h.Bytes())
-}
-
-func fBigIntToAddress(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
-	return common.BigToAddress(bi)
-}
-
 func fCropBigIntAddress(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
-	return new(big.Int).SetBytes(common.BigToAddress(bi).Bytes())
-}
-
-func fAddressToBigInt(env *ExecEnv) interface{} {
-	addr := env.inputs[0].(common.Address)
-	return new(big.Int).SetBytes(addr.Bytes())
+	bi := _GetFirstBigInt(env)
+	return common.BigToAddress(bi)
 }
 
 func fByteArrayToBigInt(env *ExecEnv) interface{} {
 	ba := env.inputs[0].([]byte)
-	return new(big.Int).SetBytes(ba)
+	return env.GetNewBigInt().SetBytes(ba)
 }
 
 func fBigIntTo32Bytes(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	return math.PaddedBigBytes(bi, 32)
 }
 
-func fIntToBigInt(env *ExecEnv) interface{} {
-	i := env.inputs[0].(int)
-	return new(big.Int).SetInt64(int64(i))
-}
-
 func fU256BigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	r := new(big.Int).Set(bi)
 	return math.U256(r)
 }
 
 func fS256BigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	r := new(big.Int).Set(bi)
 	return math.S256(r)
 }
 
 func fSignBigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	return bi.Sign()
 }
 
 func fNegBigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	r := new(big.Int).Set(bi)
 	return r.Neg(bi)
 }
 
 func fAbsBigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	r := new(big.Int).Set(bi)
 	return r.Abs(bi)
 }
 
 func fIsUint64BigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	return bi.IsUint64()
 }
 
 func fBitLenBigInt(env *ExecEnv) interface{} {
-	bi := env.inputs[0].(*big.Int)
+	bi := _GetFirstBigInt(env)
 	return bi.BitLen()
 }
 
@@ -247,25 +251,20 @@ var tt255 = math.BigPow(2, 255)
 var bigZero = new(big.Int).SetUint64(0)
 
 func _GetOneBigIntCopy(env *ExecEnv) *big.Int {
-	x := env.inputs[0].(*big.Int)
+	x := env.inputs[0].(*MultiTypedValue).GetBigInt(env)
 	return env.GetNewBigInt().Set(x)
 }
 
 func _GetTwoBigIntsCopy(env *ExecEnv) (*big.Int, *big.Int) {
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := env.inputs[0].(*MultiTypedValue).GetBigInt(env), env.inputs[1].(*MultiTypedValue).GetBigInt(env)
 	return env.GetNewBigInt().Set(x), env.GetNewBigInt().Set(y)
-}
-
-func _GetThreeBigIntsCopy(env *ExecEnv) (*big.Int, *big.Int, *big.Int) {
-	x, y, z := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int), env.inputs[2].(*big.Int)
-	return new(big.Int).Set(x), new(big.Int).Set(y), new(big.Int).Set(z)
 }
 
 func fEVMAdd(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//math.U256(y.Add(x, y))
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt() //new(big.Int)
 	math.U256(z.Add(x, y))
 	return z
@@ -275,7 +274,7 @@ func fEVMSub(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//math.U256(y.Sub(x, y))
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt() //new(big.Int)
 	math.U256(z.Sub(x, y))
 	return z
@@ -285,7 +284,7 @@ func fEVMMul(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//math.U256(x.Mul(x, y))
 	//return x
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt() //new(big.Int)
 	math.U256(z.Mul(x, y))
 	return z
@@ -299,7 +298,7 @@ func fEVMDiv(env *ExecEnv) interface{} {
 	//	y.SetUint64(0)
 	//}
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	if y.Sign() != 0 {
 		return math.U256(env.GetNewBigInt().Div(x, y))
 	}else {
@@ -350,7 +349,7 @@ func fEVMMod(env *ExecEnv) interface{} {
 	//	math.U256(x.Mod(x, y))
 	//}
 	//return x
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	if y.Sign() == 0 {
 		return bigZero
 	} else {
@@ -413,7 +412,7 @@ func fEVMExp(env *ExecEnv) interface{} {
 	//}
 	//return base
 
-	base, exponent := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	base, exponent := _GetTwoBigInts(env)
 	// some shortcuts
 	cmpToOne := exponent.Cmp(big1)
 	if cmpToOne < 0 { // Exponent is zero
@@ -476,7 +475,7 @@ func fEVMLt(env *ExecEnv) interface{} {
 	//	y.SetUint64(0)
 	//}
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	if x.Cmp(y) < 0{
 		return big1
 	}else {
@@ -492,7 +491,7 @@ func fEVMGt(env *ExecEnv) interface{} {
 	//	y.SetUint64(0)
 	//}
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	if x.Cmp(y) > 0 {
 		return big1
 	}else {
@@ -522,7 +521,7 @@ func fEVMSlt(env *ExecEnv) interface{} {
 	//}
 	//return y
 
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 
 	xSign := x.Cmp(tt255)
 	ySign := y.Cmp(tt255)
@@ -564,7 +563,7 @@ func fEVMSgt(env *ExecEnv) interface{} {
 	//	}
 	//}
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 
 	xSign := x.Cmp(tt255)
 	ySign := y.Cmp(tt255)
@@ -591,7 +590,7 @@ func fEVMEq(env *ExecEnv) interface{} {
 	//	y.SetUint64(0)
 	//}
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	if x.Cmp(y) == 0 {
 		return big1
 	}else {
@@ -608,7 +607,7 @@ func fEVMIszero(env *ExecEnv) interface{} {
 	//}
 	//return x
 
-	x := env.inputs[0].(*big.Int)
+	x := _GetFirstBigInt(env)
 	if x.Sign() > 0 {
 		return bigZero
 	} else {
@@ -624,7 +623,7 @@ func fIszeroBigInt(env *ExecEnv) interface{} {
 	//	x.SetUint64(1)
 	//}
 	//return x
-	x := env.inputs[0].(*big.Int)
+	x := _GetFirstBigInt(env)
 	if x.Sign() != 0 {
 		return bigZero
 	} else {
@@ -635,7 +634,7 @@ func fIszeroBigInt(env *ExecEnv) interface{} {
 func fEVMAnd(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//return x.And(x, y)
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt()//new(big.Int)
 	return z.And(x, y)
 }
@@ -644,7 +643,7 @@ func fEVMOr(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//y.Or(x, y)
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt()//new(big.Int)
 	return z.Or(x, y)
 }
@@ -653,7 +652,7 @@ func fEVMXor(env *ExecEnv) interface{} {
 	//x, y := _GetTwoBigIntsCopy(env)
 	//y.Xor(x, y)
 	//return y
-	x, y := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	x, y := _GetTwoBigInts(env)
 	z := env.GetNewBigInt()//new(big.Int)
 	return z.Xor(x, y)
 }
@@ -668,7 +667,7 @@ func fEVMByte(env *ExecEnv) interface{} {
 	//}
 	//return val
 
-	th, val := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int)
+	th, val := _GetTwoBigInts(env)
 	if th.Cmp(common.Big32) < 0 {
 		b := math.Byte(val, 32, int(th.Int64()))
 		return env.GetNewBigInt().SetUint64(uint64(b))
@@ -687,7 +686,7 @@ func fEVMAddmod(env *ExecEnv) interface{} {
 	//	x.SetUint64(0)
 	//}
 	//return x
-	x, y, z := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int), env.inputs[2].(*big.Int)
+	x, y, z := _GetThreeBigInts(env)
 	if z.Cmp(bigZero) > 0 {
 		r := env.GetNewBigInt()
 		r.Add(x, y)
@@ -709,7 +708,7 @@ func fEVMMulmod(env *ExecEnv) interface{} {
 	//	x.SetUint64(0)
 	//}
 	//return x
-	x, y, z := env.inputs[0].(*big.Int), env.inputs[1].(*big.Int), env.inputs[2].(*big.Int)
+	x, y, z := _GetThreeBigInts(env)
 	if z.Cmp(bigZero) > 0 {
 		r := env.GetNewBigInt()
 		r.Mul(x, y)
@@ -798,19 +797,19 @@ func fSha3(env *ExecEnv) interface{} {
 }
 
 func fCreateAddress(env *ExecEnv) interface{} {
-	callerAddr := common.BigToAddress(env.inputs[0].(*big.Int))
+	callerAddr := env.inputs[0].(*MultiTypedValue).GetAddress()
 	callerNonce := env.inputs[1].(uint64)
 
-	return AddressToBigInt(crypto.CreateAddress(callerAddr, callerNonce))
+	return crypto.CreateAddress(callerAddr, callerNonce)
 }
 
 func fCreateAddress2(env *ExecEnv) interface{} {
-	callerAddr := common.BigToAddress(env.inputs[0].(*big.Int))
-	salt := common.BigToHash(env.inputs[1].(*big.Int))
+	callerAddr := env.inputs[0].(*MultiTypedValue).GetAddress()
+	salt := env.inputs[1].(*MultiTypedValue).GetHash()
 	code := env.inputs[2].([]byte)
 	codeHashBytes := crypto.Keccak256Hash(code).Bytes()
 
-	return AddressToBigInt(crypto.CreateAddress2(callerAddr, salt, codeHashBytes))
+	return crypto.CreateAddress2(callerAddr, salt, codeHashBytes)
 }
 
 func fRunPrecompiled(env *ExecEnv) interface{} {
@@ -821,15 +820,15 @@ func fRunPrecompiled(env *ExecEnv) interface{} {
 }
 
 func fIsPrecompiled(env *ExecEnv) interface{} {
-	input := env.inputs[0].(*big.Int)
-	_, ok := env.precompiles[common.BigToAddress(input)]
+	input := env.inputs[0].(*MultiTypedValue).GetAddress()
+	_, ok := env.precompiles[input]
 	return ok
 }
 
 func fArrayBoundCheck(env *ExecEnv) interface{} {
 	var (
 		returnData = env.inputs[0].([]byte)
-		end        = env.inputs[1].(*big.Int)
+		end        = _GetSecondBigInt(env)
 	)
 
 	if !end.IsUint64() || uint64(len(returnData)) < end.Uint64() {
@@ -858,7 +857,7 @@ func fAddUint64(env *ExecEnv) interface{} {
 
 // bytearray
 func fConcatBytes(env *ExecEnv) interface{} {
-	arrayLen := env.inputs[0].(*big.Int).Int64()
+	arrayLen := _GetFirstBigInt(env).Int64()
 	if int64(len(env.inputs)-1) % 3 != 0 {
 		panic(fmt.Sprintf("Wrong number of mem cells. arraylen: %v, input len: %v", arrayLen, len(env.inputs)))
 	}
@@ -887,7 +886,7 @@ func fConcatBytes(env *ExecEnv) interface{} {
 }
 
 func fGetDataBig(env *ExecEnv) interface{} {
-	data, start, size := env.inputs[0].([]byte), env.inputs[1].(*big.Int), env.inputs[2].(*big.Int)
+	data, start, size := env.inputs[0].([]byte), _GetSecondBigInt(env), _GetThirdBigInt(env)
 	dlen := big.NewInt(int64(len(data)))
 
 	s := math.BigMin(start, dlen)
@@ -903,8 +902,8 @@ func fLenByteArray(env *ExecEnv) interface{} {
 
 func fSliceByteArray(env *ExecEnv) interface{} {
 	data := env.inputs[0].([]byte)
-	start := env.inputs[1].(*big.Int)
-	end := env.inputs[2].(*big.Int)
+	start := _GetSecondBigInt(env)
+	end := _GetThirdBigInt(env)
 	return data[start.Uint64():end.Uint64()]
 }
 
@@ -936,15 +935,13 @@ func fGuard(env *ExecEnv) interface{} {
 
 func fGetStateValueID(env *ExecEnv) interface{} {
 	stateValueIDMap := env.inputs[0].(*StateIDM)
-	key := env.inputs[1].(*big.Int)
-	keyHash := common.BigToHash(key)
+	keyHash := env.inputs[1].(*MultiTypedValue).GetHash()
 	return stateValueIDMap.mapping[keyHash]
 }
 
 func fSetStateValueID(env *ExecEnv) interface{} {
 	stateValueIDMap := env.inputs[0].(*StateIDM)
-	key := env.inputs[1].(*big.Int)
-	keyHash := common.BigToHash(key)
+	keyHash := env.inputs[1].(*MultiTypedValue).GetHash()
 	valueID := env.inputs[2].(uint32)
 	if !stateValueIDMap.mutable {
 		mCopy := make(map[common.Hash]uint32, len(stateValueIDMap.mapping)+1)
@@ -966,15 +963,13 @@ func fSetStateValueID(env *ExecEnv) interface{} {
 
 func fGetAddrID(env *ExecEnv) interface{} {
 	addrIDMap := env.inputs[0].(*AddrIDM)
-	key := env.inputs[1].(*big.Int)
-	keyAddr := common.BigToAddress(key)
+	keyAddr := env.inputs[1].(*MultiTypedValue).GetAddress()
 	return addrIDMap.mapping[keyAddr]
 }
 
 func fSetAddrID(env *ExecEnv) interface{} {
 	addrIDMap := env.inputs[0].(*AddrIDM)
-	key := env.inputs[1].(*big.Int)
-	keyAddr := common.BigToAddress(key)
+	keyAddr := env.inputs[1].(*MultiTypedValue).GetAddress()
 	valueID := env.inputs[2].(uint32)
 	if !addrIDMap.mutable {
 		mCopy := make(map[common.Address]uint32, len(addrIDMap.mapping)+1)
@@ -996,14 +991,14 @@ func fSetAddrID(env *ExecEnv) interface{} {
 
 func fGetBlockHashNumID(env *ExecEnv) interface{} {
 	bHNIDMap := env.inputs[0].(*BlockHashNumIDM)
-	num := env.inputs[1].(*big.Int)
+	num := _GetSecondBigInt(env)
 	numUint64 := num.Uint64()
 	return bHNIDMap.mapping[numUint64]
 }
 
 func fSetBlockHashNumID(env *ExecEnv) interface{} {
 	bHNIDMap := env.inputs[0].(*BlockHashNumIDM)
-	num := env.inputs[1].(*big.Int)
+	num := _GetSecondBigInt(env)
 	numUint64 := num.Uint64()
 	valueID := env.inputs[2].(uint32)
 	if !bHNIDMap.mutable {

@@ -49,28 +49,28 @@ type ReuseTracer struct {
 	currentPC                  uint64
 	testOpImp                  bool
 	EncounterUnimplementedCode bool
-	IsExternalTransfer         bool
-	IsCompleteTrace            bool
-	Int_0                      *Variable
-	BigInt_0                   *Variable
-	BigInt_1                   *Variable
-	BigInt_32                  *Variable
-	BigInt_96                  *Variable
-	BigInt_64                  *Variable
-	Uint64_1                   *Variable
-	ByteArray_Empty            *Variable
-	BigInt_EmptyHash           *Variable
-	BigInt_EmptyCodeHash       *Variable
-	txFrom                     *Variable
-	txTo                       *Variable
-	txGasPrice_BigInt          *Variable
-	txGas_uint64               *Variable
-	txValue                    *Variable
-	txData_byteArray           *Variable
-	txNonce_uint64             *Variable
-	Bool_false                 *Variable
-	Bool_true                  *Variable
-	currentGas                 uint64
+	IsExternalTransfer   bool
+	IsCompleteTrace   bool
+	Int_0             *Variable
+	BigInt_0          *Variable
+	BigInt_1          *Variable
+	BigInt_32         *Variable
+	BigInt_96         *Variable
+	BigInt_64         *Variable
+	Uint64_1          *Variable
+	ByteArray_Empty   *Variable
+	EmptyHash         *Variable
+	EmptyCodeHash     *Variable
+	txFrom            *Variable
+	txTo              *Variable
+	txGasPrice_BigInt *Variable
+	txGas_uint64      *Variable
+	txValue           *Variable
+	txData_byteArray  *Variable
+	txNonce_uint64    *Variable
+	Bool_false        *Variable
+	Bool_true         *Variable
+	currentGas        uint64
 	txHash                     common.Hash
 	ChainID                    *Variable
 	chainRules                 params.Rules
@@ -129,8 +129,8 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 	rt.BigInt_96 = rt.ConstVarWithName(big.NewInt(96), "bi96")
 	rt.Uint64_1 = rt.ConstVarWithName(uint64(1), "uint1")
 	rt.ByteArray_Empty = rt.ConstVarWithName(make([]byte, 0), "[0]byte")
-	rt.BigInt_EmptyHash = rt.ConstVarWithName(big.NewInt(0), "Hash{}").MarkBigIntAsHash()
-	rt.BigInt_EmptyCodeHash = rt.ConstVarWithName(cmptypes.EmptyCodeHash.Big(), "emptyCodeHash").SetTypedVal(cmptypes.EmptyCodeHash)
+	rt.EmptyHash = rt.ConstVarWithName(common.Hash{}, "Hash{}")
+	rt.EmptyCodeHash = rt.ConstVarWithName(cmptypes.EmptyCodeHash, "emptyCodeHash")
 	rt.Bool_false = rt.ConstVarWithName(false, "false")
 	rt.Bool_true = rt.ConstVarWithName(true, "true")
 
@@ -202,8 +202,8 @@ func (rt *ReuseTracer) Pop3() (*Variable, *Variable, *Variable) {
 
 func (rt *ReuseTracer) Push(variable *Variable) {
 	switch variable.val.(type) {
-	case *big.Int:
-	// pass
+	case *MultiTypedValue:
+		// pass
 	default:
 		panic(fmt.Sprintf("Wrong push type %v", variable.varType.String()))
 	}
@@ -265,16 +265,12 @@ func (rt *ReuseTracer) GetReturnData() []byte {
 	return rt.returnData.ByteArray()
 }
 
-func AddressToBigInt(addr common.Address) *big.Int {
-	return new(big.Int).SetBytes(addr.Bytes())
-}
-
 func (rt *ReuseTracer) InitTx(txHash common.Hash, from common.Address, to *common.Address,
 	gasPrice, value *big.Int, gas, nonce uint64, data []byte) {
 	rt.txHash = txHash
-	rt.txFrom = rt.ConstVarWithName(AddressToBigInt(from), "txFrom").SetTypedVal(from)
+	rt.txFrom = rt.ConstVarWithName(from, "txFrom")
 	if to != nil {
-		rt.txTo = rt.ConstVarWithName(AddressToBigInt(*to), "txTo").SetTypedVal(*to)
+		rt.txTo = rt.ConstVarWithName(*to, "txTo")
 	}
 	rt.txGasPrice_BigInt = rt.ConstVarWithName(gasPrice, "txGasPrice")
 	rt.txValue = rt.ConstVarWithName(value, "txValue")
@@ -306,10 +302,13 @@ func (rt *ReuseTracer) ConstVar(val interface{}) *Variable {
 func IsValCacheable(val interface{}) bool {
 	switch val.(type) {
 	case *big.Int:
-		return true
+		//return true
+		panic("Should not see big int directly ")
 	case []byte:
 		return true
 	case string:
+		return true
+	case *MultiTypedValue:
 		return true
 	}
 
@@ -323,16 +322,33 @@ func IsValCacheable(val interface{}) bool {
 func GetCacheKey(val interface{}) interface{} {
 	switch bi := val.(type) {
 	case *big.Int:
-		return "bi" + bi.String()
+		panic("Should not see big int directly")
+		//return "bi" + bi.String()
 	case []byte:
 		return "[]" + string(bi)
 	case string:
 		return "str" + bi
+	case *MultiTypedValue:
+		return bi.GetCacheKey()
+	}
+	return val
+}
+
+func CreateMultiTypedValueIfNeed(val interface{}, env *ExecEnv) interface{} {
+	switch bi := val.(type) {
+	case *big.Int:
+		return NewBigIntValue(bi, env)
+	case common.Address:
+		return NewAddressValue(bi, env)
+	case common.Hash:
+		return NewHashValue(bi, env)
 	}
 	return val
 }
 
 func (rt *ReuseTracer) ConstVarWithName(val interface{}, name string) *Variable {
+	val = CreateMultiTypedValueIfNeed(val, nil)
+
 	cacheable := IsValCacheable(val)
 	var cached *Variable
 	var key interface{}
@@ -364,7 +380,7 @@ func (rt *ReuseTracer) Var(val interface{}) *Variable {
 func (rt *ReuseTracer) VarWithName(val interface{}, name string) *Variable {
 	v := &Variable{
 		varType:        reflect.TypeOf(val),
-		val:            CopyIfNeeded(val),
+		val:            CreateMultiTypedValueIfNeed(CopyIfNeeded(val), nil),
 		constant:       false,
 		id:             rt.valueCounter,
 		customNamePart: name,
@@ -478,7 +494,6 @@ func (rt *ReuseTracer) TraceWithName(f *OpDef, output interface{}, outputVarName
 		rt.SetCachedHeaderRead(f.config.variant, outputVar, inputVars...)
 	} else if f.IsGuard() {
 		outputVar.MarkGuardedConst()
-		outputVar.SetTypedVal(inputVars[0].tVal)
 	}
 
 	/*
@@ -799,7 +814,7 @@ func (rt *ReuseTracer) TraceCreateAddress2(salt *Variable) {
 func (rt *ReuseTracer) traceSetCreateCode() {
 	cf := rt.CF()
 	cf.code = cf.input
-	cf.codeHash = rt.BigInt_EmptyHash
+	cf.codeHash = rt.EmptyHash
 	cf.input = rt.ByteArray_Empty
 }
 
@@ -831,7 +846,7 @@ func (rt *ReuseTracer) TraceAssertNewCodeLen() {
 }
 
 func (rt *ReuseTracer) TraceCreateContractAccount() {
-	rt.CF().contractAddress.StoreCodeHash(rt.BigInt_EmptyCodeHash)
+	rt.CF().contractAddress.StoreCodeHash(rt.EmptyCodeHash)
 }
 
 func (rt *ReuseTracer) TraceStoreNewCode() {
@@ -885,7 +900,7 @@ func (rt *ReuseTracer) TraceRunPrecompiled(p cmptypes.PrecompiledContract) {
 func (rt *ReuseTracer) TraceGasSStore() {
 	stack := rt.CF().stack
 	yVar, xVar := stack.Back(1), stack.Back(0)
-	keyVar := xVar.MarkBigIntAsHash()
+	keyVar := xVar
 	currentVar := rt.CF().contractAddress.LoadState(keyVar, nil)
 	//currentVar.EqualGeneric(rt.Hash_Empty).Guard()
 	currentVar.EqualBigInt(rt.BigInt_0).NGuard("gas")
@@ -895,7 +910,7 @@ func (rt *ReuseTracer) TraceGasSStore() {
 func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
 	stack := rt.CF().stack
 	yVar, xVar := stack.Back(1), stack.Back(0)
-	keyVar := xVar.MarkBigIntAsHash()
+	keyVar := xVar
 	currentVar := rt.CF().contractAddress.LoadState(keyVar, nil) //.MarkBigIntAsHash()
 	yValueHashVar := yVar                                        //.MarkBigIntAsHash()
 
@@ -1021,7 +1036,7 @@ func (rt *ReuseTracer) TraceGasDelegateOrStaticCall() {
 func (rt *ReuseTracer) TraceGasSelfdestruct() {
 	stack := rt.CF().stack
 	if rt.chainRules.IsEIP150 {
-		addressVar := stack.Back(0).MarkBigIntAsAddress()
+		addressVar := stack.Back(0)
 		if rt.chainRules.IsEIP158 {
 			g := addressVar.LoadEmpty(nil).NGuard("gas")
 			if !g.Bool() {
@@ -1371,7 +1386,7 @@ func (rt *ReuseTracer) Trace_opGasprice() {
 func (rt *ReuseTracer) Trace_opBlockhash() {
 	num := rt.Pop() //.NGuard("block_num")
 	name := fmt.Sprintf("BlockHash%v", num.BigInt().String())
-	r := rt.TraceWithName(OP_ReadBlockHash, nil, name, num).MarkBigIntAsHash()
+	r := rt.TraceWithName(OP_ReadBlockHash, nil, name, num)
 	rt.Push(r)
 }
 
@@ -1379,7 +1394,7 @@ func (rt *ReuseTracer) Trace_opCoinbase() {
 	op := OP_ReadCoinbase
 	name := *op.config.variant
 	r := rt.TraceWithName(op, nil, name)
-	rt.Push(r.MarkBigIntAsAddress())
+	rt.Push(r)
 }
 
 func (rt *ReuseTracer) Trace_opTimestamp() {
@@ -1435,7 +1450,7 @@ func (rt *ReuseTracer) Trace_opMstore8() {
 }
 
 func (rt *ReuseTracer) Trace_opSload() {
-	loc := rt.Pop().MarkBigIntAsHash()
+	loc := rt.Pop()
 	val := rt.CF().contractAddress.LoadState(loc, nil)
 	rt.Push(val)
 }
@@ -1505,7 +1520,7 @@ func (rt *ReuseTracer) Trace_opCall() {
 	// Pop other call parameters.
 	addr, value, inOffset := rt.Pop3()
 	inSize, retOffset, retSize := rt.Pop3()
-	toAddr := addr.CropBigIntAddress().MarkBigIntAsAddress() //.NGuard("call_target")
+	toAddr := addr.CropBigIntAddress()
 	value = value.U256BigInt()
 	args := rt.Mem().GetPtr(inOffset, inSize)
 	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas")
@@ -1525,7 +1540,7 @@ func (rt *ReuseTracer) Trace_opCallcode() {
 	// Pop other call parameters.
 	addr, value, inOffset := rt.Pop3()
 	inSize, retOffset, retSize := rt.Pop3()
-	toAddr := addr.CropBigIntAddress().MarkBigIntAsAddress() //.NGuard("call_target")
+	toAddr := addr.CropBigIntAddress()
 	value = value.U256BigInt()
 	args := rt.Mem().GetPtr(inOffset, inSize)
 	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas")
@@ -1545,7 +1560,7 @@ func (rt *ReuseTracer) Trace_opDelegatecall() {
 	// Pop other call parameters.
 	addr, inOffset, inSize := rt.Pop3()
 	retOffset, retSize := rt.Pop2()
-	toAddr := addr.CropBigIntAddress().MarkBigIntAsAddress() //.NGuard("call_target")
+	toAddr := addr.CropBigIntAddress()
 	args := rt.Mem().GetPtr(inOffset, inSize)
 
 	//save return offset and return Size before doing call
@@ -1563,7 +1578,7 @@ func (rt *ReuseTracer) Trace_opStaticcall() {
 	// Pop other call parameters.
 	addr, inOffset, inSize := rt.Pop3()
 	retOffset, retSize := rt.Pop2()
-	toAddr := addr.CropBigIntAddress().MarkBigIntAsAddress() //.NGuard("call_target")
+	toAddr := addr.CropBigIntAddress() //.NGuard("call_target")
 	args := rt.Mem().GetPtr(inOffset, inSize)
 
 	//save return offset and return Size before doing call
@@ -1591,7 +1606,7 @@ func (rt *ReuseTracer) Trace_opStop() {
 
 func (rt *ReuseTracer) Trace_opSelfdestruct() {
 	suicider := rt.CF().contractAddress
-	toAddr := rt.Pop().MarkBigIntAsAddress()
+	toAddr := rt.Pop()
 	balance := suicider.LoadBalance(nil)
 	if balance.BigInt().Sign() != 0 {
 		toAddr.StoreBalance(toAddr.LoadBalance(nil).AddBigInt(balance))

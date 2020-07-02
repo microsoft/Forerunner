@@ -62,14 +62,10 @@ var (
 	OP_CmpBigInt         = NewSimpleOpDef(fCmpBigInt)
 	OP_EqualBigInt       = NewSimpleOpDef(fEqualBigInt)
 	OP_GEBigInt          = NewSimpleOpDef(fGEBigInt)
-	OP_BigIntToHash      = NewSimpleOpDef(fBigIntToHash)
 	OP_BitLenBigInt      = NewSimpleOpDef(fBitLenBigInt)
-	OP_BigIntToAddress   = NewSimpleOpDef(fBigIntToAddress)
 	OP_CropBigIntAddress   = NewSimpleOpDef(fCropBigIntAddress)
-	OP_AddressToBigInt   = NewSimpleOpDef(fAddressToBigInt)
 	OP_ByteArrayToBigInt = NewSimpleOpDef(fByteArrayToBigInt)
 	OP_BigIntTo32Bytes   = NewSimpleOpDef(fBigIntTo32Bytes)
-	OP_IntToBigInt       = NewSimpleOpDef(fIntToBigInt)
 	OP_U256BigInt        = NewSimpleOpDef(fU256BigInt)
 	OP_S256BigInt        = NewSimpleOpDef(fS256BigInt)
 	OP_SignBigInt        = NewSimpleOpDef(fSignBigInt)
@@ -77,8 +73,6 @@ var (
 	OP_AbsBigInt         = NewSimpleOpDef(fAbsBigInt)
 	OP_IsUint64BigInt    = NewSimpleOpDef(fIsUint64BigInt)
 	OP_LowestByteBigInt  = NewSimpleOpDef(fLowestByteBigInt)
-
-	OP_HashToBigInt = NewSimpleOpDef(fHashToBigInt)
 
 	OP_EVMAdd        = NewSimpleOpDef(fEVMAdd)
 	OP_EVMSub        = NewSimpleOpDef(fEVMSub)

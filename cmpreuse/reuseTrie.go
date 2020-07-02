@@ -553,7 +553,7 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 	}
 
 	for ; !currentNode.IsLeaf; {
-		if abort() {
+		if abort != nil && abort() {
 			return nil, true, false
 		}
 		childNode, ok := getChild(currentNode, db, bc, header, debug)
@@ -594,7 +594,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	)
 
 	for ; !currentNode.IsLeaf; {
-		if abort() {
+		if abort != nil && abort() {
 			return nil, nil, nil, nil, true, false
 		}
 		childNode, ok := getChild(currentNode, db, bc, header, debug)

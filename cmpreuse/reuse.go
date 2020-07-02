@@ -195,7 +195,7 @@ func ApplyWStateDelta(statedb *state.StateDB, addr common.Address, wstate *state
 func ApplyWDelta(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
 	for addr, wstate := range rw.WState {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		if ApplyWState(statedb, addr, wstate) {
@@ -203,7 +203,7 @@ func ApplyWDelta(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) 
 		}
 	}
 	for _, addr := range suicideAddr {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		statedb.Suicide(addr)
@@ -213,7 +213,7 @@ func ApplyWDelta(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) 
 func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.Address]*cache.WStateDelta, abort func() bool) {
 	var suicideAddr []common.Address
 	for addr, wstate := range rw.WState {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		wStateDelta, ok := WDeltas[addr]
@@ -228,7 +228,7 @@ func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.A
 		}
 	}
 	for _, addr := range suicideAddr {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		statedb.Suicide(addr)
@@ -271,7 +271,7 @@ func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.A
 func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
 	var suicideAddr []common.Address
 	for addr, wstate := range rw.WState {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		if ApplyWState(statedb, addr, wstate) {
@@ -279,7 +279,7 @@ func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool)
 		}
 	}
 	for _, addr := range suicideAddr {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		statedb.Suicide(addr)
@@ -319,7 +319,7 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 	var suicideAddr []common.Address
 	WDeltas := txPreplay.PreplayResults.DeltaWrites
 	for addr, wstate := range rw.WState {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		objectApplied := false
@@ -383,7 +383,7 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 	}
 
 	for _, addr := range suicideAddr {
-		if abort() {
+		if abort != nil && abort() {
 			return
 		}
 		statedb.Suicide(addr)
@@ -722,8 +722,7 @@ func (reuse *Cmpreuse) traceCheck(txPreplay *cache.TxPreplay, statedb *state.Sta
 	}
 
 	if trie != nil {
-		sr, _, _ := trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, tracerCheck, reuse.MSRACache)
-		return sr
+		return trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, tracerCheck, reuse.MSRACache)
 	}
 	return nil
 }
@@ -740,7 +739,7 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 
 	// rwrecordKeys are from oldest to newest. iterate them reversely
 	for i := len(rwrecordKeys) - 1; i >= 0; i-- {
-		if abort() {
+		if abort != nil && abort() {
 			isAbort = true
 			break
 		}
@@ -809,13 +808,13 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		}
 	}
 
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	// Add Logs
 	if status.HitType != cmptypes.TraceHit {
 		for _, receiptLog := range round.Receipt.Logs {
-			if abort() {
+			if abort != nil && abort() {
 				return
 			}
 			statedb.AddLog(&types.Log{
@@ -827,7 +826,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		}
 	}
 
-	if abort() {
+	if abort != nil && abort() {
 		return
 	}
 	if statedb.IsRWMode() { // Has write set in finalization
@@ -877,19 +876,19 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	var lockCount int
 	var tryHoldLock = func(mu trylock.TryLocker) (hold bool) {
 		if isBlockProcess {
-			if !mu.RTryLockTimeout(0) {
+			if !mu.TryLock(nil) {
 				lockCount++
 				return false
 			}
 		} else {
-			mu.RLock()
+			mu.Lock()
 		}
 		return true
 	}
 
 	if tryHoldLock(txPreplay.PreplayResults.MixTreeMu) {
 		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
-		txPreplay.PreplayResults.MixTreeMu.RUnlock()
+		txPreplay.PreplayResults.MixTreeMu.Unlock()
 
 		if ok {
 			d0 = time.Since(t0)
@@ -907,7 +906,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		if status == nil {
 			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
 				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.CmpReuseChecking)
-				txPreplay.PreplayResults.TraceTrieMu.RUnlock()
+				txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 				if sr != nil && sr.hit {
 					d0 = time.Since(t0)
@@ -942,7 +941,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		if status == nil {
 			if tryHoldLock(txPreplay.PreplayResults.DeltaTreeMu) {
 				round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
-				txPreplay.PreplayResults.DeltaTreeMu.RUnlock()
+				txPreplay.PreplayResults.DeltaTreeMu.Unlock()
 
 				if ok {
 					d0 = time.Since(t0)
@@ -964,7 +963,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	if status == nil {
 		if tryHoldLock(txPreplay.PreplayResults.RWRecordTrieMu) {
 			round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
-			txPreplay.PreplayResults.RWRecordTrieMu.RUnlock()
+			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
 			if ok {
 				d0 = time.Since(t0)
@@ -975,9 +974,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					mixbs, _ := json.Marshal(mixStatus)
 					roundbs, _ := json.Marshal(round)
 					log.Warn("Mixhit miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "tx", txPreplay.TxHash.Hex(), "mixstatus", string(mixbs), "round", string(roundbs))
-					txPreplay.PreplayResults.MixTreeMu.RLock()
+					txPreplay.PreplayResults.MixTreeMu.Lock()
 					SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true, isBlockProcess, txPreplay.PreplayResults.IsExternalTransfer)
-					txPreplay.PreplayResults.MixTreeMu.RUnlock()
+					txPreplay.PreplayResults.MixTreeMu.Unlock()
 					log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
 					SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, func() bool { return false }, true)
 					formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
