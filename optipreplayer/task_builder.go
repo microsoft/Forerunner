@@ -426,6 +426,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	}
 	b.txnDeadline = b.txnBaseline
 	b.setMinPrice(common.Big0)
+	b.nowGroups = make(map[common.Hash]*TxnGroup)
 	b.parent = block
 	b.clearRWRecord()
 }

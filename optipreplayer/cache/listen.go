@@ -179,6 +179,14 @@ func (r *GlobalCache) GetTxEnpool(hash common.Hash) uint64 {
 	}
 }
 
+func (r *GlobalCache) GetTxEnpending(hash common.Hash) uint64 {
+	if result, ok := r.TxEnpendingCache.Peek(hash); ok {
+		return result.(uint64)
+	} else {
+		return 0
+	}
+}
+
 func (r *GlobalCache) GetTxPackage(hash common.Hash) uint64 {
 	if result, ok := r.TxPackageCache.Peek(hash); ok {
 		return result.(uint64)
@@ -218,6 +226,10 @@ func (r *GlobalCache) CommitTxListen(tx *TxListen) {
 
 func (r *GlobalCache) CommitTxEnpool(tx common.Hash, txEnpool uint64) {
 	r.TxEnpoolCache.ContainsOrAdd(tx, txEnpool)
+}
+
+func (r *GlobalCache) CommitTxEnpending(tx common.Hash, txEnpending uint64) {
+	r.TxEnpendingCache.ContainsOrAdd(tx, txEnpending)
 }
 
 func (r *GlobalCache) CommitTxPackage(tx common.Hash, txPackage uint64) {

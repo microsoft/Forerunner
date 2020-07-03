@@ -170,17 +170,17 @@ type StateDB struct {
 	preAllocatedLogArrays       [][]*types.Log
 	nextLogArrayIndex           int
 
-	ProcessedForDb     map[common.Address]map[common.Hash]struct{}
-	ProcessedForObj    map[common.Address]map[common.Hash]struct{}
-	CalWarmupMiss      bool
-	WarmupMissDetail   bool
-	AccountCreate      int
-	AddrWarmupMiss     int
-	AddrNoWarmup       int
-	AddrWarmupHelpless map[common.Address]struct{}
-	KeyWarmupMiss      int
-	KeyNoWarmup        int
-	KeyWarmupHelpless  int
+	ProcessedForDb       map[common.Address]map[common.Hash]struct{}
+	ProcessedForObj      map[common.Address]map[common.Hash]struct{}
+	CalWarmupMiss        bool
+	WarmupMissDetail     bool
+	AccountCreate        int
+	AddrWarmupMiss       int
+	AddrNoWarmup         int
+	AddrCreateWarmupMiss map[common.Address]struct{}
+	KeyWarmupMiss        int
+	KeyNoWarmup          int
+	KeyCreateWarmupMiss  int
 
 	UnknownTxs        []*types.Transaction
 	UnknownTxReceipts []*types.Receipt
@@ -1038,7 +1038,8 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		}
 		s.setError(err)
 		if s.CalWarmupMiss {
-			s.AddrWarmupHelpless[addr] = struct{}{}
+			s.AddrWarmupMiss++
+			s.AddrCreateWarmupMiss[addr] = struct{}{}
 		}
 		return nil
 	}
@@ -1117,7 +1118,9 @@ func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) 
 	} else {
 		s.setStateObject(newobj)
 	}
-	s.AccountCreate++
+	if s.CalWarmupMiss {
+		s.AccountCreate++
+	}
 	return newobj, prev
 }
 
@@ -1767,12 +1770,14 @@ func (s *StateDB) IsKeyWarmup(addr common.Address, key common.Hash) bool {
 }
 
 func (s *StateDB) HaveMiss() bool {
-	return s.AddrWarmupMiss+len(s.AddrWarmupHelpless)+s.KeyWarmupMiss+s.KeyWarmupHelpless > 0
+	return s.AddrWarmupMiss > 0 || s.KeyWarmupMiss > 0
 }
 
 func (s *StateDB) ClearMiss() {
-	s.AddrWarmupMiss, s.AddrWarmupHelpless, s.KeyWarmupMiss, s.KeyWarmupHelpless = 0, make(map[common.Address]struct{}), 0, 0
+	s.AccountCreate = 0
+	s.AddrWarmupMiss, s.KeyWarmupMiss = 0, 0
 	s.AddrNoWarmup, s.KeyNoWarmup = 0, 0
+	s.AddrCreateWarmupMiss, s.KeyCreateWarmupMiss = make(map[common.Address]struct{}), 0
 }
 
 func IntermediateRootCalc(s *StateDB) common.Hash {

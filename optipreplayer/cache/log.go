@@ -33,7 +33,8 @@ type LogBlockInfo struct {
 
 	NoListen               int `json:"L"`
 	NoListenAndNoEthermine int `json:"L&NoEthermine"`
-	NoEnpool               int `json:"Ep"`
+	NoEnpool               int `json:"Epo"`
+	NoEnpending            int `json:"Epe"`
 	NoPackage              int `json:"Pa"`
 	NoEnqueue              int `json:"Eq"`
 	NoPreplay              int `json:"Pr"`
@@ -61,7 +62,7 @@ type LogBlockInfo struct {
 	AbortedDelta  int `json:"aD"`
 	AbortedTrie   int `json:"aT"`
 
-	ReuseGas int           `json:"reuseGas"`
+	ReuseGas uint64        `json:"reuseGas"`
 	ProcTime int64         `json:"procTime"`
 	RunMode  string        `json:"runMode"`
 	TxnCount int           `json:"txnCount"`
@@ -72,7 +73,7 @@ type MissReporter interface {
 	SetBlock(block *types.Block)
 	SetNoPreplayTxn(txn *types.Transaction, enqueue uint64)
 	SetMissTxn(txn *types.Transaction, miss *cmptypes.PreplayResTrieNode, value interface{}, txnType int)
-	ReportMiss(noListen, noListenAndEthermine, noEnpool, noPackage, noEnqueue, noPreplay uint64)
+	ReportMiss(noListen, noListenAndEthermine, noEnpool, noEnpending, noPackage, noEnqueue, noPreplay uint64)
 }
 
 // LogBlockCache define blockCache log format
@@ -166,23 +167,23 @@ var (
 
 	ReuseResult []*cmptypes.ReuseStatus
 
-	WarmupMissTxnCount = make(map[string]int)
-	AccountCreate      = make(map[string]int)
-	AddrWarmupMiss     = make(map[string]int)
-	AddrNoWarmup       = make(map[string]int)
-	AddrWarmupHelpless = make(map[string]int)
-	KeyWarmupMiss      = make(map[string]int)
-	KeyNoWarmup        = make(map[string]int)
-	KeyWarmupHelpless  = make(map[string]int)
+	WarmupMissTxnCount   = make(map[string]int)
+	AccountCreate        = make(map[string]int)
+	AddrWarmupMiss       = make(map[string]int)
+	AddrNoWarmup         = make(map[string]int)
+	AddrCreateWarmupMiss = make(map[string]int)
+	KeyWarmupMiss        = make(map[string]int)
+	KeyNoWarmup          = make(map[string]int)
+	KeyCreateWarmupMiss  = make(map[string]int)
 
-	CumWarmupMissTxnCount = make(map[string]int)
-	CumAccountCreate      = make(map[string]int)
-	CumAddrWarmupMiss     = make(map[string]int)
-	CumAddrNoWarmup       = make(map[string]int)
-	CumAddrWarmupHelpless = make(map[string]int)
-	CumKeyWarmupMiss      = make(map[string]int)
-	CumKeyNoWarmup        = make(map[string]int)
-	CumKeyWarmupHelpless  = make(map[string]int)
+	CumWarmupMissTxnCount   = make(map[string]int)
+	CumAccountCreate        = make(map[string]int)
+	CumAddrWarmupMiss       = make(map[string]int)
+	CumAddrNoWarmup         = make(map[string]int)
+	CumAddrCreateWarmupMiss = make(map[string]int)
+	CumKeyWarmupMiss        = make(map[string]int)
+	CumKeyNoWarmup          = make(map[string]int)
+	CumKeyCreateWarmupMiss  = make(map[string]int)
 
 	cumApply            time.Duration
 	cumReuse            time.Duration
@@ -205,6 +206,7 @@ var (
 	listen            uint64
 	listenOrEthermine uint64
 	enpool            uint64
+	enpending         uint64
 	Package           uint64
 	enqueue           uint64
 	preplay           uint64
@@ -232,6 +234,9 @@ var (
 	noMatchMiss uint64
 
 	LockCount [4]uint64
+
+	reuseGasUsed uint64
+	totalGasUsed uint64
 )
 
 func SumDuration(durations []time.Duration) (sum time.Duration) {
@@ -253,10 +258,10 @@ func ResetLogVar(size int) {
 	AccountCreate = make(map[string]int)
 	AddrWarmupMiss = make(map[string]int)
 	AddrNoWarmup = make(map[string]int)
-	AddrWarmupHelpless = make(map[string]int)
+	AddrCreateWarmupMiss = make(map[string]int)
 	KeyWarmupMiss = make(map[string]int)
 	KeyNoWarmup = make(map[string]int)
-	KeyWarmupHelpless = make(map[string]int)
+	KeyCreateWarmupMiss = make(map[string]int)
 
 	Apply = make([]time.Duration, 0, size)
 	Reuse = make([]time.Duration, 0, size)
@@ -336,7 +341,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		WaitRealApplyEnd: sumWaitRealApplyEnd.Microseconds(),
 		RunTx:            sumRunTx.Microseconds(),
 		WaitReuseEnd:     sumWaitReuseEnd.Microseconds(),
-		ReuseGas:         int(ReuseGasCount),
+		ReuseGas:         ReuseGasCount,
 		ProcTime:         Process.Nanoseconds(),
 		TxnCount:         len(block.Transactions()),
 		Header:           block.Header(),
@@ -354,14 +359,18 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 					txPackage := r.GetTxPackage(tx.Hash())
 					if txPackage == 0 || txPackage > processTimeNano {
 						infoResult.NoPackage++
-						txEnpool := r.GetTxEnpool(tx.Hash())
-						if txEnpool == 0 || txEnpool > processTimeNano {
-							infoResult.NoEnpool++
-							txListen := r.GetTxListen(tx.Hash())
-							if txListen == nil || txListen.ListenTimeNano > processTimeNano {
-								infoResult.NoListen++
-								if sender, _ := types.Sender(signer, tx); sender != ethermine {
-									infoResult.NoListenAndNoEthermine++
+						txEnpending := r.GetTxEnpending(tx.Hash())
+						if txEnpending == 0 || txEnpending > processTimeNano {
+							infoResult.NoEnpending++
+							txEnpool := r.GetTxEnpool(tx.Hash())
+							if txEnpool == 0 || txEnpool > processTimeNano {
+								infoResult.NoEnpool++
+								txListen := r.GetTxListen(tx.Hash())
+								if txListen == nil || txListen.ListenTimeNano > processTimeNano {
+									infoResult.NoListen++
+									if sender, _ := types.Sender(signer, tx); sender != ethermine {
+										infoResult.NoListenAndNoEthermine++
+									}
 								}
 							}
 						}
@@ -458,10 +467,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		CumAccountCreate[word] += AccountCreate[word]
 		CumAddrWarmupMiss[word] += AddrWarmupMiss[word]
 		CumAddrNoWarmup[word] += AddrNoWarmup[word]
-		CumAddrWarmupHelpless[word] += AddrWarmupHelpless[word]
+		CumAddrCreateWarmupMiss[word] += AddrCreateWarmupMiss[word]
 		CumKeyWarmupMiss[word] += KeyWarmupMiss[word]
 		CumKeyNoWarmup[word] += KeyNoWarmup[word]
-		CumKeyWarmupHelpless[word] += KeyWarmupHelpless[word]
+		CumKeyCreateWarmupMiss[word] += KeyCreateWarmupMiss[word]
 	}
 
 	var keySort []string
@@ -471,43 +480,45 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 	sort.Strings(keySort)
 
 	for _, word := range keySort {
-		if CumAddrWarmupMiss[word]+CumAddrWarmupHelpless[word]+CumKeyWarmupMiss[word]+CumKeyWarmupHelpless[word] > 0 {
-			context := []interface{}{"type", word, "cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word],
-				"cum addr create", CumAccountCreate[word], "addr create", AccountCreate[word]}
+		if CumWarmupMissTxnCount[word] > 0 {
+			context := []interface{}{"type", word,
+				"cum txn miss", CumWarmupMissTxnCount[word], "txn miss", WarmupMissTxnCount[word],
+				"cum addr create", CumAccountCreate[word], "addr create", AccountCreate[word],
+			}
 			if CumAddrWarmupMiss[word] > 0 {
 				if cfg.MSRAVMSettings.WarmupMissDetail {
-					context = append(context, "cum addr miss-helpless",
-						fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrWarmupHelpless[word]))
+					context = append(context, "cum addr miss-create",
+						fmt.Sprintf("%d(%d)-%d", CumAddrWarmupMiss[word], CumAddrNoWarmup[word], CumAddrCreateWarmupMiss[word]))
 				} else {
-					context = append(context, "cum addr miss-helpless",
-						fmt.Sprintf("%d-%d", CumAddrWarmupMiss[word], CumAddrWarmupHelpless[word]))
+					context = append(context, "cum addr miss-create",
+						fmt.Sprintf("%d-%d", CumAddrWarmupMiss[word], CumAddrCreateWarmupMiss[word]))
 				}
-				if AddrWarmupMiss[word] > 0 || AddrWarmupHelpless[word] > 0 {
-					if cfg.MSRAVMSettings.WarmupMissDetail {
-						context = append(context, "addr miss-helpless",
-							fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrWarmupHelpless[word]))
-					} else {
-						context = append(context, "addr miss-helpless",
-							fmt.Sprintf("%d-%d", AddrWarmupMiss[word], AddrWarmupHelpless[word]))
-					}
+			}
+			if AddrWarmupMiss[word] > 0 {
+				if cfg.MSRAVMSettings.WarmupMissDetail {
+					context = append(context, "addr miss-create",
+						fmt.Sprintf("%d(%d)-%d", AddrWarmupMiss[word], AddrNoWarmup[word], AddrCreateWarmupMiss[word]))
+				} else {
+					context = append(context, "addr miss-create",
+						fmt.Sprintf("%d-%d", AddrWarmupMiss[word], AddrCreateWarmupMiss[word]))
 				}
 			}
 			if CumKeyWarmupMiss[word] > 0 {
 				if cfg.MSRAVMSettings.WarmupMissDetail {
-					context = append(context, "cum key miss-helpless",
-						fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyWarmupHelpless[word]))
+					context = append(context, "cum key miss-create",
+						fmt.Sprintf("%d(%d)-%d", CumKeyWarmupMiss[word], CumKeyNoWarmup[word], CumKeyCreateWarmupMiss[word]))
 				} else {
-					context = append(context, "cum key miss-helpless",
-						fmt.Sprintf("%d-%d", CumKeyWarmupMiss[word], CumKeyWarmupHelpless[word]))
+					context = append(context, "cum key miss-create",
+						fmt.Sprintf("%d-%d", CumKeyWarmupMiss[word], CumKeyCreateWarmupMiss[word]))
 				}
-				if KeyWarmupMiss[word] > 0 || KeyWarmupHelpless[word] > 0 {
-					if cfg.MSRAVMSettings.WarmupMissDetail {
-						context = append(context, "key miss-helpless",
-							fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyWarmupHelpless[word]))
-					} else {
-						context = append(context, "key miss-helpless",
-							fmt.Sprintf("%d-%d", KeyWarmupMiss[word], KeyWarmupHelpless[word]))
-					}
+			}
+			if KeyWarmupMiss[word] > 0 {
+				if cfg.MSRAVMSettings.WarmupMissDetail {
+					context = append(context, "key miss-create",
+						fmt.Sprintf("%d(%d)-%d", KeyWarmupMiss[word], KeyNoWarmup[word], KeyCreateWarmupMiss[word]))
+				} else {
+					context = append(context, "key miss-create",
+						fmt.Sprintf("%d-%d", KeyWarmupMiss[word], KeyCreateWarmupMiss[word]))
 				}
 			}
 			log.Info("Warmup miss statistics", context...)
@@ -607,17 +618,19 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 
 		listenCnt := infoResult.TxnCount - infoResult.NoListen
 		enpoolCnt := infoResult.TxnCount - infoResult.NoEnpool
+		enpendingCnt := infoResult.TxnCount - infoResult.NoEnpending
 		packageCnt := infoResult.TxnCount - infoResult.NoPackage
 		enqueueCnt := infoResult.TxnCount - infoResult.NoEnqueue
 		preplayCnt := infoResult.TxnCount - infoResult.NoPreplay
 
 		if infoResult.TxnCount > 0 {
-			var listenRate, enpoolRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate,
+			var listenRate, enpoolRate, enpendingRate, packageRate, enqueueRate, preplayRate, hitRate, missRate, unknownRate,
 			mixHitRate, trieHitRate, deltaHitRate, traceHitRate float64
 			var reuseGasRate float64
 
 			listenRate = float64(listenCnt) / float64(infoResult.TxnCount)
 			enpoolRate = float64(enpoolCnt) / float64(infoResult.TxnCount)
+			enpendingRate = float64(enpendingCnt) / float64(infoResult.TxnCount)
 			packageRate = float64(packageCnt) / float64(infoResult.TxnCount)
 			enqueueRate = float64(enqueueCnt) / float64(infoResult.TxnCount)
 			preplayRate = float64(preplayCnt) / float64(infoResult.TxnCount)
@@ -634,6 +647,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			context = append(context, "Total", fmt.Sprintf("%03d", infoResult.TxnCount),
 				"Listen", fmt.Sprintf("%03d(%.2f)", listenCnt, listenRate),
 				"Enpool", fmt.Sprintf("%03d(%.2f)", enpoolCnt, enpoolRate),
+				"Enpending", fmt.Sprintf("%03d(%.2f)", enpendingCnt, enpendingRate),
 				"Package", fmt.Sprintf("%03d(%.2f)", packageCnt, packageRate),
 				"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
 				"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
@@ -668,6 +682,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		listen += uint64(listenCnt)
 		listenOrEthermine += uint64(infoResult.TxnCount - infoResult.NoListenAndNoEthermine)
 		enpool += uint64(enpoolCnt)
+		enpending += uint64(enpendingCnt)
 		Package += uint64(packageCnt)
 		enqueue += uint64(enqueueCnt)
 		preplay += uint64(preplayCnt)
@@ -694,10 +709,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		abortedDelta += uint64(infoResult.AbortedDelta)
 		abortedTrie += uint64(infoResult.AbortedTrie)
 
+		reuseGasUsed += infoResult.ReuseGas
+		totalGasUsed += infoResult.Header.GasUsed
+
 		context = []interface{}{
 			"block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
 			"enpool", fmt.Sprintf("%d(%.3f)", enpool, float64(enpool)/float64(txnCount)),
+			"enpending", fmt.Sprintf("%d(%.3f)", enpending, float64(enpending)/float64(txnCount)),
 			"package", fmt.Sprintf("%d(%.3f)", Package, float64(Package)/float64(txnCount)),
 			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
@@ -709,6 +728,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				deltaHit, float64(deltaHit)/float64(txnCount), trieHit, float64(trieHit)/float64(txnCount)),
 			"miss", fmt.Sprintf("%d(%.3f)-[TraceMiss:%03d|NoMatchMiss:%03d]", miss, float64(miss)/float64(txnCount),
 				traceMiss, noMatchMiss),
+			"gasUsed", fmt.Sprintf("%d(%.3f)", reuseGasUsed, float64(reuseGasUsed)/float64(totalGasUsed)),
 		}
 		if unknown > 0 {
 			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
@@ -764,7 +784,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
 			}
 		}
-		reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-Package, Package-enqueue, enqueue-preplay)
+		reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-enpending, enpending-Package, Package-enqueue, enqueue-preplay)
 	}
 }
 

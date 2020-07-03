@@ -1856,11 +1856,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
 		} else {
-			statedb.CalWarmupMiss = true
-			statedb.AddrWarmupHelpless = make(map[common.Address]struct{})
-			if pair := statedb.GetPair(); pair != nil {
-				pair.CalWarmupMiss = true
-				pair.AddrWarmupHelpless = make(map[common.Address]struct{})
+			if cache.ToScreen {
+				statedb.CalWarmupMiss = true
+				statedb.AddrCreateWarmupMiss = make(map[common.Address]struct{})
+				if pair := statedb.GetPair(); pair != nil {
+					pair.CalWarmupMiss = true
+					pair.AddrCreateWarmupMiss = make(map[common.Address]struct{})
+				}
 			}
 
 			if bc.vmConfig.MSRAVMSettings.WarmupMissDetail {

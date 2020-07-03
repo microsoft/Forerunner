@@ -413,10 +413,11 @@ func (r *MissReporter) SetMissTxn(txn *types.Transaction, node *cmptypes.Preplay
 	}
 }
 
-func (r *MissReporter) ReportMiss(noListen, noListenAndEthermine, noEnpool, noPackage, noEnqueue, noPreplay uint64) {
+func (r *MissReporter) ReportMiss(noListen, noListenAndEthermine, noEnpool, noEnpending, noPackage, noEnqueue, noPreplay uint64) {
 	context := []interface{}{
 		"NoListen", fmt.Sprintf("%d(%d)", noListen, noListenAndEthermine),
-		"NoEnpool", noEnpool, "NoPackage", noPackage, "NoEnqueue", noEnqueue,
+		"NoEnpool-NoEnpending", fmt.Sprintf("%d-%d", noEnpool, noEnpending),
+		"NoPackage", noPackage, "NoEnqueue", noEnqueue,
 		"NoPreplay", fmt.Sprintf("%d(%d-%d)", noPreplay, r.noGroupPreplay, r.noExecPreplay),
 		"miss", fmt.Sprintf("%d(%d:%d:%d)", r.miss, r.txnType[0], r.txnType[1], r.txnType[2]),
 	}

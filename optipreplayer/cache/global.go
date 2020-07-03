@@ -44,11 +44,12 @@ type GlobalCache struct {
 	BlockMu    sync.RWMutex
 	BlockCache *lru.Cache
 
-	TxMu           sync.RWMutex
-	TxListenCache  *lru.Cache
-	TxEnpoolCache  *lru.Cache
-	TxPackageCache *lru.Cache
-	TxEnqueueCache *lru.Cache
+	TxMu             sync.RWMutex
+	TxListenCache    *lru.Cache
+	TxEnpoolCache    *lru.Cache
+	TxEnpendingCache *lru.Cache
+	TxPackageCache   *lru.Cache
+	TxEnqueueCache   *lru.Cache
 
 	// Preplay result
 	PreplayCache     *lru.Cache // Result Cache
@@ -99,6 +100,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 
 	g.TxListenCache, _ = lru.New(tSize * 10)
 	g.TxEnpoolCache, _ = lru.New(tSize * 5)
+	g.TxEnpendingCache, _ = lru.New(tSize * 5)
 	g.TxPackageCache, _ = lru.New(tSize)
 	g.TxEnqueueCache, _ = lru.New(tSize)
 
@@ -190,6 +192,7 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 	if tSize != 0 {
 		r.TxListenCache, _ = lru.New(tSize * 10)
 		r.TxEnpoolCache, _ = lru.New(tSize * 5)
+		r.TxEnpendingCache, _ = lru.New(tSize * 5)
 		r.TxPackageCache, _ = lru.New(tSize)
 		r.TxEnqueueCache, _ = lru.New(tSize)
 	}

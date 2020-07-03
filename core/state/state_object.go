@@ -291,17 +291,14 @@ func (s *stateObject) GetCommittedState(db Database, key common.Hash) common.Has
 			s.setError(err)
 		}
 		value.SetBytes(content)
-		if s.db.CalWarmupMiss {
-			s.db.KeyWarmupMiss++
-			if s.db.WarmupMissDetail && !s.db.IsKeyWarmup(s.address, key) {
-				s.db.KeyNoWarmup++
-			}
+	}
+	if s.db.CalWarmupMiss {
+		s.db.KeyWarmupMiss++
+		if _, ok := s.db.AddrCreateWarmupMiss[s.address]; ok {
+			s.db.KeyCreateWarmupMiss++
 		}
-	} else {
-		if s.db.CalWarmupMiss {
-			if _, ok := s.db.AddrWarmupHelpless[s.address]; ok {
-				s.db.KeyWarmupHelpless++
-			}
+		if s.db.WarmupMissDetail && !s.db.IsKeyWarmup(s.address, key) {
+			s.db.KeyNoWarmup++
 		}
 	}
 	if s.isShared() {

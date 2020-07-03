@@ -33,6 +33,7 @@ func NewListener(eth Backend) *Listener {
 	go listener.cacheEvictionLoop()
 	go listener.listenCommitLoop()
 	go listener.enpoolCommitLoop()
+	go listener.enpendingCommitLoop()
 
 	return listener
 }
@@ -123,11 +124,11 @@ func (l *Listener) listenCommitLoop() {
 }
 
 func (l *Listener) enpoolCommitLoop() {
-	newTxsCh := make(chan core.NewTxsEvent, chanSize)
-	newTxsSub := l.txPool.SubscribeNewTxsEvent(newTxsCh)
-	defer newTxsSub.Unsubscribe()
+	enpoolTxsCh := make(chan core.EnpoolTxsEvent, chanSize)
+	enpoolTxsSub := l.txPool.SubscribeEnpoolTxsEvent(enpoolTxsCh)
+	defer enpoolTxsSub.Unsubscribe()
 
-	for txsEvent := range newTxsCh {
+	for txsEvent := range enpoolTxsCh {
 
 		if len(txsEvent.Txs) == 0 {
 			continue
@@ -137,6 +138,25 @@ func (l *Listener) enpoolCommitLoop() {
 
 		for _, tx := range txsEvent.Txs {
 			l.globalCache.CommitTxEnpool(tx.Hash(), nowTime)
+		}
+	}
+}
+
+func (l *Listener) enpendingCommitLoop() {
+	enpendingTxsCh := make(chan core.EnpendingTxsEvent, chanSize)
+	enpendingTxsSub := l.txPool.SubscribeEnpendingTxsEvent(enpendingTxsCh)
+	defer enpendingTxsSub.Unsubscribe()
+
+	for txsEvent := range enpendingTxsCh {
+
+		if len(txsEvent.Txs) == 0 {
+			continue
+		}
+
+		nowTime := uint64(time.Now().UnixNano())
+
+		for _, tx := range txsEvent.Txs {
+			l.globalCache.CommitTxEnpending(tx.Hash(), nowTime)
 		}
 	}
 }

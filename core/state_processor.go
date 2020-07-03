@@ -459,16 +459,16 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 					if reuseStatus.BaseStatus == cmptypes.NoPreplay {
 						txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
 						if txListen == nil || txListen.ListenTimeNano > blockPre.ListenTimeNano {
-							word = "Cannot(NoPreplay)"
+							word = "Can't(NoListen)"
 						}
 					}
 				}
 				cache.WarmupMissTxnCount[word]++
 				cache.AccountCreate[word] += statedb.AccountCreate
 				cache.AddrWarmupMiss[word] += statedb.AddrWarmupMiss
-				cache.AddrWarmupHelpless[word] += len(statedb.AddrWarmupHelpless)
 				cache.KeyWarmupMiss[word] += statedb.KeyWarmupMiss
-				cache.KeyWarmupHelpless[word] += statedb.KeyWarmupHelpless
+				cache.AddrCreateWarmupMiss[word] += len(statedb.AddrCreateWarmupMiss)
+				cache.KeyCreateWarmupMiss[word] += statedb.KeyCreateWarmupMiss
 
 				if cfg.MSRAVMSettings.WarmupMissDetail {
 					cache.AddrNoWarmup[word] += statedb.AddrNoWarmup

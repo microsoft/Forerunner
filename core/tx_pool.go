@@ -303,11 +303,14 @@ type TxPool struct {
 	chainconfig *params.ChainConfig
 	chain       blockChain
 	gasPrice    *big.Int
-	listenFeed  event.Feed
 	txFeed      event.Feed
 	scope       event.SubscriptionScope
 	signer      types.Signer
 	mu          sync.RWMutex
+
+	listenFeed    event.Feed
+	enpoolFeed    event.Feed
+	enpendingFeed event.Feed
 
 	istanbul bool // Fork indicator whether we are in the istanbul stage.
 
@@ -691,16 +694,28 @@ func (pool *TxPool) Stop() {
 	log.Info("Transaction pool stopped")
 }
 
+// SubscribeNewTxsEvent registers a subscription of NewTxsEvent and
+// starts sending event to the given channel.
+func (pool *TxPool) SubscribeNewTxsEvent(ch chan<- NewTxsEvent) event.Subscription {
+	return pool.scope.Track(pool.txFeed.Subscribe(ch))
+}
+
 // SubscribeListenTxsEvent registers a subscription of ListenTxsEvent and
 // starts sending event to the given channel.
 func (pool *TxPool) SubscribeListenTxsEvent(ch chan<- ListenTxsEvent) event.Subscription {
 	return pool.scope.Track(pool.listenFeed.Subscribe(ch))
 }
 
-// SubscribeNewTxsEvent registers a subscription of NewTxsEvent and
+// SubscribeEnpendingTxsEvent registers a subscription of EnpendingTxsEvent and
 // starts sending event to the given channel.
-func (pool *TxPool) SubscribeNewTxsEvent(ch chan<- NewTxsEvent) event.Subscription {
-	return pool.scope.Track(pool.txFeed.Subscribe(ch))
+func (pool *TxPool) SubscribeEnpendingTxsEvent(ch chan<- EnpendingTxsEvent) event.Subscription {
+	return pool.scope.Track(pool.enpendingFeed.Subscribe(ch))
+}
+
+// SubscribeEnpoolTxsEvent registers a subscription of EnpoolTxsEvent and
+// starts sending event to the given channel.
+func (pool *TxPool) SubscribeEnpoolTxsEvent(ch chan<- EnpoolTxsEvent) event.Subscription {
+	return pool.scope.Track(pool.enpoolFeed.Subscribe(ch))
 }
 
 // GasPrice returns the current gas price enforced by the transaction pool.
@@ -925,19 +940,19 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 // If a newly added transaction is marked as local, its sending account will be
 // whitelisted, preventing any associated transaction from being dropped out of the pool
 // due to pricing constraints.
-func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err error) {
+func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bool, replaced bool, err error) {
 	// If the transaction is already known, discard it
 	hash := tx.Hash()
 	if pool.all.Get(hash) != nil {
 		log.Trace("Discarding already known transaction", "hash", hash)
 		knownTxMeter.Mark(1)
-		return false, fmt.Errorf("known transaction: %x", hash)
+		return false, false, false, fmt.Errorf("known transaction: %x", hash)
 	}
 	// If the transaction fails basic validation, discard it
 	if err := pool.validateTx(tx, local); err != nil {
 		log.Trace("Discarding invalid transaction", "hash", hash, "err", err)
 		invalidTxMeter.Mark(1)
-		return false, err
+		return false, false, false, err
 	}
 	// If the transaction pool is full, discard underpriced transactions
 	if uint64(pool.all.Count()) >= pool.config.GlobalSlots+pool.config.GlobalQueue {
@@ -945,7 +960,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 		if !local && pool.priced.Underpriced(tx, pool.locals) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "price", tx.GasPrice())
 			underpricedTxMeter.Mark(1)
-			return false, ErrUnderpriced
+			return false, false, false, ErrUnderpriced
 		}
 		// New transaction is better than our worse ones, make room for it
 		drop := pool.priced.Discard(pool.all.Count()-int(pool.config.GlobalSlots+pool.config.GlobalQueue-1), pool.locals)
@@ -968,7 +983,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 		inserted, old := list.Add(tx, pool.config.PriceBump)
 		if !inserted {
 			pendingDiscardMeter.Mark(1)
-			return false, ErrReplaceUnderpriced
+			return false, false, false, ErrReplaceUnderpriced
 		}
 
 		if pool.config.MSRATxPoolSettings.DataLoggerTxPoolIO {
@@ -991,12 +1006,12 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 		pool.journalTx(from, tx)
 		pool.queueTxEvent(tx)
 		log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
-		return old != nil, nil
+		return true, true, old != nil, nil
 	}
 	// New transaction isn't replacing a pending one, push into queue
 	replaced, err = pool.enqueueTx(hash, tx)
 	if err != nil {
-		return false, err
+		return false, false, false, err
 	}
 	// Mark local addresses and journal local transactions
 	if local {
@@ -1011,7 +1026,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 	pool.journalTx(from, tx)
 
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
-	return replaced, nil
+	return true, false, replaced, nil
 }
 
 // enqueueTx inserts a new transaction into the non-executable transaction queue.
@@ -1223,13 +1238,23 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
 func (pool *TxPool) addTxsLocked(txs []*types.Transaction, local bool) ([]error, *accountSet) {
 	dirty := newAccountSet(pool.signer)
 	errs := make([]error, len(txs))
+	var enpoolTxs = make([]*types.Transaction, 0, len(txs))
+	var enpendingTxs = make([]*types.Transaction, 0, len(txs))
 	for i, tx := range txs {
-		replaced, err := pool.add(tx, local)
+		enpool, enpending, replaced, err := pool.add(tx, local)
+		if enpool {
+			enpoolTxs = append(enpoolTxs, tx)
+			if enpending {
+				enpendingTxs = append(enpendingTxs, tx)
+			}
+		}
 		errs[i] = err
 		if err == nil && !replaced {
 			dirty.addTx(tx)
 		}
 	}
+	pool.enpoolFeed.Send(EnpoolTxsEvent{enpoolTxs})
+	pool.enpendingFeed.Send(EnpendingTxsEvent{enpendingTxs})
 	validTxMeter.Mark(int64(len(dirty.accounts)))
 	return errs, dirty
 }
@@ -1536,6 +1561,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 			txs = append(txs, set.Flatten()...)
 		}
 		pool.txFeed.Send(NewTxsEvent{txs})
+		pool.enpendingFeed.Send(EnpendingTxsEvent{txs})
 	}
 }
 
