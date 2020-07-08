@@ -48,8 +48,7 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 			if e := recover(); e != nil {
 				txHex := tx.Hash().Hex()
 				fmt.Printf("Tx %s Tracer Error\n  %s :%s", txHex, e, debug.Stack())
-				rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
-				//rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace.txt"))
+				rt.DebugBuffer.DumpBufferToFile(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
 				panic(e)
 			}
 		}()

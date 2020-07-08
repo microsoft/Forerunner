@@ -9,7 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -49,33 +48,33 @@ type ReuseTracer struct {
 	currentPC                  uint64
 	testOpImp                  bool
 	EncounterUnimplementedCode bool
-	IsExternalTransfer   bool
-	IsCompleteTrace   bool
-	Int_0             *Variable
-	BigInt_0          *Variable
-	BigInt_1          *Variable
-	BigInt_32         *Variable
-	BigInt_96         *Variable
-	BigInt_64         *Variable
-	Uint64_1          *Variable
-	ByteArray_Empty   *Variable
-	EmptyHash         *Variable
-	EmptyCodeHash     *Variable
-	txFrom            *Variable
-	txTo              *Variable
-	txGasPrice_BigInt *Variable
-	txGas_uint64      *Variable
-	txValue           *Variable
-	txData_byteArray  *Variable
-	txNonce_uint64    *Variable
-	Bool_false        *Variable
-	Bool_true         *Variable
-	currentGas        uint64
+	IsExternalTransfer         bool
+	IsCompleteTrace            bool
+	Int_0                      *Variable
+	BigInt_0                   *Variable
+	BigInt_1                   *Variable
+	BigInt_32                  *Variable
+	BigInt_96                  *Variable
+	BigInt_64                  *Variable
+	Uint64_1                   *Variable
+	ByteArray_Empty            *Variable
+	EmptyHash                  *Variable
+	EmptyCodeHash              *Variable
+	txFrom                     *Variable
+	txTo                       *Variable
+	txGasPrice_BigInt          *Variable
+	txGas_uint64               *Variable
+	txValue                    *Variable
+	txData_byteArray           *Variable
+	txNonce_uint64             *Variable
+	Bool_false                 *Variable
+	Bool_true                  *Variable
+	currentGas                 uint64
 	txHash                     common.Hash
 	ChainID                    *Variable
 	chainRules                 params.Rules
 	opCount                    int
-	debugOutBuffer             []string
+	DebugBuffer                *DebugBuffer
 	DebugFlag                  bool
 	guardedBlockHashNum        map[*Variable]bool
 	blockHashNumIDs            *BlockHashNumIDM
@@ -115,6 +114,7 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 		byteArrayOriginCells:   make(map[*Variable][]*MemByteCell),
 		execEnv: &ExecEnv{inputs: make([]interface{}, 0, 10), state: statedb, header: header, getHash: hashFunc,
 			precompiles: vm.GetPrecompiledMapping(&(chainRules))},
+		DebugBuffer: NewDebugBuffer(nil),
 	}
 
 	rt.snapshotStartingPoints[0] = 0
@@ -1050,31 +1050,7 @@ func (rt *ReuseTracer) TraceGasSelfdestruct() {
 }
 
 func (rt *ReuseTracer) DebugOut(fmtStr string, args ...interface{}) {
-	r := fmt.Sprintf(fmtStr, args...)
-	rt.debugOutBuffer = append(rt.debugOutBuffer, r)
-	//rt.fOut.WriteString(r)
-	//rt.fOut.Sync()
-	//fmt.Printf(fmtStr, args...)
-}
-
-func (rt *ReuseTracer) ClearDebugBuffer() {
-	rt.debugOutBuffer = nil
-}
-
-func (rt *ReuseTracer) DumpDebugBuffer(fname string) {
-	if len(rt.debugOutBuffer) == 0 {
-		return
-	}
-	fOut, _ := os.Create(fname)
-	for _, s := range rt.debugOutBuffer {
-		fOut.WriteString(s)
-	}
-	rt.debugOutBuffer = nil
-	fOut.Close()
-}
-
-func (rt *ReuseTracer) CloseOutFile() {
-	//rt.fOut.Close()
+	rt.DebugBuffer.AppendLog(fmtStr, args...)
 }
 
 var EmptyValue = reflect.Value{}

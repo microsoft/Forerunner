@@ -270,6 +270,17 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 		rwrecord = reuseRound.RWrecord
 		trace = reuseRound.Trace.(*STrace)
+		if trace != nil && trace.DebugBuffer != nil {
+			trace = trace.ShallowCopyAndExtendTrace()
+			defer func() {
+				if e := recover(); e != nil {
+					txHex := tx.Hash().Hex()
+					fmt.Printf("Tx %s Tracer Error\n  %s :%s", txHex, e, debug.Stack())
+					trace.DebugBuffer.DumpBufferToFile(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
+					panic(e)
+				}
+			}()
+		}
 
 	} else {
 		gas, failed, err, _ = reuse.realApplyTransaction(config, bc, author, gp, statedb, header, &cfg, AlwaysFalse, nil, msg, tx)
@@ -288,20 +299,19 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				rt := statedb.ReuseTracer.(*ReuseTracer)
 				statedb.ReuseTracer = nil
 				stats := rt.Statements
+				debugBuffer := NewDebugBuffer(rt.DebugBuffer)
 
 				defer func() {
 					if e := recover(); e != nil {
 						txHex := tx.Hash().Hex()
 						fmt.Printf("Tx %s Tracer Error\n  %s :%s", txHex, e, debug.Stack())
-						rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
-						//rt.DumpDebugBuffer(fmt.Sprintf("/tmp/errTxTrace.txt"))
+						debugBuffer.DumpBufferToFile(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
 						panic(e)
 					}
 				}()
 
 				debugOut := func(fmtStr string, args ...interface{}) {
-					//fmt.Printf(fmtStr, args...)
-					rt.DebugOut(fmtStr, args...)
+					debugBuffer.AppendLog(fmtStr, args...)
 				}
 
 				if !rt.DebugFlag {
@@ -318,7 +328,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 					panic("Tracer Error:InComplete Trace or Unimplemeted Code reached!")
 				}
 
-				trace = NewSTrace(stats, debugOut)
+				trace = NewSTrace(stats, debugOut, debugBuffer)
 
 				//writeDoubleOut := func(fmtStr string, args ...interface{}) {
 				//	//fmt.Printf(fmtStr, args...)
@@ -402,14 +412,10 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		//	trace.Stats[0].inputs[0].tracer.DumpDebugBuffer(fn)
 		//} else
 
-		if trace != nil && len(trace.Stats) > 2000 && rand.Intn(200) < 1 {
+		if trace != nil && trace.DebugBuffer != nil && len(trace.Stats) > 2000 && rand.Intn(200) < 1 {
 			traceMutex.Lock()
-			trace.Stats[0].inputs[0].tracer.DumpDebugBuffer("/tmp/sampleTxTrace.txt")
+			trace.DebugBuffer.DumpBufferToFile("/tmp/sampleTxTrace.txt")
 			traceMutex.Unlock()
-		}
-
-		if trace != nil {
-			//trace.Stats[0].inputs[0].tracer.ClearDebugBuffer()
 		}
 
 	} else {

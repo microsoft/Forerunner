@@ -32,6 +32,7 @@ type TracerStateObject struct {
 	HasNonConstKey bool
 	StateIDs       *StateIDM
 	StateIDMVar    *Variable
+	GuardedKeyVars map[*Variable]struct{}
 }
 
 func NewTracerStateObject() *TracerStateObject {
@@ -39,6 +40,7 @@ func NewTracerStateObject() *TracerStateObject {
 		Storage:        make(map[interface{}]*Variable),
 		CommittedState: make(map[common.Hash]*Variable),
 		StateIDs:       NewStateIDM(),
+		GuardedKeyVars: make(map[*Variable]struct{}),
 	}
 }
 
@@ -251,6 +253,11 @@ func (ws *TracerWorldState) TWStore(variant StringID, vars ...*Variable) {
 }
 
 func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable, valVar *Variable, so *TracerStateObject, isStore bool) {
+	if _, ok := so.GuardedKeyVars[keyVar]; ok {
+		return
+	}else{
+		so.GuardedKeyVars[keyVar] = struct{}{}
+	}
 	if so.HasNonConstKey {
 		gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key")
 		if gk.Uint32() == 0 || isStore {

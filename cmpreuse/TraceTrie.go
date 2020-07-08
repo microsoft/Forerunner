@@ -51,9 +51,10 @@ type STrace struct {
 	JSPSet                                      map[uint]bool
 	StoreNodeIndexToStoreAccountIndex           map[uint]uint
 	computed                                    bool
+	DebugBuffer                                 *DebugBuffer
 }
 
-func NewSTrace(stats []*Statement, debugOut DebugOutFunc) *STrace {
+func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer) *STrace {
 	st := &STrace{}
 	PrintStatementsWithWriteOut(stats, debugOut)
 	stats = ExecutePassAndPrintWithOut(EliminateRevertedStore, stats, debugOut, false)
@@ -70,6 +71,9 @@ func NewSTrace(stats []*Statement, debugOut DebugOutFunc) *STrace {
 	st.RAlloc = rmapping
 	st.RegisterFileSize = highestRegisterIndex + 1
 	st.debugOut = debugOut
+	if debugOut != nil {
+		st.DebugBuffer = buffer
+	}
 
 	if debugOut != nil {
 		st.ComputeDepAndJumpInfo()
@@ -91,6 +95,20 @@ func NewSTrace(stats []*Statement, debugOut DebugOutFunc) *STrace {
 		}
 	}
 	return st
+}
+
+func (st *STrace) ShallowCopyAndExtendTrace() *STrace {
+	newTrace := *st
+	nt := &newTrace
+	if nt.debugOut != nil {
+		cmptypes.MyAssert(st.DebugBuffer != nil)
+		buffer := NewDebugBuffer(st.DebugBuffer)
+		nt.DebugBuffer = buffer
+		nt.debugOut = func(fmtStr string, args... interface{}) {
+			buffer.AppendLog(fmtStr, args...)
+		}
+	}
+	return nt
 }
 
 func (st *STrace) ComputeDepAndJumpInfo() {
@@ -321,12 +339,6 @@ func (st *STrace) CalculateInputDependencies() {
 					storeAccountIndices = append(storeAccountIndices, addrAccountIndex)
 				}
 
-				//if s.op.config.variant == ACCOUNT_SUICIDE {
-				//	continue
-				//}
-
-				//cmptypes.MyAssert(len(s.inputs) > 1)
-
 				for _, v := range s.inputs {
 					if v.IsConst() {
 						continue
@@ -414,7 +426,11 @@ func (st *STrace) CalculateInputDependencies() {
 
 			inputFieldDependency := make(InputDependence, 0)
 			inputAccountDependency := make(InputDependence, 0)
-			for _, v := range s.inputs {
+			for i, v := range s.inputs {
+				// skip the addr variable
+				if s.op.isLoadOp && i == 0 {
+					continue
+				}
 				if v.IsConst() {
 					continue
 				}
@@ -423,15 +439,10 @@ func (st *STrace) CalculateInputDependencies() {
 				inputAccountDependency = MergeInputDependencies(variableInputAccountDependencies[v.id], inputAccountDependency)
 				cmptypes.MyAssert(len(inputAccountDependency) > 0)
 			}
-			//if s.op == OP_LoadState && !s.inputs[1].IsConst() {
-			//	inputFieldDependency = variableInputFieldDependencies[s.inputs[1].id]
-			//	cmptypes.MyAssert(len(inputFieldDependency) > 0)
-			//	inputAccountDependency = variableInputAccountDependencies[s.inputs[1].id]
-			//	cmptypes.MyAssert(len(inputAccountDependency) > 0)
-			//}
-			fDeps := MergeInputDependencies(inputFieldDependency, InputDependence{fieldIndex})
-			variableInputFieldDependencies[vid] = fDeps // load/read output depend on itself
-			sNodeInputFieldDependencies[nodeIndex] = fDeps
+
+			//fDeps := MergeInputDependencies(inputFieldDependency, InputDependence{fieldIndex})
+			variableInputFieldDependencies[vid] = InputDependence{fieldIndex} //fDeps // load/read output depend on itself
+			sNodeInputFieldDependencies[nodeIndex] = inputFieldDependency //fDeps
 
 			aDeps := MergeInputDependencies(inputAccountDependency, InputDependence{aIndex})
 			variableInputAccountDependencies[vid] = aDeps    //MergeInputDependencies(inputAccountDependency, InputDependence{aIndex})
@@ -1487,9 +1498,9 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 		}
 		n.FieldDependenciesExcludingSelfAccount = n.FieldDependencies.SetDiff(selfFDs)
 		n.AccountDepedenciesExcludingSelfAccount = n.AccountDependencies.SetDiff([]uint{n.AccountIndex})
-		if len(n.FieldDependenciesExcludingSelfAccount) == 0 {
-			cmptypes.MyAssert(len(n.AccountDepedenciesExcludingSelfAccount) == 0)
-		}
+		//if len(n.FieldDependenciesExcludingSelfAccount) == 0 {
+		//	cmptypes.MyAssert(len(n.AccountDepedenciesExcludingSelfAccount) == 0)
+		//}
 		if len(n.AccountDepedenciesExcludingSelfAccount) == 0 {
 			cmptypes.MyAssert(len(n.FieldDependenciesExcludingSelfAccount) == 0)
 		}
@@ -3348,7 +3359,8 @@ func (j *JumpInserter) SetupOpJumpLane() {
 			}
 
 			if len(aNodes) > 0 {
-				cmptypes.MyAssert(len(node.FieldDependenciesExcludingSelfAccount) > 0)
+				//cmptypes.MyAssert(len(node.FieldDependenciesExcludingSelfAccount) > 0)
+				cmptypes.MyAssert(len(node.FieldDependencies) > 0)
 				if aNodes[0].Exit == nil {
 					jd = &OpNodeJumpDef{}
 					for _, n := range aNodes {
@@ -3368,7 +3380,8 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					jd = firstExist
 				}
 
-				fDeps := node.FieldDependenciesExcludingSelfAccount
+//				fDeps := node.FieldDependenciesExcludingSelfAccount
+				fDeps := node.FieldDependencies
 
 				for i := 0; i < len(fDeps); i += OP_JUMP_KEY_SIZE {
 					start := i
@@ -3446,6 +3459,8 @@ func (j *JumpInserter) SetupOpJumpLane() {
 						jd.FieldHistorySegment.AssertEqual(j.fieldHistroy.Slice(node.FieldIndex, node.FieldIndex+1))
 					}
 				}
+			}else {
+				cmptypes.MyAssert(len(node.FieldDependenciesExcludingSelfAccount) == 0)
 			}
 		}
 	}

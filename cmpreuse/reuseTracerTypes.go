@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"math/bits"
+	"os"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -1604,3 +1605,39 @@ func ImmutableBytesToString(buf []byte) string {
 	return *(*string)(unsafe.Pointer(&buf))
 	//return string(buf)
 }
+
+type DebugBuffer struct {
+	Base *DebugBuffer
+	Buffer []string
+}
+
+func NewDebugBuffer (base *DebugBuffer) *DebugBuffer {
+	return &DebugBuffer{Base: base}
+}
+
+func (b *DebugBuffer) AppendLog(fmtStr string, args... interface{}) {
+	r := fmt.Sprintf(fmtStr, args...)
+	b.Buffer = append(b.Buffer, r)
+}
+
+func (b *DebugBuffer) GetAllLogs() [][]string {
+	if b.Base == nil {
+		return [][]string{b.Buffer}
+	}else {
+		logs := b.Base.GetAllLogs()
+		logs = append(logs, b.Buffer)
+		return logs
+	}
+}
+
+func (b *DebugBuffer) DumpBufferToFile(fname string){
+	fOut, _ := os.Create(fname)
+	for _, logs := range b.GetAllLogs() {
+		for _, s := range logs {
+			fOut.WriteString(s)
+		}
+	}
+	fOut.Close()
+}
+
+
