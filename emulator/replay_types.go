@@ -63,6 +63,7 @@ func deserializeLine(line []byte) (ReplayMsg, error) {
 
 type ReplayBlockChain interface {
 	InsertChain(types.Blocks) (int, error)
+	CommitBlockPreWithListenTime(block *types.Block, listenTime time.Time)
 }
 
 type ReplayTxPool interface {
@@ -188,6 +189,9 @@ func parseReplayMsgBlocks(line []byte) (*insertChainData, error) {
 
 func (c *replayMsgConsumer) callInsertChain(dec *insertChainData) {
 	if c.BlockChain != nil {
+		for _, block := range dec.Blocks{
+			c.BlockChain.CommitBlockPreWithListenTime(block, dec.GetTime())
+		}
 		_, _ = c.BlockChain.InsertChain(dec.Blocks)
 	}
 }

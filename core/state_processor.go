@@ -292,10 +292,15 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 	}
 
-	// Add Block
-	blockPre := cache.NewBlockPre(block)
-	if p.bc.MSRACache != nil {
-		p.bc.MSRACache.CommitBlockPre(blockPre)
+	var blockPre *cache.BlockPre
+	if cfg.MSRAVMSettings.IsEmulateMode{
+		blockPre = p.bc.MSRACache.PeekBlockPre(block.Hash())
+		if blockPre == nil{
+			panic("there is a nil blockPre")
+		}
+	}else {
+		// Add Block
+		blockPre = p.bc.CommitBlockPre(block)
 	}
 	var reuseResult []*cmptypes.ReuseStatus
 

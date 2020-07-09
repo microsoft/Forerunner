@@ -420,7 +420,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	b.remainCount = make(map[common.Hash]int)
 	b.lastBaseline = b.txnBaseline
 	if blockPre := b.globalCache.PeekBlockPre(block.Hash()); blockPre != nil {
-		b.txnBaseline = blockPre.ListenTime
+		b.txnBaseline = blockPre.ListenTimeNano/1E9
 	} else {
 		b.txnBaseline = block.Time()
 	}

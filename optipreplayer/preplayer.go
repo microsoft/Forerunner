@@ -133,7 +133,7 @@ func (p *Preplayer) listenLoop() {
 			currentBlock := chainHeadEvent.Block
 			p.minerList.addMiner(currentBlock.Coinbase())
 			p.nowHeader.coinbase = p.minerList.topActive[0]
-			p.nowHeader.time = p.globalCache.GetTimeStamp()
+			p.nowHeader.time = p.globalCache.GetPreplayTimeStamp()
 			p.nowHeader.gasLimit = core.CalcGasLimit(currentBlock, p.gasFloor, p.gasCeil)
 			p.taskBuilder.chainHeadUpdate(currentBlock)
 			p.preplayLog.disableGroup()

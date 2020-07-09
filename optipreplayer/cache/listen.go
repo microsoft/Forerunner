@@ -14,18 +14,30 @@ type BlockPre struct {
 	Block          *types.Block
 	BlockHash      common.Hash
 	BlockNum       uint64
-	ListenTime     uint64 // Before process
-	ListenTimeNano uint64
+	ListenTime     uint64 // Before process; use to set timestamp of the next block; In Emulate mode, `ListenTime` is the logged listen time
+	ListenTimeNano uint64 // whether it is in Emulate Mode or not, ListenTimeNano is always the current time (time.Now)
 }
 
 // NewBlockPre creat new block pre
 func NewBlockPre(block *types.Block) *BlockPre {
+	curTime := time.Now()
+	return &BlockPre{
+		Block:          block,
+		BlockNum:       block.Header().Number.Uint64(),
+		BlockHash:      block.Hash(),
+		ListenTime:     uint64(curTime.Unix()),
+		ListenTimeNano: uint64(curTime.UnixNano()),
+	}
+}
+
+// NewBlockPre creat new block pre
+func NewBlockPreWithListenTime(block *types.Block, listenTime time.Time) *BlockPre {
 
 	return &BlockPre{
 		Block:          block,
 		BlockNum:       block.Header().Number.Uint64(),
 		BlockHash:      block.Hash(),
-		ListenTime:     uint64(time.Now().Unix()),
+		ListenTime:     uint64(listenTime.Unix()),
 		ListenTimeNano: uint64(time.Now().UnixNano()),
 	}
 }

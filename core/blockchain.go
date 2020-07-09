@@ -328,7 +328,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		var logFileName = "/tmp/PerfBlockLog.baseline.txt"
 		if bc.vmConfig.MSRAVMSettings.CmpReuse {
 			logFileName = "/tmp/PerfBlockLog.reuse.txt"
-		}else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
+		} else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
 			logFileName = "/tmp/PerfBlockLog.preplay.txt"
 		}
 		f, _ := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
@@ -337,7 +337,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		logFileName = "/tmp/PerfTxLog.baseline.txt"
 		if bc.vmConfig.MSRAVMSettings.CmpReuse {
 			logFileName = "/tmp/PerfTxLog.reuse.txt"
-		}else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
+		} else if bc.vmConfig.MSRAVMSettings.EnablePreplay {
 			logFileName = "/tmp/PerfTxLog.preplay.txt"
 		}
 
@@ -345,16 +345,31 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		bc.txLogFile = f
 	}
 
-
 	// Take ownership of this particular state
 	go bc.update()
-
 
 	return bc, nil
 }
 
 func (bc *BlockChain) GetMSRAChainSettings() *params.MSRAChainConfig {
 	return &bc.chainConfig.MSRAChainSettings
+}
+
+func (bc *BlockChain) CommitBlockPre(block *types.Block) *cache.BlockPre {
+	if bc.MSRACache != nil {
+		blockPre := cache.NewBlockPre(block)
+		bc.MSRACache.CommitBlockPre(blockPre)
+		return blockPre
+	} else {
+		return nil
+	}
+}
+
+func (bc *BlockChain) CommitBlockPreWithListenTime(block *types.Block, listenTime time.Time) {
+	if bc.MSRACache != nil {
+		blockPre := cache.NewBlockPreWithListenTime(block, listenTime)
+		bc.MSRACache.CommitBlockPre(blockPre)
+	}
 }
 
 func (bc *BlockChain) getProcInterrupt() bool {
@@ -1999,7 +2014,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 							tf.Receipt.TxHash.Hex(),
 							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 						bc.txLogFile.WriteString(txResult)
-					}else {
+					} else {
 						if bc.vmConfig.MSRAVMSettings.EnablePreplay {
 							reuseStr := "IgnorePreplay"
 							if tf.Delay < 0 {
@@ -2010,7 +2025,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 								tf.Receipt.TxHash.Hex(),
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 							bc.txLogFile.WriteString(txResult)
-						}else {
+						} else {
 							txResult := fmt.Sprintf("[%s] id %v tx %v base %v gas %v\n",
 								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),

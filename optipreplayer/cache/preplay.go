@@ -1163,8 +1163,8 @@ func (r *GlobalCache) NewRoundID() uint64 {
 	return r.PreplayRoundID
 }
 
-// GetTimeStamp return Timestamp for calculate dependency directly
-func (r *GlobalCache) GetTimeStamp() uint64 {
+// GetPreplayTimeStamp return Timestamp for calculate dependency directly
+func (r *GlobalCache) GetPreplayTimeStamp() uint64 {
 	r.TimestampMu.RLock()
 	defer r.TimestampMu.RUnlock()
 	return r.PreplayTimestamp
