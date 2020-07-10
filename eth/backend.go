@@ -256,9 +256,6 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if config.MSRAVMSettings.ReuseTracerChecking {
 		cmpreuse.DEBUG_TRACER = true
 	}
-	if config.MSRAVMSettings.CmpReuseChecking {
-		cmpreuse.DEBUG_TRACER_SEARCH = true
-	}
 
 	eth.APIBackend = &EthAPIBackend{ctx.ExtRPCEnabled(), eth, nil}
 	gpoParams := config.GPO

@@ -227,7 +227,6 @@ func (dep InputDependence) SetDiff(other InputDependence) InputDependence {
 }
 
 var DEBUG_TRACER = false
-var DEBUG_TRACER_SEARCH = false
 
 func AssertIncreasingDep(dep InputDependence) {
 	if DEBUG_TRACER {
@@ -1441,7 +1440,7 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 		PrevGuardKey:                   prevGuardKey,
 	}
 
-	if !DEBUG_TRACER && !DEBUG_TRACER_SEARCH{
+	if !DEBUG_TRACER {
 		n.Statement = nil
 	}
 

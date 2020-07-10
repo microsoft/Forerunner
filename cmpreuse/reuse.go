@@ -860,19 +860,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	var missValue interface{}
 	var sr *TraceTrieSearchResult
 
-	t0 := time.Now()
-	var txPreplay *cache.TxPreplay
-	if isBlockProcess {
-		txPreplay = reuse.MSRACache.PeekTxPreplay(tx.Hash())
-	} else {
-		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
-	}
-	if txPreplay == nil {
-		d0 = time.Since(t0)
-		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
-		return
-	}
-
 	var lockCount int
 	var tryHoldLock = func(mu trylock.TryLocker) (hold bool) {
 		if isBlockProcess {
@@ -884,6 +871,35 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 			mu.Lock()
 		}
 		return true
+	}
+
+	t0 := time.Now()
+	var txPreplay *cache.TxPreplay
+	if isBlockProcess {
+		txPreplay = reuse.MSRACache.PeekTxPreplay(tx.Hash())
+	} else {
+		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
+	}
+	if txPreplay == nil {
+		d0 = time.Since(t0)
+		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
+		return
+	}else {
+		if !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer {
+			if !txPreplay.PreplayResults.IsExternalTransfer {
+				if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
+					traceNotExist := txPreplay.PreplayResults.TraceTrie == nil
+					txPreplay.PreplayResults.TraceTrieMu.Unlock()
+					if traceNotExist {
+						// force miss to run real apply if there is no trace
+						// otherwise if the result is hit, no trace will be created at all
+						d0 = time.Since(t0)
+						status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
+						return
+					}
+				}
+			}
+		}
 	}
 
 	if tryHoldLock(txPreplay.PreplayResults.MixTreeMu) {
@@ -902,10 +918,13 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		cache.LockCount[0] ++
 	}
 
+	traceTrieChecked := false
+
 	if isBlockProcess {
 		if status == nil {
 			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
-				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.CmpReuseChecking)
+				traceTrieChecked = true
+				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking)
 				txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 				if sr != nil && sr.hit {
@@ -1072,6 +1091,14 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TxPreplayLock}
 			return
 		} else {
+			// for debug purpose
+			if isBlockProcess && false {
+					log.Info("NoMatchMiss", "tx", tx.Hash().Hex(), "gasLimit", tx.Gas(), "mix", txPreplay.PreplayResults.MixTree.LeafCount,
+						"traceExist", txPreplay.PreplayResults.TraceTrie != nil, "traceChecked", traceTrieChecked,
+						"delta", txPreplay.PreplayResults.DeltaTree.LeafCount,
+						"detail", txPreplay.PreplayResults.RWRecordTrie.LeafCount,
+						"external", txPreplay.PreplayResults.IsExternalTransfer)
+			}
 			d0 = time.Since(t0)
 			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss, MissNode: missNode, MissValue: missValue}
 			return
