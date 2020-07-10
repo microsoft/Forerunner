@@ -874,6 +874,98 @@ func (r *GlobalCache) GetTotalNodeCountAndWObjectSize() (totalNodeCount int64, t
 	return
 }
 
+func (r *GlobalCache) AddReduplicatedNonceTxn(txnMap map[common.Address]types.Transactions) {
+	r.reduplicatedNonceTxnMu.Lock()
+	defer r.reduplicatedNonceTxnMu.Unlock()
+
+	for sender, txns := range txnMap {
+		if dupTxns, ok := r.reduplicatedNonceTxn[sender]; ok && len(dupTxns) > 0 {
+			var addedTxn types.Transactions
+		Loop:
+			for _, txn := range txns {
+				for _, cache := range dupTxns {
+					if cache.Nonce() > txn.Nonce() {
+						break
+					}
+					if cache.Nonce() == txn.Nonce() && cache.Hash() == txn.Hash() {
+						continue Loop
+					}
+				}
+				addedTxn = append(addedTxn, txn)
+			}
+			r.reduplicatedNonceTxn[sender] = append(dupTxns, addedTxn...)
+			sort.Sort(r.reduplicatedNonceTxn[sender])
+		} else {
+			r.reduplicatedNonceTxn[sender] = types.TxByNonce(txns)
+		}
+	}
+}
+
+func (r *GlobalCache) DropReduplicatedNonceTxn(dropOld func(addr common.Address, txns types.TxByNonce) types.TxByNonce) {
+	r.reduplicatedNonceTxnMu.Lock()
+	defer r.reduplicatedNonceTxnMu.Unlock()
+
+	for addr, txns := range r.reduplicatedNonceTxn {
+		newTxns := dropOld(addr, txns)
+		if len(newTxns) == 0 {
+			delete(r.reduplicatedNonceTxn, addr)
+		} else {
+			if len(txns) != len(newTxns) {
+				r.reduplicatedNonceTxn[addr] = newTxns
+			}
+		}
+	}
+}
+
+func (r *GlobalCache) SearchReduplicatedNonceTxn(sender common.Address, minNonce, maxNonce uint64) (types.Transactions, bool) {
+	r.reduplicatedNonceTxnMu.RLock()
+	defer r.reduplicatedNonceTxnMu.RUnlock()
+
+	if txns, ok := r.reduplicatedNonceTxn[sender]; ok {
+		minIndex := sort.Search(len(txns), func(i int) bool {
+			return txns[i].Nonce() >= minNonce
+		})
+		maxIndex := sort.Search(len(txns), func(i int) bool {
+			return txns[i].Nonce() > maxNonce
+		})
+		if maxIndex > minIndex {
+			return types.Transactions(txns[minIndex:maxIndex]), true
+		}
+	}
+	return nil, false
+}
+
+func (r *GlobalCache) PrintReduplicatedNonceTxn() {
+	r.reduplicatedNonceTxnMu.RLock()
+	defer r.reduplicatedNonceTxnMu.RUnlock()
+
+	var addrList []common.Address
+	for addr := range r.reduplicatedNonceTxn {
+		addrList = append(addrList, addr)
+	}
+	sort.Slice(addrList, func(i, j int) bool {
+		return bytes.Compare(addrList[i].Bytes(), addrList[j].Bytes()) < 0
+	})
+
+	for _, addr := range addrList {
+		if len(r.reduplicatedNonceTxn[addr]) > 0 {
+			log.Info("In reduplicated nonce txn", "sender", addr.Hex(), "txns count", len(r.reduplicatedNonceTxn[addr]),
+				"first", r.reduplicatedNonceTxn[addr][0].Hash().Hex())
+		}
+	}
+}
+
+func (r *GlobalCache) GetReduplicatedNonceTxnCount() int {
+	r.reduplicatedNonceTxnMu.RLock()
+	defer r.reduplicatedNonceTxnMu.RUnlock()
+
+	var count int
+	for _, txns := range r.reduplicatedNonceTxn {
+		count += len(txns)
+	}
+	return count
+}
+
 // GetGasUsedResult return the cache of gas
 func (r *GlobalCache) GetGasUsedCache(sender common.Address, txn *types.Transaction) uint64 {
 	gasLimit := txn.Gas()

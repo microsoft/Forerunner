@@ -21,8 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
-	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"io"
 	"math/big"
 	mrand "math/rand"
@@ -35,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
@@ -48,6 +47,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
+	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -2055,11 +2055,20 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		atomic.StoreUint32(&followupInterrupt, 1)
 
+		var signer = types.NewEIP155Signer(bc.chainConfig.ChainID)
+		var noEnpoolSender map[common.Address]struct{}
 		if !bc.vmConfig.MSRAVMSettings.Silent {
-			bc.MSRACache.InfoPrint(block, types.NewEIP155Signer(bc.chainConfig.ChainID), bc.vmConfig, bc.MSRACache.Synced(), bc.ReportReuseMiss, statedb)
+			noEnpoolSender = bc.MSRACache.InfoPrint(block, signer, bc.vmConfig, bc.MSRACache.Synced(), bc.ReportReuseMiss, statedb)
 		}
 		bc.MSRACache.Continue()
 		bc.Warmuper.Continue()
+		for _, txn := range block.Transactions() {
+			sender, _ := types.Sender(signer, txn)
+			bc.MSRACache.UpdateInWhiteList(sender)
+		}
+		for sender := range noEnpoolSender {
+			bc.MSRACache.AddInWhiteList(sender)
+		}
 
 		// Update the metrics touched during block commit
 		accountCommitTimer.Update(statedb.AccountCommits) // Account commits are complete, we can mark them

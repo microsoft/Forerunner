@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -338,6 +339,7 @@ type TxPool struct {
 
 	// !!! MSRA Fields
 	TxPoolRecorder TxPoolRecorder
+	MSRACache      *cache.GlobalCache
 }
 
 type txpoolResetRequest struct {
@@ -940,19 +942,19 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 // If a newly added transaction is marked as local, its sending account will be
 // whitelisted, preventing any associated transaction from being dropped out of the pool
 // due to pricing constraints.
-func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bool, replaced bool, err error) {
+func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bool, replaced bool, replacedTxn *types.Transaction, err error) {
 	// If the transaction is already known, discard it
 	hash := tx.Hash()
 	if pool.all.Get(hash) != nil {
 		log.Trace("Discarding already known transaction", "hash", hash)
 		knownTxMeter.Mark(1)
-		return false, false, false, fmt.Errorf("known transaction: %x", hash)
+		return false, false, false, nil, fmt.Errorf("known transaction: %x", hash)
 	}
 	// If the transaction fails basic validation, discard it
 	if err := pool.validateTx(tx, local); err != nil {
 		log.Trace("Discarding invalid transaction", "hash", hash, "err", err)
 		invalidTxMeter.Mark(1)
-		return false, false, false, err
+		return false, false, false, nil, err
 	}
 	// If the transaction pool is full, discard underpriced transactions
 	if uint64(pool.all.Count()) >= pool.config.GlobalSlots+pool.config.GlobalQueue {
@@ -960,7 +962,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bo
 		if !local && pool.priced.Underpriced(tx, pool.locals) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "price", tx.GasPrice())
 			underpricedTxMeter.Mark(1)
-			return false, false, false, ErrUnderpriced
+			return false, false, false, nil, ErrUnderpriced
 		}
 		// New transaction is better than our worse ones, make room for it
 		drop := pool.priced.Discard(pool.all.Count()-int(pool.config.GlobalSlots+pool.config.GlobalQueue-1), pool.locals)
@@ -983,7 +985,12 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bo
 		inserted, old := list.Add(tx, pool.config.PriceBump)
 		if !inserted {
 			pendingDiscardMeter.Mark(1)
-			return false, false, false, ErrReplaceUnderpriced
+			if pool.config.MSRATxPoolSettings.DataLoggerTxPoolIO {
+				reason := fmt.Sprintf("%s:%s-%s:%s", old.Hash().Hex(), old.GasPrice(), tx.Hash().Hex(), tx.GasPrice())
+				pool.poolioLogger(old, "Pending", "Reject because nonce already pending", reason)
+				pool.poolioLogger(tx, "Pending", "Rejected because nonce already pending", reason)
+			}
+			return false, false, false, nil, ErrReplaceUnderpriced
 		}
 
 		if pool.config.MSRATxPoolSettings.DataLoggerTxPoolIO {
@@ -1006,12 +1013,12 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bo
 		pool.journalTx(from, tx)
 		pool.queueTxEvent(tx)
 		log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
-		return true, true, old != nil, nil
+		return true, true, old != nil, old, nil
 	}
 	// New transaction isn't replacing a pending one, push into queue
-	replaced, err = pool.enqueueTx(hash, tx)
+	replaced, replacedTxn, err = pool.enqueueTx(hash, tx)
 	if err != nil {
-		return false, false, false, err
+		return false, false, false, nil, err
 	}
 	// Mark local addresses and journal local transactions
 	if local {
@@ -1026,13 +1033,13 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (enpool, enpending bo
 	pool.journalTx(from, tx)
 
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
-	return true, false, replaced, nil
+	return true, false, replaced, replacedTxn, nil
 }
 
 // enqueueTx inserts a new transaction into the non-executable transaction queue.
 //
 // Note, this method assumes the pool lock is held!
-func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, error) {
+func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, *types.Transaction, error) {
 	// Try to insert the transaction into the future queue
 	from, _ := types.Sender(pool.signer, tx) // already validated
 	if pool.queue[from] == nil {
@@ -1042,7 +1049,7 @@ func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, er
 	if !inserted {
 		// An older transaction was better, discard this
 		queuedDiscardMeter.Mark(1)
-		return false, ErrReplaceUnderpriced
+		return false, nil, ErrReplaceUnderpriced
 	}
 	// Discard any previous transaction and mark this
 	if old != nil {
@@ -1057,7 +1064,7 @@ func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, er
 		pool.all.Add(tx)
 		pool.priced.Put(tx)
 	}
-	return old != nil, nil
+	return old != nil, old, nil
 }
 
 // journalTx adds the specified transaction to the local disk journal if it is
@@ -1194,9 +1201,16 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
 	if len(news) == 0 {
 		return errs
 	}
+	var newsNotInWhiteList = make([]*types.Transaction, 0, len(txs))
+	var newsInWhiteList = make([]*types.Transaction, 0)
 	// Cache senders in transactions before obtaining lock (pool.signer is immutable)
 	for _, tx := range news {
-		types.Sender(pool.signer, tx)
+		sender, _ := types.Sender(pool.signer, tx)
+		if pool.MSRACache.IsInWhiteList(sender) {
+			newsInWhiteList = append(newsInWhiteList, tx)
+		} else {
+			newsNotInWhiteList = append(newsNotInWhiteList, tx)
+		}
 	}
 
 	// Process all the new transaction and merge any errors into the original slice
@@ -1209,7 +1223,12 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
 	pool.config.MSRATxPoolSettings.PoolState = "NewTxs"
 	pool.config.MSRATxPoolSettings.PoolStateStage = "addTxs"
 
-	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	newErrs, dirtyAddrs := pool.addTxsLocked(newsNotInWhiteList, local)
+	if len(newsInWhiteList) > 0 {
+		newErrs2, dirtyAddrs2 := pool.addTxsLocked(newsInWhiteList, true)
+		newErrs = append(newErrs, newErrs2...)
+		dirtyAddrs.merge(dirtyAddrs2)
+	}
 
 	pool.config.MSRATxPoolSettings.PoolStateStage = ""
 	pool.config.MSRATxPoolSettings.PoolState = ""
@@ -1240,21 +1259,39 @@ func (pool *TxPool) addTxsLocked(txs []*types.Transaction, local bool) ([]error,
 	errs := make([]error, len(txs))
 	var enpoolTxs = make([]*types.Transaction, 0, len(txs))
 	var enpendingTxs = make([]*types.Transaction, 0, len(txs))
+	var dupTxnMap = make(map[common.Address]types.Transactions)
 	for i, tx := range txs {
-		enpool, enpending, replaced, err := pool.add(tx, local)
+		enpool, enpending, replaced, replacedTxn, err := pool.add(tx, local)
 		if enpool {
 			enpoolTxs = append(enpoolTxs, tx)
 			if enpending {
 				enpendingTxs = append(enpendingTxs, tx)
 			}
 		}
+		if replaced {
+			sender, _ := types.Sender(pool.signer, replacedTxn)
+			dupTxnMap[sender] = append(dupTxnMap[sender], replacedTxn)
+		}
+		if err == ErrReplaceUnderpriced {
+			sender, _ := types.Sender(pool.signer, tx)
+			enpoolTxs = append(enpoolTxs, tx)
+			enpendingTxs = append(enpendingTxs, tx)
+			dupTxnMap[sender] = append(dupTxnMap[sender], tx)
+		}
 		errs[i] = err
 		if err == nil && !replaced {
 			dirty.addTx(tx)
 		}
 	}
-	pool.enpoolFeed.Send(EnpoolTxsEvent{enpoolTxs})
-	pool.enpendingFeed.Send(EnpendingTxsEvent{enpendingTxs})
+	if len(dupTxnMap) > 0 {
+		if pool.MSRACache != nil {
+			pool.MSRACache.AddReduplicatedNonceTxn(dupTxnMap)
+		}
+	}
+	go func() {
+		pool.enpoolFeed.Send(EnpoolTxsEvent{enpoolTxs})
+		pool.enpendingFeed.Send(EnpendingTxsEvent{enpendingTxs})
+	}()
 	validTxMeter.Mark(int64(len(dirty.accounts)))
 	return errs, dirty
 }

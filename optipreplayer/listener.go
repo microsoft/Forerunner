@@ -2,12 +2,14 @@ package optipreplayer
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"math/big"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +33,8 @@ func NewListener(eth Backend) *Listener {
 	}
 
 	go listener.cacheEvictionLoop()
+	go listener.dropReduplicatedNonceTxnLoop()
+
 	go listener.listenCommitLoop()
 	go listener.enpoolCommitLoop()
 	go listener.enpendingCommitLoop()
@@ -84,6 +88,32 @@ func (l *Listener) cacheEvictionLoop() {
 			"newSize", newSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
 			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
 		)
+	}
+}
+
+func (l *Listener) dropReduplicatedNonceTxnLoop() {
+	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
+	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
+	defer chainHeadSub.Unsubscribe()
+
+	signer := types.NewEIP155Signer(l.chain.Config().ChainID)
+
+	for chainHeadEvent := range chainHeadCh {
+		maxNonceMap := make(map[common.Address]uint64)
+		for _, txn := range chainHeadEvent.Block.Transactions() {
+			sender, _ := types.Sender(signer, txn)
+			maxNonceMap[sender] = txn.Nonce()
+		}
+		l.globalCache.DropReduplicatedNonceTxn(func(addr common.Address, txns types.TxByNonce) types.TxByNonce {
+			if maxNonce, ok := maxNonceMap[addr]; ok {
+				index := sort.Search(len(txns), func(i int) bool {
+					return txns[i].Nonce() > maxNonce
+				})
+				return txns[index:]
+			} else {
+				return txns
+			}
+		})
 	}
 }
 

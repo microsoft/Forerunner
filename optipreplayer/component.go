@@ -1,12 +1,14 @@
 package optipreplayer
 
 import (
+	"bytes"
 	"container/heap"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
@@ -93,6 +95,21 @@ func (p TransactionPool) copy() TransactionPool {
 	for addr, txns := range p {
 		newPool[addr] = make(types.Transactions, len(txns))
 		copy(newPool[addr], txns)
+	}
+	return newPool
+}
+
+func (p TransactionPool) replaceCopy(replace map[*types.Transaction]*types.Transaction) TransactionPool {
+	newPool := make(TransactionPool, len(p))
+	for addr, txns := range p {
+		newPool[addr] = make(types.Transactions, len(txns))
+		for index, txn := range txns {
+			if newTxn, ok := replace[txn]; ok {
+				newPool[addr][index] = newTxn
+			} else {
+				newPool[addr][index] = txn
+			}
+		}
 	}
 	return newPool
 }
@@ -233,27 +250,25 @@ func NewTrigger(name string, executorNum int) *Trigger {
 }
 
 const (
-	balance   State = 1 << iota
-	nonce     State = 1 << iota
-	code      State = 1 << iota
-	suicided  State = 1 << iota
-	all             = balance | nonce | code | suicided
-	coinbase        = balance
-	timestamp       = nonce
-	gasLimit        = code
+	balance   = 1 << iota
+	nonce     = 1 << iota
+	code      = 1 << iota
+	suicided  = 1 << iota
+	coinbase  = 1 << iota
+	timestamp = 1 << iota
+	gasLimit  = 1 << iota
+	all       = balance | nonce | code | suicided
 )
 
-type State byte
+type BaseState byte
 
-type ReadState struct {
-	State
+type AccountState struct {
+	BaseState
 	storage map[common.Hash]struct{}
 }
-type ReadChain = State
-type WriteState ReadState
 
-func (s ReadState) String() string {
-	retStr := fmt.Sprintf("%b", s.State)
+func (s AccountState) String() string {
+	retStr := fmt.Sprintf("%b", s.BaseState)
 	var keyList []string
 	for key := range s.storage {
 		keyList = append(keyList, key.Hex())
@@ -264,38 +279,37 @@ func (s ReadState) String() string {
 	return retStr
 }
 
-func (r ReadChain) String() string {
-	return fmt.Sprintf("ReadChain: %b", r)
+func (s AccountState) Copy() AccountState {
+	var newS = ReadState{
+		BaseState: s.BaseState,
+		storage:   make(map[common.Hash]struct{}),
+	}
+	for key := range s.storage {
+		newS.storage[key] = struct{}{}
+	}
+	return newS
 }
 
-func (s WriteState) String() string {
-	retStr := fmt.Sprintf("%b", s.State)
-	var keyList []string
-	for key := range s.storage {
-		keyList = append(keyList, key.Hex())
-	}
-	if len(keyList) > 0 {
-		retStr += "-" + fmt.Sprintf("%v", keyList)
-	}
-	return retStr
-}
+type ReadState = AccountState
+type ReadChain = BaseState
+type WriteState = AccountState
 
 func NewReadState(r *state.ReadState) *ReadState {
 	readState := &ReadState{
 		storage: make(map[common.Hash]struct{}),
 	}
 	if r.Empty != nil {
-		readState.State = all
+		readState.BaseState = all
 	} else {
-		readState.State = suicided
+		readState.BaseState = suicided
 		if r.Balance != nil {
-			readState.State |= balance
+			readState.BaseState |= balance
 		}
 		if r.Nonce != nil {
-			readState.State |= nonce
+			readState.BaseState |= nonce
 		}
 		if r.CodeHash != nil {
-			readState.State |= code
+			readState.BaseState |= code
 		}
 	}
 	for key := range r.Storage {
@@ -305,7 +319,7 @@ func NewReadState(r *state.ReadState) *ReadState {
 }
 
 func NewReadChain(r state.ReadChain) ReadChain {
-	var readChain State
+	var readChain BaseState
 	if r.Coinbase != nil {
 		readChain |= coinbase
 	}
@@ -323,21 +337,29 @@ func NewWriteState(w *state.WriteState) *WriteState {
 		storage: make(map[common.Hash]struct{}),
 	}
 	if w.Balance != nil {
-		writeState.State |= balance
+		writeState.BaseState |= balance
 	}
 	if w.Nonce != nil {
-		writeState.State |= nonce
+		writeState.BaseState |= nonce
 	}
 	if w.Code != nil {
-		writeState.State |= code
+		writeState.BaseState |= code
 	}
 	if w.Suicided != nil {
-		writeState.State |= suicided
+		writeState.BaseState |= suicided
 	}
 	for key := range w.DirtyStorage {
 		writeState.storage[key] = struct{}{}
 	}
 	return writeState
+}
+
+func (s ReadChain) String() string {
+	return fmt.Sprintf("ReadChain: %b", s)
+}
+
+func (s ReadChain) Copy() ReadChain {
+	return s
 }
 
 type ReadStates map[common.Address]*ReadState
@@ -371,14 +393,32 @@ func (w WriteStates) String() string {
 	return "WriteStates:{" + ret + "}"
 }
 
+func (r ReadStates) Copy() ReadStates {
+	newStates := make(ReadStates)
+	for addr, readState := range r {
+		newState := readState.Copy()
+		newStates[addr] = &newState
+	}
+	return newStates
+}
+
+func (w WriteStates) Copy() WriteStates {
+	newStates := make(WriteStates)
+	for addr, writeState := range w {
+		newState := writeState.Copy()
+		newStates[addr] = &newState
+	}
+	return newStates
+}
+
 func (r ReadStates) merge(readStates ReadStates) {
 	for addr, readState := range readStates {
 		if s, ok := r[addr]; ok {
-			s.State |= readState.State
+			s.BaseState |= readState.BaseState
 		} else {
 			r[addr] = &ReadState{
-				State:   readState.State,
-				storage: make(map[common.Hash]struct{}, len(readState.storage)),
+				BaseState: readState.BaseState,
+				storage:   make(map[common.Hash]struct{}, len(readState.storage)),
 			}
 		}
 		for key := range readState.storage {
@@ -387,18 +427,18 @@ func (r ReadStates) merge(readStates ReadStates) {
 	}
 }
 
-func (r *ReadChain) merge(readChain ReadChain) {
-	*r |= readChain
+func (s *ReadChain) merge(readChain ReadChain) {
+	*s |= readChain
 }
 
 func (w WriteStates) merge(writeStates WriteStates) {
 	for addr, writeState := range writeStates {
 		if s, ok := w[addr]; ok {
-			s.State |= writeState.State
+			s.BaseState |= writeState.BaseState
 		} else {
 			w[addr] = &WriteState{
-				State:   writeState.State,
-				storage: make(map[common.Hash]struct{}, len(writeState.storage)),
+				BaseState: writeState.BaseState,
+				storage:   make(map[common.Hash]struct{}, len(writeState.storage)),
 			}
 		}
 		for key := range writeState.storage {
@@ -439,6 +479,14 @@ func (r *RWRecord) String() string {
 	return fmt.Sprintf("RWRecord:{%v, %v, %v}", r.readStates, r.ReadChain, r.writeStates)
 }
 
+func (r *RWRecord) Copy() *RWRecord {
+	return &RWRecord{
+		readStates:  r.readStates.Copy(),
+		ReadChain:   r.ReadChain.Copy(),
+		writeStates: r.writeStates.Copy(),
+	}
+}
+
 func (r *RWRecord) isCoinbaseDep() bool {
 	return r.ReadChain&coinbase > 0
 }
@@ -460,7 +508,7 @@ func (r *RWRecord) merge(rwrecord *RWRecord) {
 func (r *RWRecord) isRWOverlap(w *RWRecord) bool {
 	for addr, writeState := range w.writeStates {
 		if readState, ok := r.readStates[addr]; ok {
-			if readState.State&writeState.State > 0 {
+			if readState.BaseState&writeState.BaseState > 0 {
 				return true
 			}
 			for key := range writeState.storage {
@@ -567,6 +615,80 @@ func (g *TxnGroup) defaultInit(parent *types.Block, basicPreplay bool) {
 	g.addrNotCopy = make(map[common.Address]struct{})
 	g.preplayFinish = make(map[common.Hash]int)
 	g.preplayFail = make(map[common.Hash][]string)
+	g.nextOrderAndHeader = make(chan OrderAndHeader)
+	g.roundIDCh = make(chan uint64, 1)
+}
+
+// Assume that this TxnGroup will not be accessed by other routines
+func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Signer) (newGroup *TxnGroup) {
+	var replace = make(map[*types.Transaction]*types.Transaction)
+	for _, replacingTxn := range replacingTxns {
+		sender, _ := types.Sender(signer, replacingTxn)
+		txns, ok := g.txnPool[sender]
+		if !ok || len(txns) == 0 {
+			continue
+		}
+		replacedIndex := replacingTxn.Nonce() - txns[0].Nonce()
+		if replacedIndex < 0 || int(replacedIndex) >= len(txns) {
+			continue
+		}
+		replacedTxn := txns[replacedIndex]
+		if replacedTxn.Nonce() != replacingTxn.Nonce() {
+			continue
+		}
+		replace[replacedTxn] = replacingTxn
+	}
+
+	if len(replace) == 0 {
+		return nil
+	}
+
+	txnPool := g.txnPool.replaceCopy(replace)
+	txnList := make([][]byte, 0, len(g.txnList))
+	for _, txns := range txnPool {
+		for _, txn := range txns {
+			txnList = append(txnList, txn.Hash().Bytes())
+		}
+	}
+	sort.Slice(txnList, func(i, j int) bool {
+		return bytes.Compare(txnList[i], txnList[j]) == -1
+	})
+	hash := crypto.Keccak256Hash(txnList...)
+
+	newGroup = &TxnGroup{
+		hash:               hash,
+		txnPool:            txnPool,
+		txnList:            txnList,
+		RWRecord:           g.RWRecord.Copy(),
+		valid:              g.valid,
+		parent:             g.parent,
+		txnCount:           g.txnCount,
+		chainFactor:        g.chainFactor,
+		orderCount:         new(big.Int).Set(g.orderCount),
+		startList:          make([]int, len(g.startList)),
+		subpoolList:        make([]TransactionPool, len(g.subpoolList)),
+		basicPreplay:       g.basicPreplay,
+		addrNotCopy:        make(map[common.Address]struct{}, len(g.addrNotCopy)),
+		preplayFinish:      make(map[common.Hash]int, g.txnCount),
+		preplayFail:        make(map[common.Hash][]string, g.txnCount),
+		nextInList:         make([]map[common.Address]int, len(g.nextInList)),
+		nextOrderAndHeader: make(chan OrderAndHeader),
+	}
+	copy(newGroup.startList, g.startList)
+	for index, subpool := range g.subpoolList {
+		newGroup.subpoolList[index] = subpool.replaceCopy(replace)
+	}
+	for addr := range g.addrNotCopy {
+		newGroup.addrNotCopy[addr] = struct{}{}
+	}
+	for index, nextIn := range g.nextInList {
+		newGroup.nextInList[index] = make(map[common.Address]int, len(nextIn))
+		for addr, next := range nextIn {
+			newGroup.nextInList[index][addr] = next
+		}
+	}
+
+	return newGroup
 }
 
 func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult, orderAndHeader OrderAndHeader) {

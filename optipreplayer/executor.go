@@ -119,6 +119,9 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 
 	var statedb *state.StateDB
 	statedbInstance, err := e.chain.StateAt(parent.Root())
+	if statedbInstance == nil {
+		panic(fmt.Sprintf("Get nil statedb parent: %d-%s-%s", parent.NumberU64(), parent.Hash().Hex(), parent.Root().Hex()))
+	}
 	if e.chain.GetVMConfig().MSRAVMSettings.EnablePreplay {
 		statedb = state.NewRWStateDB(statedbInstance)
 		if !e.basicPreplay {

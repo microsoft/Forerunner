@@ -314,7 +314,10 @@ func (r *GlobalCache) LogPrint(filePath string, fileName string, v interface{}) 
 }
 
 // InfoPrint block info to block folder
-func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.Config, synced bool, reporter MissReporter, statedb *state.StateDB) {
+func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.Config, synced bool, reporter MissReporter,
+	statedb *state.StateDB) (noEnpoolSender map[common.Address]struct{}) {
+
+	noEnpoolSender = make(map[common.Address]struct{})
 
 	var (
 		sumApply            = SumDuration(Apply)
@@ -370,6 +373,11 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 									infoResult.NoListen++
 									if sender, _ := types.Sender(signer, tx); sender != ethermine {
 										infoResult.NoListenAndNoEthermine++
+									}
+								} else {
+									if tx.To() != nil && statedb.GetCodeSize(*tx.To()) == 0 {
+										sender, _ := types.Sender(signer, tx)
+										noEnpoolSender[sender] = struct{}{}
 									}
 								}
 							}
@@ -786,6 +794,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		}
 		reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-enpending, enpending-Package, Package-enqueue, enqueue-preplay)
 	}
+	return noEnpoolSender
 }
 
 // CachePrint print reuse result of all txns in a block to block folder

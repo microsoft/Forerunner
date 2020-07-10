@@ -58,6 +58,9 @@ type GlobalCache struct {
 	PreplayRoundIDMu sync.RWMutex
 	PreplayTimestamp uint64 // Last time stamp
 
+	reduplicatedNonceTxnMu sync.RWMutex
+	reduplicatedNonceTxn   map[common.Address]types.TxByNonce
+
 	// Gas used cache
 	PrimaryGasUsedCache   *lru.Cache
 	SecondaryGasUsedCache *lru.Cache
@@ -77,6 +80,8 @@ type GlobalCache struct {
 	// Enable Flag
 	PreplayFlag bool
 	FeatureFlag bool
+
+	WhiteListAddr *lru.Cache
 
 	CreateTimeStamp time.Time
 	// Deprecated
@@ -110,12 +115,18 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.PreplayTimestamp = uint64(time.Now().Unix())
 	g.TimestampField = -2
 
+	g.reduplicatedNonceTxn = make(map[common.Address]types.TxByNonce)
+
 	g.PrimaryGasUsedCache, _ = lru.New(pSize)
 	g.SecondaryGasUsedCache, _ = lru.New(pSize)
 	g.TertiaryGasUsedCache, _ = lru.New(pSize)
 
 	g.GroundCache, _ = lru.New(pSize)
 	// g.FoundCache, _ = lru.New(pSize)
+
+	g.WhiteListAddr, _ = lru.New(20)
+	g.WhiteListAddr.Add(common.HexToAddress("0xEA674fdDe714fd979de3EdF0F56AA9716B898ec8"), struct{}{})
+	g.WhiteListAddr.Add(common.HexToAddress("0x52bc44d5378309EE2abF1539BF71dE1b7d7bE3b5"), struct{}{})
 
 	g.CreateTimeStamp = time.Now()
 	// g.BucketCache, _ = lru.New(bSize)
@@ -208,6 +219,10 @@ func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
 		r.GroundCache, _ = lru.New(pSize)
 		// r.FoundCache, _ = lru.New(pSize)
 	}
+
+	r.WhiteListAddr, _ = lru.New(20)
+
+	r.reduplicatedNonceTxn = make(map[common.Address]types.TxByNonce)
 
 	r.CreateTimeStamp = time.Now()
 
@@ -399,6 +414,29 @@ func (r *GlobalCache) GetGround(hash common.Hash) *SimpleResult {
 	}
 
 	return ground
+}
+
+func (r *GlobalCache) GetWhiteList() []common.Address {
+	keys := r.WhiteListAddr.Keys()
+	whiteList := make([]common.Address, len(keys))
+	for _, rawKey := range keys {
+		whiteList = append(whiteList, rawKey.(common.Address))
+	}
+	return whiteList
+}
+
+func (r *GlobalCache) IsInWhiteList(address common.Address) bool {
+	return r != nil && r.WhiteListAddr.Contains(address)
+}
+
+func (r *GlobalCache) AddInWhiteList(address common.Address) {
+	r.WhiteListAddr.Add(address, struct{}{})
+}
+
+func (r *GlobalCache) UpdateInWhiteList(address common.Address) {
+	if r.IsInWhiteList(address) {
+		r.WhiteListAddr.Peek(address)
+	}
 }
 
 type WObjectWeakReference struct {
