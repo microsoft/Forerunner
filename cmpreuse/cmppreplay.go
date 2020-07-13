@@ -70,7 +70,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 		var err error
 		txPreplay.PreplayResults.MixTreeMu.Lock()
-		if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq) {
+		if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq, tx) {
 			// if isExternalTransfer is changed from true to false, only set dep in mix tree:
 			err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
 		} else {
@@ -180,7 +180,7 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 
 func (reuse *Cmpreuse) addNewTx(tx *types.Transaction, rwrecord *cache.RWRecord) *cache.TxPreplay {
 	txPreplay := cache.NewTxPreplay(tx)
-	txPreplay.SetExternalTransferInfo(rwrecord)
+	txPreplay.SetExternalTransferInfo(rwrecord, tx)
 	reuse.MSRACache.AddTxPreplay(txPreplay)
 	return txPreplay
 }

@@ -776,7 +776,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 
 		return child, ok
 	case cmptypes.MinBalance:
-		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) > 0
+		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) >= 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
 
 		if debug {

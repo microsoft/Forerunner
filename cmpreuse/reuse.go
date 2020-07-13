@@ -972,6 +972,10 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					d0 = time.Since(t0)
 					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.DeltaCheck} // abort before hit or miss
 					return
+				}else{
+					if false && txPreplay.PreplayResults.IsExternalTransfer{
+						log.Warn("zhongxin: delta miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!","txhash", txPreplay.TxHash.Hex())
+					}
 				}
 			} else {
 				cache.LockCount[2] ++

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
@@ -84,12 +85,28 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	return txPreplay
 }
 
-func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
-	// assert seqRecord len
-	if len(seqRecord) != 5 {
+func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue, tx *types.Transaction) bool {
+
+	if tx.To() == nil{
+		// this check is necessary.
 		return false
-	} else {
-		//assert 'to' is a common user
+	}
+	// assert seqRecord len
+	switch len(seqRecord) {
+	case 0:
+		fallthrough
+	case 1:
+		fallthrough
+	case 2:
+		ss, _ := json.Marshal(seqRecord)
+		log.Error("zhongxin: unexpected len", "tx", tx.Hash().Hex(), "seq", string(ss))
+		return false
+	case 3:
+		// self transfer
+		return true
+	case 4: // 'to' is a new address
+		return true
+	case 5: //assert 'to' is a common user
 		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
 			return false
 		} else {
@@ -98,23 +115,27 @@ func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue) bool {
 				return false
 			}
 		}
+		return true
+	default:
+		return false
 	}
-	return true
+
 }
 
-func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord) {
-	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail.ReadDetailSeq)
+func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transaction) {
+	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail.ReadDetailSeq, tx)
 	if t.PreplayResults.IsExternalTransfer {
 		wDeltas := make(map[common.Address]*WStateDelta)
 		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address
-		to := record.ReadDetail.ReadAddressAndBlockSeq[1].AddLoc.Address
-
+		to := *tx.To()
 		senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
 		wDeltas[sender] = &WStateDelta{senderBalanceDelta}
 
-		if _, ok := record.WState[to]; ok {
-			toBalanceDelta := new(big.Int).Sub(record.WState[to].Balance, record.RState[to].Balance)
-			wDeltas[to] = &WStateDelta{toBalanceDelta}
+		if to != sender {
+			if _, ok := record.WState[to]; ok {
+				toBalanceDelta := tx.Value()
+				wDeltas[to] = &WStateDelta{toBalanceDelta}
+			}
 		}
 		t.PreplayResults.DeltaWrites = wDeltas
 
@@ -247,7 +268,7 @@ func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state
 		}
 		rs.wobjectHolderMapMu.Unlock()
 		return holder, hok
-	}else {
+	} else {
 		return nil, false
 	}
 }
