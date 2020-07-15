@@ -915,10 +915,10 @@ func (r *GlobalCache) AddReduplicatedNonceTxn(txnMap map[common.Address]types.Tr
 				addedTxn = append(addedTxn, txn)
 			}
 			r.reduplicatedNonceTxn[sender] = append(dupTxns, addedTxn...)
-			sort.Sort(r.reduplicatedNonceTxn[sender])
 		} else {
 			r.reduplicatedNonceTxn[sender] = types.TxByNonce(txns)
 		}
+		sort.Sort(r.reduplicatedNonceTxn[sender])
 	}
 }
 
