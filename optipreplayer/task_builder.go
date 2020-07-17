@@ -22,7 +22,7 @@ const (
 	// remainTxnLimit is the limit of remain txn preplay count.
 	remainTxnLimit = 40
 	// remainTxnTotalLimit is the total limit of remain txn preplay count between two blocks.
-	remainTxnTotalLimit = 800
+	remainTxnTotalLimit = 8000
 )
 
 type TaskBuilder struct {

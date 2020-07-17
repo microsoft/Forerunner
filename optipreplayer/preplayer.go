@@ -161,7 +161,7 @@ func (p *Preplayer) groupLoop() {
 func (p *Preplayer) mainLoop() {
 	for {
 		if task := p.preplayTaskQueue.popTask(); task == nil {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 		} else {
 			if task.isValid() {
 				if orderAndHeader, ok := <-task.nextOrderAndHeader; ok {

@@ -3,6 +3,7 @@ package cmptypes
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"math/big"
+	"sync/atomic"
 )
 
 type PrecompiledContract interface {
@@ -59,6 +60,56 @@ type IReuseTracer interface {
 }
 
 type ISTrace interface {
-
 }
 
+type SimpleTryLock struct {
+	// lock state
+	// if state == 0, no lock holds
+	// if state == -1, lock holds
+	state *int32
+
+	// a broadcast channel
+	ch chan struct{}
+}
+
+func NewSimpleTryLock() *SimpleTryLock {
+	return &SimpleTryLock{
+		state: new(int32),
+		ch:    make(chan struct{}, 1),
+	}
+}
+
+func (m *SimpleTryLock) TryLock() bool {
+	if atomic.CompareAndSwapInt32(m.state, 0, -1) {
+		// acquire OK
+		return true
+	}
+	return false
+}
+
+func (m *SimpleTryLock) Lock() {
+	for {
+		if atomic.CompareAndSwapInt32(m.state, 0, -1) {
+			// acquire OK
+			return
+		}
+
+		// waiting for broadcast signal or timeout
+		select {
+		case <-m.ch:
+			// wake up to try again
+		}
+	}
+}
+
+func (m *SimpleTryLock) Unlock() {
+	if ok := atomic.CompareAndSwapInt32(m.state, -1, 0); !ok {
+		panic("Unlock() failed")
+	}
+	select {
+	case m.ch <- struct{}{}:
+		return
+	default:
+		return
+	}
+}

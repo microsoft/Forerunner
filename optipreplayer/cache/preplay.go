@@ -22,7 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/subchen/go-trylock/v2"
 )
 
 var (
@@ -60,14 +59,14 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 		Rounds: rounds,
 		//ReadDepTree:          cmptypes.NewPreplayResTrie(),
 		MixTree:              cmptypes.NewPreplayResTrie(),
-		MixTreeMu:            trylock.New(),
+		MixTreeMu:            cmptypes.NewSimpleTryLock(), // trylock.New(),
 		DeltaTree:            cmptypes.NewPreplayResTrie(),
-		DeltaTreeMu:          trylock.New(),
-		TraceTrieMu:          trylock.New(),
+		DeltaTreeMu:          cmptypes.NewSimpleTryLock(), // trylock.New(),
+		TraceTrieMu:          cmptypes.NewSimpleTryLock(), // trylock.New(),
 		RWRecordTrie:         cmptypes.NewPreplayResTrie(),
-		RWRecordTrieMu:       trylock.New(),
+		RWRecordTrieMu:       cmptypes.NewSimpleTryLock(), // trylock.New(),
 		wobjectHolderMap:     make(state.ObjectHolderMap),
-		wobjectHolderMapMu:   trylock.New(),
+		wobjectHolderMapMu:   cmptypes.NewSimpleTryLock(),//trylock.New(),
 		objectPointerToObjID: make(map[uintptr]uintptr),
 		//RWrecords:            RWrecords,
 	}
@@ -218,19 +217,19 @@ type PreplayResults struct {
 	// deprecated
 	ReadDepTree    *cmptypes.PreplayResTrie `json:"-"`
 	MixTree        *cmptypes.PreplayResTrie
-	MixTreeMu      trylock.TryLocker
+	MixTreeMu      *cmptypes.SimpleTryLock//trylock.TryLocker
 	TraceTrie      ITracerTrie
-	TraceTrieMu    trylock.TryLocker
+	TraceTrieMu    *cmptypes.SimpleTryLock//trylock.TryLocker
 	DeltaTree      *cmptypes.PreplayResTrie
-	DeltaTreeMu    trylock.TryLocker
+	DeltaTreeMu    *cmptypes.SimpleTryLock//trylock.TryLocker
 	RWRecordTrie   *cmptypes.PreplayResTrie
-	RWRecordTrieMu trylock.TryLocker
+	RWRecordTrieMu *cmptypes.SimpleTryLock
 
 	IsExternalTransfer bool
 	DeltaWrites        map[common.Address]*WStateDelta
 
 	wobjectHolderMap     state.ObjectHolderMap
-	wobjectHolderMapMu   trylock.TryLocker
+	wobjectHolderMapMu   *cmptypes.SimpleTryLock//trylock.TryLocker
 	wobjectIDCounter     uintptr
 	objectPointerToObjID map[uintptr]uintptr
 
@@ -255,7 +254,7 @@ func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
 }
 
 func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
-	if rs.wobjectHolderMapMu.TryLock(nil) {
+	if rs.wobjectHolderMapMu.TryLock() {
 		//rs.wobjectHolderMapMu.Lock()
 		//defer rs.wobjectHolderMapMu.Unlock()
 		holder, hok := rs.wobjectHolderMap.GetAndDelete(wref.ObjectID)

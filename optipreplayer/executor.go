@@ -189,7 +189,9 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 		if e.EnableReuseTracer {
 			vmconfig.MSRAVMSettings.EnableReuseTracer = true
 		}
-		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil, 0, e.basicPreplay)
+		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool,
+			e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil,
+			0, e.basicPreplay, e.enablePause)
 	} else {
 		snap := e.current.state.Snapshot()
 		receipt, err = core.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vm.Config{})

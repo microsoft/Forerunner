@@ -745,7 +745,9 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 		groundGasUsed := w.current.header.GasUsed
 		groundGasPool := *w.current.gasPool
 
-		receipt, err = w.chain.Cmpreuse.PreplayTransaction(w.chainConfig, w.chain, nil, &groundGasPool, groundStatedb, w.current.header, tx, &groundGasUsed, *cfg, 0, nil, 2, true)
+		receipt, err = w.chain.Cmpreuse.PreplayTransaction(w.chainConfig, w.chain, nil, &groundGasPool,
+			groundStatedb, w.current.header, tx, &groundGasUsed, *cfg, 0, nil, 2,
+			true, false)
 		//log.Info("GroundTruth Miner Finish")
 	}
 

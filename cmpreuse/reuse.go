@@ -10,7 +10,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/subchen/go-trylock/v2"
 	"math/big"
 	"time"
 )
@@ -861,9 +860,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	var sr *TraceTrieSearchResult
 
 	var lockCount int
-	var tryHoldLock = func(mu trylock.TryLocker) (hold bool) {
+	var tryHoldLock = func(mu *cmptypes.SimpleTryLock) (hold bool) {
 		if isBlockProcess {
-			if !mu.TryLock(nil) {
+			if !mu.TryLock() {
 				lockCount++
 				return false
 			}

@@ -35,7 +35,7 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
 	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
-	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay bool) {
+	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay, enablePause bool) {
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -50,6 +50,10 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
 	if ok {
 		round.Trace = trace
+	}
+
+	if enablePause {
+		reuse.MSRACache.PauseForProcess()
 	}
 
 	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
@@ -106,6 +110,10 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 					panic(err.Error())
 				}
 			}
+		}
+
+		if enablePause {
+			reuse.MSRACache.PauseForProcess()
 		}
 
 		if trace != nil {
@@ -228,7 +236,7 @@ func GetWObjectsFromWObjectWeakRefs(cache *cache.GlobalCache, refs cache.WObject
 //			false for preplay for grouping transactions or reporting miss, scenario 4 or 5;
 func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-	cfg vm.Config, roundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay bool) (*types.Receipt, error) {
+	cfg vm.Config, roundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay, enablePause bool) (*types.Receipt, error) {
 
 	if statedb.IsShared() || !statedb.IsRWMode() {
 		panic("PreplayTransaction can't be used for process and statedb must be RW mode and not be shared.")
@@ -405,7 +413,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			//statedb.UpdateAccountChangedByMap(wobjects, curTxRes, nil)
 		}
 
-		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay)
+		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy,
+			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause)
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)
