@@ -549,8 +549,10 @@ func (rt *ReuseTracer) TraceBuyGas() {
 		rt.EncounterUnimplementedCode = true
 		return
 	}
-	afterBalanceVar := balanceVar.SubBigInt(maxGasCostVar)
-	fromVar.StoreBalance(afterBalanceVar)
+	if maxGasCost.Sign() != 0 {
+		afterBalanceVar := balanceVar.SubBigInt(maxGasCostVar)
+		fromVar.StoreBalance(afterBalanceVar)
+	}
 }
 
 func (rt *ReuseTracer) TraceIncCallerNonce() {
