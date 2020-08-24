@@ -776,7 +776,6 @@ var (
 		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "preplaydata", "chainhead-driven")),
 	}
 
-
 	CmpReuseEnabledFlag = cli.BoolFlag{
 		Name:  "cmpreuse",
 		Usage: "Enable computation reuse",
@@ -805,6 +804,10 @@ var (
 	ReuseTracerCheckFlag = cli.BoolFlag{
 		Name:  "reusetracer.check",
 		Usage: "Enable reuse tracer checking",
+	}
+	SelfishFlag = cli.BoolFlag{
+		Name:  "selfish",
+		Usage: "Ignore GetNodeDataMsg for performance measurement",
 	}
 	CacheRecordEnabledFlag = cli.BoolFlag{
 		Name:  "cacherecord",
@@ -1773,7 +1776,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
 		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
 		ReuseTracerChecking: ctx.GlobalBool(ReuseTracerCheckFlag.Name),
-
+		Selfish:             ctx.GlobalBool(SelfishFlag.Name),
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",
@@ -1782,7 +1785,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
-    if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
+	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpReuseLogDirFlag.Name)
 	}
 	if ctx.GlobalIsSet(LogRootFlag.Name) {

@@ -60,6 +60,7 @@ type MSRAVMConfig struct {
 	HasherParallelism   int
 	PipelinedBloom      bool
 	ReuseTracerChecking bool
+	Selfish             bool
 	// emulator
 	EmulatorDir          string
 	EnableEmulatorLogger bool

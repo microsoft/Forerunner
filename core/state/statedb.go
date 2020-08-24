@@ -1322,7 +1322,8 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 
 	snap, err := s.trie.TryGet(address[:])
 	if err != nil { // this address does not exist
-		return &cmptypes.AccountSnap{}
+		panic(fmt.Sprintf("TryGet Error %v at Tx %v and addr %v", err.Error(), s.thash.Hex(), address.Hex()))
+		//return &cmptypes.AccountSnap{}
 	}
 	return cmptypes.BytesToAccountSnap(snap)
 

@@ -229,6 +229,7 @@ var (
 		utils.WarmupMissDetailFlag,
 		utils.ReportMissDetailFlag,
 		utils.ReuseTracerCheckFlag,
+		utils.SelfishFlag,
 		alliedNodeFileFlag,
 	}
 )

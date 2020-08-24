@@ -110,6 +110,8 @@ type ProtocolManager struct {
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
 	wg sync.WaitGroup
+
+	SelfishMode bool
 }
 
 // NewProtocolManager returns a new Ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
@@ -852,6 +854,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 	case p.version >= eth63 && msg.Code == GetNodeDataMsg:
+		if pm.SelfishMode {
+			// Do not answer the GetNodeDataMsg when we are measuring
+			// performance
+			return nil
+		}
 		// Decode the retrieval message
 		msgStream := rlp.NewStream(msg.Payload, uint64(msg.Size))
 		if _, err := msgStream.List(); err != nil {
