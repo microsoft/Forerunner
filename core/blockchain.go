@@ -1988,7 +1988,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 			go func() {
 				timeStr := time.Now().Format("01-02|15:04:05.000")
-				blockResult := fmt.Sprintf("[%s] block %v process %v process+verify %v gas %v\n",
+				blockResult := fmt.Sprintf("t '[%s]' block '%v' process %v process+verify %v gas %v\n",
 					timeStr, block.Hash().Hex(),
 					processInMicroSeconds, processInMicroSeconds+verifyInMicroSeconds, block.GasUsed())
 				bc.blockLogFile.WriteString(blockResult)
@@ -1996,37 +1996,45 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				for _, tf := range txPerfs {
 					if bc.vmConfig.MSRAVMSettings.CmpReuse {
 						reuseStatus := tf.ReuseStatus
-						reuseStr := reuseStatus.BaseStatus.String()
+						reuseStr := fmt.Sprintf("baseStatus '%v'", reuseStatus.BaseStatus.String())
 						if tf.Delay < 0 && reuseStatus.BaseStatus == cmptypes.NoPreplay {
-							reuseStr = "NoListen"
+							reuseStr = "baseStatus 'NoListen'"
 						}
 						if reuseStatus.BaseStatus == cmptypes.Hit {
-							reuseStr += "-" + reuseStatus.HitType.String()
-							if reuseStatus.HitType == cmptypes.MixHit {
-								reuseStr += "-" + reuseStatus.MixHitStatus.MixHitType.String()
+							reuseStr += fmt.Sprintf(" hitType '%v'", reuseStatus.HitType.String())
+							//if reuseStatus.HitType == cmptypes.MixHit {
+							if reuseStatus.MixHitStatus != nil {
+								reuseStr += fmt.Sprintf(" mixHitType '%v'", reuseStatus.MixHitStatus.MixHitType.String())
 							}
-							if reuseStatus.HitType == cmptypes.TraceHit {
-								reuseStr += "-" + reuseStatus.TraceHitStatus.String()
-							}
+							//if reuseStatus.HitType == cmptypes.TraceHit {
 						}
-						txResult := fmt.Sprintf("[%s] id %v tx %v reuse %v gas %v delay %v status %v\n",
+
+						if reuseStatus.BaseStatus == cmptypes.Miss {
+							reuseStr += fmt.Sprintf(" missType '%v'", reuseStatus.MissType.String())
+						}
+
+						if reuseStatus.TraceStatus != nil {
+							reuseStr += " " + reuseStatus.TraceStatus.GetPerfString()
+						}
+
+						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' reuse %v gas %v delay %v %v\n",
 							timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 							tf.Receipt.TxHash.Hex(),
 							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 						bc.txLogFile.WriteString(txResult)
 					} else {
 						if bc.vmConfig.MSRAVMSettings.EnablePreplay {
-							reuseStr := "IgnorePreplay"
+							reuseStr := "baseStatus 'IgnorePreplay'"
 							if tf.Delay < 0 {
-								reuseStr = "NoListen"
+								reuseStr = "baseStatus 'NoListen'"
 							}
-							txResult := fmt.Sprintf("[%s] id %v tx %v base %v gas %v delay %v status %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v delay %v %v\n",
 								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 							bc.txLogFile.WriteString(txResult)
 						} else {
-							txResult := fmt.Sprintf("[%s] id %v tx %v base %v gas %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v\n",
 								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed)

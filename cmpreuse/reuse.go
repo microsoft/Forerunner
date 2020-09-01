@@ -26,25 +26,35 @@ func codeHashEquivalent(l common.Hash, r common.Hash) bool {
 }
 
 // CheckRChain check rw.Rchain
-func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header) bool {
+func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header, debugDiff bool) bool {
 	if rw.RChain.Coinbase != nil && header.Coinbase != *rw.RChain.Coinbase {
-		// log.Info("RChain Coinbase miss", "pve", *rw.RChain.Coinbase, "now", header.Coinbase)
+		if debugDiff {
+			log.Info("RChain Coinbase miss", "pve", *rw.RChain.Coinbase, "now", header.Coinbase)
+		}
 		return false
 	}
 	if rw.RChain.Timestamp != nil && header.Time != rw.RChain.Timestamp.Uint64() {
-		// log.Info("RChain Timestamp miss", "pve", rw.RChain.Timestamp, "now", header.Time)
+		if debugDiff {
+			log.Info("RChain Timestamp miss", "pve", rw.RChain.Timestamp, "now", header.Time)
+		}
 		return false
 	}
 	if rw.RChain.Number != nil && header.Number.Cmp(rw.RChain.Number) != 0 {
-		// log.Info("RChain Number miss", "pve", rw.RChain.Number, "now", header.Number)
+		if debugDiff {
+			log.Info("RChain Number miss", "pve", rw.RChain.Number, "now", header.Number)
+		}
 		return false
 	}
 	if rw.RChain.Difficulty != nil && header.Difficulty.Cmp(rw.RChain.Difficulty) != 0 {
-		// log.Info("RChain Difficulty miss", "pve", rw.RChain.Difficulty, "now", header.Difficulty)
+		if debugDiff {
+			log.Info("RChain Difficulty miss", "pve", rw.RChain.Difficulty, "now", header.Difficulty)
+		}
 		return false
 	}
 	if rw.RChain.GasLimit != nil && header.GasLimit != *rw.RChain.GasLimit {
-		// log.Info("RChain GasLimit miss", "pve", rw.RChain.GasLimit, "now", header.GasLimit)
+		if debugDiff {
+			log.Info("RChain GasLimit miss", "pve", rw.RChain.GasLimit, "now", header.GasLimit)
+		}
 		return false
 	}
 	if rw.RChain.Blockhash != nil {
@@ -53,11 +63,15 @@ func CheckRChain(rw *cache.RWRecord, bc core.ChainContext, header *types.Header)
 		for num, blkHash := range rw.RChain.Blockhash {
 			if num > (currentNum-257) && num < currentNum {
 				if blkHash != getHashFn(num) {
-					// log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
+					if debugDiff {
+						log.Info("RChain block hash miss", "pve", blkHash, "now", getHashFn(num))
+					}
 					return false
 				}
 			} else if blkHash.Big().Cmp(common.Big0) != 0 {
-				// log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
+				if debugDiff {
+					log.Info("RChain block hash miss", "pve", blkHash, "now", "0")
+				}
 				return false
 			}
 		}
@@ -170,43 +184,13 @@ func ApplyWStateDelta(statedb *state.StateDB, addr common.Address, wstate *state
 			statedb.SetBalance(addr, wstate.Balance)
 		}
 	}
-	// TODO code and storage are supposed not changed
-	if wstate.Code != nil {
-		panic("there should not be a Code change")
-		statedb.SetCode(addr, *wstate.Code)
 
-	}
-	if wstate.DirtyStorage != nil {
-		panic("there should not be a Storage change")
-		for k, v := range wstate.DirtyStorage {
-			statedb.SetState(addr, k, v)
-		}
-	}
 	// Make sure Suicide is called after other mod operations to ensure that a state_object is always there
 	// Otherwise, Suicide will fail to mark the state_object as suicided
 	// Without deferring, it might cause trouble when a new account gets created and suicides within the same transaction
 	// In that case, as we apply write sets out of order, if Suicide is applied before other mod operations to the account,
 	// the account will be left in the state causing mismatch.
 	return wstate.Suicided != nil && *wstate.Suicided
-}
-
-// ApplyWStates apply write state for each address in wstate
-func ApplyWDelta(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
-	var suicideAddr []common.Address
-	for addr, wstate := range rw.WState {
-		if abort != nil && abort() {
-			return
-		}
-		if ApplyWState(statedb, addr, wstate) {
-			suicideAddr = append(suicideAddr, addr)
-		}
-	}
-	for _, addr := range suicideAddr {
-		if abort != nil && abort() {
-			return
-		}
-		statedb.Suicide(addr)
-	}
 }
 
 func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.Address]*cache.WStateDelta, abort func() bool) {
@@ -285,49 +269,23 @@ func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool)
 	}
 }
 
-//
-//func ApplyWObjects(statedb *state.StateDB, rw *cache.RWRecord, wobject state.ObjectMap, abort func() bool) {
-//	var suicideAddr []common.Address
-//	for addr, object := range wobject {
-//		if abort() {
-//			return
-//		}
-//		if object == nil {
-//			wstate, ok := rw.WState[addr]
-//			if !ok {
-//				panic(fmt.Sprintf("Write object miss, addr = %s", addr.Hex()))
-//			}
-//			if ApplyWState(statedb, addr, wstate) {
-//				suicideAddr = append(suicideAddr, addr)
-//			}
-//		} else {
-//			statedb.ApplyStateObject(object)
-//			wobject[addr] = nil
-//		}
-//	}
-//	for _, addr := range suicideAddr {
-//		if abort() {
-//			return
-//		}
-//		statedb.Suicide(addr)
-//	}
-//}
-
 func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs cache.WObjectWeakRefMap,
 	txPreplay *cache.TxPreplay, mixStatus *cmptypes.MixHitStatus, abort func() bool) {
 	var suicideAddr []common.Address
 	WDeltas := txPreplay.PreplayResults.DeltaWrites
+	var wroteObjCount, wroteDetailCount, writeDetailTotal int
 	for addr, wstate := range rw.WState {
 		if abort != nil && abort() {
 			return
 		}
-		objectApplied := false
+		addressWrote := false
 		_, depHit := mixStatus.DepHitAddrMap[addr]
 		if depHit {
 			if wref, refOk := wobjectRefs.GetMatchedRef(addr, txPreplay); refOk {
 				if objectHolder, hOk := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hOk {
 					statedb.ApplyStateObject(objectHolder.Obj)
-					objectApplied = true
+					wroteObjCount += 1
+					addressWrote = true
 				}
 			}
 		} else {
@@ -337,48 +295,21 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 					if ApplyWStateDelta(statedb, addr, wstate, wStateDelta) {
 						suicideAddr = append(suicideAddr, addr)
 					}
-					objectApplied = true
+					wroteDetailCount += wstate.ItemCount
+					addressWrote = true
 				} else {
 					panic("there should be a delta state")
 				}
 			}
 		}
 
-		if !objectApplied {
+		if !addressWrote {
 			if ApplyWState(statedb, addr, wstate) {
 				suicideAddr = append(suicideAddr, addr)
 			}
+			wroteDetailCount += wstate.ItemCount
 		}
-		//_, depHit := mixStatus.DepHitAddrMap[addr]
-		//if depHit {
-		//	if wobjects != nil {
-		//		wobj, ok := wobjects[addr]
-		//		if ok && wobj != nil {
-		//			statedb.ApplyStateObject(wobj)
-		//			wobjects[addr] = nil
-		//		} else if ApplyWState(statedb, addr, wstate) { // FIXME!!!
-		//			suicideAddr = append(suicideAddr, addr)
-		//		}
-		//	} else if ApplyWState(statedb, addr, wstate) {
-		//		suicideAddr = append(suicideAddr, addr)
-		//	}
-		//} else {
-		//	if mixStatus.MixHitType == cmptypes.AllDeltaHit || mixStatus.MixHitType == cmptypes.PartialDeltaHit {
-		//		wStateDelta, ok := WDeltas[addr]
-		//		if ok {
-		//			if ApplyWStateDelta(statedb, addr, wstate, wStateDelta) {
-		//				suicideAddr = append(suicideAddr, addr)
-		//			}
-		//		} else {
-		//			//if ApplyWState(statedb, addr, wstate) {
-		//			//	suicideAddr = append(suicideAddr, addr)
-		//			//}
-		//			panic("there should be a delta state")
-		//		}
-		//	} else if ApplyWState(statedb, addr, wstate) {
-		//		suicideAddr = append(suicideAddr, addr)
-		//	}
-		//}
+		writeDetailTotal += wstate.ItemCount
 	}
 
 	for _, addr := range suicideAddr {
@@ -387,6 +318,9 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 		}
 		statedb.Suicide(addr)
 	}
+	mixStatus.WriteDepCount = wroteObjCount
+	mixStatus.WriteDetailCount = wroteDetailCount
+	mixStatus.WriteDetailTotal = writeDetailTotal
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB, header *types.Header, abort func() bool,
@@ -404,9 +338,10 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			return nil, mixHitStatus, missNode, missValue, isAbort, false
 		}
 		if cmpReuseChecking {
-			if !CheckRChain(res.RWrecord, bc, header) {
+			if !CheckRChain(res.RWrecord, bc, header, false) {
 				if isBlockProcess { // TODO: debug code
 					log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
+					CheckRChain(res.RWrecord, bc, header, true)
 				}
 				br, _ := json.Marshal(res)
 				log.Warn("unmatch round ", "round", string(br))
@@ -483,10 +418,11 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 			return nil, isAbort, false
 		}
 		if cfg.MSRAVMSettings.CmpReuseChecking {
-			if !CheckRChain(res.RWrecord, bc, header) {
+			if !CheckRChain(res.RWrecord, bc, header, false) {
 				if isBlockProcess { // TODO: debug code
 					log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
 				}
+				CheckRChain(res.RWrecord, bc, header, true)
 				panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
 				return nil, isAbort, false
 			} else if !CheckRState(res.RWrecord, statedb, true, true) {
@@ -593,9 +529,9 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 			return nil, false, false
 		}
 		if cfg.MSRAVMSettings.CmpReuseChecking {
-			if !CheckRChain(res.RWrecord, bc, header) {
+			if !CheckRChain(res.RWrecord, bc, header, false) {
 				log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
-
+				CheckRChain(res.RWrecord, bc, header, true)
 				panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
 				return nil, isAbort, false
 			} else if !CheckRState(res.RWrecord, statedb, true, true) {
@@ -755,7 +691,7 @@ func (reuse *Cmpreuse) getValidRW(txPreplay *cache.TxPreplay, bc core.ChainConte
 		}
 		leastOne = true
 		cmpCnt++
-		if CheckRChain(rwrecord, bc, header) && CheckRState(rwrecord, statedb, false, true) {
+		if CheckRChain(rwrecord, bc, header, false) && CheckRState(rwrecord, statedb, false, true) {
 			// update the priority of the correct rwrecord simply
 			txPreplay.PreplayResults.RWrecords.Get(rawKey)
 			return rwrecord.Round, true, leastOne, isAbort, cmpCnt
@@ -788,7 +724,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixHitStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			isAbort, txResMap := sr.ApplyStores(txPreplay, abort)
+			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort)
 			if isAbort {
 				return
 			} else {
@@ -850,14 +786,16 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 }
 
 func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
-	header *types.Header, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tx *types.Transaction, blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (status *cmptypes.ReuseStatus,
-	round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
+	header *types.Header, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tx *types.Transaction,
+	blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (
+	status *cmptypes.ReuseStatus, round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
 
 	var ok, isAbort bool
 	var mixStatus *cmptypes.MixHitStatus
 	var missNode *cmptypes.PreplayResTrieNode
 	var missValue interface{}
 	var sr *TraceTrieSearchResult
+	status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Undefined}
 
 	var lockCount int
 	var tryHoldLock = func(mu *cmptypes.SimpleTryLock) (hold bool) {
@@ -881,9 +819,10 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 	if txPreplay == nil {
 		d0 = time.Since(t0)
-		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
+		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
+		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
 		return
-	}else {
+	} else {
 		if !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer {
 			if !txPreplay.PreplayResults.IsExternalTransfer {
 				if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
@@ -893,7 +832,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 						// force miss to run real apply if there is no trace
 						// otherwise if the result is hit, no trace will be created at all
 						d0 = time.Since(t0)
-						status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay} // no cache, quit compete
+						//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
+						status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
 						return
 					}
 				}
@@ -905,12 +845,18 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
 		txPreplay.PreplayResults.MixTreeMu.Unlock()
 
+		status.MixHitStatus = mixStatus
+
 		if ok {
 			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
+			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
+			status.BaseStatus = cmptypes.Hit
+			status.HitType = cmptypes.MixHit
 		} else if isAbort {
 			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
+			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
+			status.BaseStatus = cmptypes.Unknown
+			status.AbortStage = cmptypes.MixCheck
 			return
 		}
 	} else {
@@ -920,23 +866,35 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	traceTrieChecked := false
 
 	if isBlockProcess {
-		if status == nil {
+		if status.BaseStatus == cmptypes.Undefined {
 			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
 				traceTrieChecked = true
 				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking)
 				txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
+				if sr != nil {
+					status.TraceStatus = sr.TraceStatus
+				}
+
 				if sr != nil && sr.hit {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit, TraceHitStatus: sr.TraceHitStatus}
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit, TraceStatus: sr.TraceStatus}
+					status.BaseStatus = cmptypes.Hit
+					status.HitType = cmptypes.TraceHit
 					round = sr.GetAnyRound()
 				} else if sr != nil && sr.aborted {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
+					status.BaseStatus = cmptypes.Unknown
+					status.AbortStage = cmptypes.TraceCheck
 					return
 				} else if sr != nil {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.TraceMiss, MissNode: missNode, MissValue: missValue}
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.TraceMiss, MissNode: missNode, MissValue: missValue}
+					status.BaseStatus = cmptypes.Miss
+					status.MissType = cmptypes.TraceMiss
+					status.MissNode = missNode
+					status.MissValue = missValue
 					return
 				}
 			} else {
@@ -956,24 +914,28 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		// The delta reuse should be banned when preplaying, because:
 		//	1. Reusing delta would reduce variety of dep relations and reduce the hit rate of dep match
 		//	2. Delta reuse will be still helpful for blockprocessing
-		if status == nil {
+		if status.BaseStatus == cmptypes.Undefined {
 			if tryHoldLock(txPreplay.PreplayResults.DeltaTreeMu) {
 				round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
 				txPreplay.PreplayResults.DeltaTreeMu.Unlock()
 
 				if ok {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DeltaHit, MixHitStatus: mixStatus}
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DeltaHit, MixHitStatus: mixStatus}
+					status.BaseStatus = cmptypes.Hit
+					status.HitType = cmptypes.DeltaHit
 					// debug info
 					//rss, _ := json.Marshal(status)
 					//log.Info("reuse delta", "txhash", tx.Hash().Hex(), "status", string(rss))
 				} else if isAbort {
 					d0 = time.Since(t0)
-					status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.DeltaCheck} // abort before hit or miss
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.DeltaCheck} // abort before hit or miss
+					status.BaseStatus = cmptypes.Unknown
+					status.AbortStage = cmptypes.DeltaCheck
 					return
-				}else{
-					if false && txPreplay.PreplayResults.IsExternalTransfer{
-						log.Warn("zhongxin: delta miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!","txhash", txPreplay.TxHash.Hex())
+				} else {
+					if false && txPreplay.PreplayResults.IsExternalTransfer {
+						log.Warn("zhongxin: delta miss !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", "txhash", txPreplay.TxHash.Hex())
 					}
 				}
 			} else {
@@ -982,14 +944,16 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		}
 	}
 
-	if status == nil {
+	if status.BaseStatus == cmptypes.Undefined {
 		if tryHoldLock(txPreplay.PreplayResults.RWRecordTrieMu) {
 			round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
 			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
 			if ok {
 				d0 = time.Since(t0)
-				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit, MixHitStatus: mixStatus}
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit, MixHitStatus: mixStatus}
+				status.BaseStatus = cmptypes.Hit
+				status.HitType = cmptypes.TrieHit
 				// why trie hit instead of mixhit:
 				//       over matching dep leads to a wrong way; the round found by trie might miss all deps
 				if false && isBlockProcess {
@@ -1080,7 +1044,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				}
 			} else if isAbort {
 				d0 = time.Since(t0)
-				status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TrieCheck} // abort before hit or miss
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TrieCheck} // abort before hit or miss
+				status.BaseStatus = cmptypes.Unknown
+				status.AbortStage = cmptypes.TrieCheck
 				return
 			}
 		} else {
@@ -1088,22 +1054,28 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		}
 	}
 
-	if status == nil {
+	if status.BaseStatus == cmptypes.Undefined {
 		if isBlockProcess && lockCount == 4 {
 			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TxPreplayLock}
+			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TxPreplayLock}
+			status.BaseStatus = cmptypes.Unknown
+			status.AbortStage = cmptypes.TxPreplayLock
 			return
 		} else {
 			// for debug purpose
 			if isBlockProcess && false {
-					log.Info("NoMatchMiss", "tx", tx.Hash().Hex(), "gasLimit", tx.Gas(), "mix", txPreplay.PreplayResults.MixTree.LeafCount,
-						"traceExist", txPreplay.PreplayResults.TraceTrie != nil, "traceChecked", traceTrieChecked,
-						"delta", txPreplay.PreplayResults.DeltaTree.LeafCount,
-						"detail", txPreplay.PreplayResults.RWRecordTrie.LeafCount,
-						"external", txPreplay.PreplayResults.IsExternalTransfer)
+				log.Info("NoMatchMiss", "tx", tx.Hash().Hex(), "gasLimit", tx.Gas(), "mix", txPreplay.PreplayResults.MixTree.RoundCount,
+					"traceExist", txPreplay.PreplayResults.TraceTrie != nil, "traceChecked", traceTrieChecked,
+					"delta", txPreplay.PreplayResults.DeltaTree.RoundCount,
+					"detail", txPreplay.PreplayResults.RWRecordTrie.RoundCount,
+					"external", txPreplay.PreplayResults.IsExternalTransfer)
 			}
 			d0 = time.Since(t0)
-			status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss, MissNode: missNode, MissValue: missValue}
+			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.NoMatchMiss, MissNode: missNode, MissValue: missValue}
+			status.BaseStatus = cmptypes.Miss
+			status.MissType = cmptypes.NoMatchMiss
+			status.MissNode = missNode
+			status.MissValue = missValue
 			return
 		}
 	}
@@ -1113,9 +1085,14 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	}
 
 	if err := gp.SubGas(round.Receipt.GasUsed); err != nil {
-		status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail} // fail for gas limit reach, quit compete
+		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Fail} // fail for gas limit reach, quit compete
+		status.BaseStatus = cmptypes.Fail
 		return
 	}
+
+	t1 := time.Now()
+	reuse.setStateDB(bc, author, statedb, header, tx, txPreplay, round, status, isBlockProcess, cfg, sr, abort)
+	d1 = time.Since(t1)
 
 	if isBlockProcess && cfg.MSRAVMSettings.CmpReuseChecking {
 		sjs, _ := json.Marshal(status)
@@ -1123,8 +1100,5 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		log.Info("status", "tx", tx.Hash().Hex(), "status", string(sjs))
 	}
 
-	t1 := time.Now()
-	reuse.setStateDB(bc, author, statedb, header, tx, txPreplay, round, status, isBlockProcess, cfg, sr, abort)
-	d1 = time.Since(t1)
 	return
 }

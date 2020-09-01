@@ -392,7 +392,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 						reuseStr += "-" + reuseStatus.MixHitStatus.MixHitType.String()
 					}
 					if reuseStatus.HitType == cmptypes.TraceHit {
-						reuseStr += "-" + reuseStatus.TraceHitStatus.String()
+						reuseStr += "-" + reuseStatus.TraceStatus.GetPerfString()
 					}
 				}
 				txHash := tx.Hash().Hex()
@@ -559,7 +559,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 						statusStr += "-" + status.MixHitStatus.MixHitType.String()
 					}
 					if status.HitType == cmptypes.TraceHit {
-						statusStr += "-" + status.TraceHitStatus.String()
+						statusStr += "-" + status.TraceStatus.GetPerfString()
 					}
 				}
 				context = append(context, "status", statusStr)

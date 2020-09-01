@@ -391,7 +391,7 @@ func (rt *ReuseTracer) VarWithName(val interface{}, name string) *Variable {
 }
 
 func (rt *ReuseTracer) NewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {
-	return NewStatement(f, rt.DebugFlag, outputVar, inputVars...)
+	return NewStatement(f, uint64(rt.opCount), rt.DebugFlag, outputVar, inputVars...)
 }
 
 func (rt *ReuseTracer) AppendNewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {

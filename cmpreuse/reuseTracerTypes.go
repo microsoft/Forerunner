@@ -871,15 +871,17 @@ type Statement struct {
 	output     *Variable
 	inputs     []*Variable
 	op         *OpDef
+	opSeq      uint64 // starting from 1
 	Reverted   bool
 	DebugStats *DebugStatsForStatement
 }
 
-func NewStatement(op *OpDef, debug bool, outVar *Variable, inVars ...*Variable) *Statement {
+func NewStatement(op *OpDef, opSeq uint64, debug bool, outVar *Variable, inVars ...*Variable) *Statement {
 	s := &Statement{
 		output: outVar,
 		inputs: inVars,
 		op:     op,
+		opSeq: opSeq,
 	}
 	if debug {
 		s.DebugStats = &DebugStatsForStatement{

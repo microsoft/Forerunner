@@ -38,22 +38,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit // 6
+	GasLimit  // 6
 
 	//PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance          //7
-	Nonce            //8
-	CodeHash         //9
-	Exist            // 10
-	Empty            // 11
-	Code             // 12
-	Storage          // 13
-	CommittedStorage //14
+	Balance           //7
+	Nonce             //8
+	CodeHash          //9
+	Exist             // 10
+	Empty             // 11
+	Code              // 12
+	Storage           // 13
+	CommittedStorage  //14
 
 	// Dep info
-	Dependence //15
+	Dependence  //15
 
 	// Write State
 	DirtyStorage
@@ -112,7 +112,7 @@ type ReuseStatus struct {
 	HitType           HitType
 	MissType          MissType
 	MixHitStatus      *MixHitStatus
-	TraceHitStatus    *TraceHitStatus
+	TraceStatus       *TraceStatus
 	MissNode          *PreplayResTrieNode
 	MissValue         interface{} // to reduce the cost of converting interfaces, mute the miss Value
 	AbortStage        AbortStage
@@ -124,11 +124,30 @@ type MixHitStatus struct {
 	DepHitAddr         []common.Address
 	DepHitAddrMap      map[common.Address]interface{}
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
+	HitDepNodeCount    int
+	UnhitDepNodeCount  int
+	DetailCheckedCount int // detail(include chain field) count
+	BasicDetailCount   int
+	WriteDepCount      int
+	WriteDetailCount   int
+	WriteDetailTotal   int
 }
 
-type TraceHitStatus struct {
-	TotalNodes    uint64
-	ExecutedNodes uint64
+type TraceStatus struct {
+	TotalNodes                 uint64
+	ExecutedNodes              uint64
+	ExecutedInputNodes         uint64
+	ExecutedChainInputNodes    uint64
+	ExecutedOutputNodes        uint64
+	TotalOpNodes               uint64 // number of original EVM dynamic op
+	AccountReadCount           uint64
+	AccountReadFailedCount     uint64
+	FieldActualReadCount       uint64
+	FieldPotentialReadCount    uint64
+	AccountWrittenCount        uint64
+	FieldActualWrittenCount    uint64
+	FieldPotentialWrittenCount uint64
+
 	TotalJumps    uint64
 	AJumps        uint64
 	FJumps        uint64
@@ -137,9 +156,12 @@ type TraceHitStatus struct {
 	FailedJumps   uint64
 }
 
-func (th *TraceHitStatus) String() string {
-	return fmt.Sprintf("E/N: %v %v F/J: %v %v K: %v A/F/O: %v %v %v",
-		th.ExecutedNodes, th.TotalNodes, th.FailedJumps, th.TotalJumps, th.TotalJumpKeys,
+func (th *TraceStatus) GetPerfString() string {
+	return fmt.Sprintf("eN %v tN %v pN %v iN %v oN %v cN %v fAR %v fPR %v aR %v aRF %v fAW %v fPW %v aW %v faJ %v tJ %v tK %v aJ %v fiJ %v OJ %v",
+		th.ExecutedNodes, th.TotalNodes, th.TotalOpNodes, th.ExecutedInputNodes, th.ExecutedOutputNodes, th.ExecutedChainInputNodes,
+		th.FieldActualReadCount, th.FieldPotentialReadCount, th.AccountReadCount, th.AccountReadFailedCount,
+		th.FieldActualWrittenCount, th.FieldPotentialWrittenCount, th.AccountWrittenCount,
+		th.FailedJumps, th.TotalJumps, th.TotalJumpKeys,
 		th.AJumps, th.FJumps, th.OJumps)
 }
 
@@ -180,6 +202,10 @@ func (s ReuseBaseStatus) String() string {
 		return "Miss"
 	case Unknown:
 		return "Unknown"
+	case Undefined:
+		return "Undefined"
+	default:
+		panic("")
 	}
 	return ""
 }
@@ -190,6 +216,7 @@ const (
 	Hit
 	Miss
 	Unknown
+	Undefined
 )
 
 type HitType int
@@ -223,9 +250,9 @@ type MixHitType int
 const (
 	AllDepHit MixHitType = iota
 	AllDetailHit
-	PartialHit // partial dep and partial detail hit
+	PartialHit  // partial dep and partial detail hit
 	AllDeltaHit
-	PartialDeltaHit // partial dep and partial delta hit
+	PartialDeltaHit  // partial dep and partial delta hit
 	NotMixHit
 )
 
@@ -243,6 +270,8 @@ func (m MixHitType) String() string {
 		return "PartialDelta"
 	case NotMixHit:
 		return "NotMix"
+	default:
+		panic(fmt.Sprintf("Unknown MixHitType %v", m))
 	}
 	return ""
 }
@@ -253,6 +282,17 @@ const (
 	TraceMiss MissType = iota
 	NoMatchMiss
 )
+
+func (m MissType) String() string{
+	switch m {
+	case TraceMiss:
+		return "TraceMiss"
+	case NoMatchMiss:
+		return "NoMatchMiss"
+	default:
+		panic("")
+	}
+}
 
 type AbortStage int
 
@@ -679,18 +719,41 @@ type PreplayResTrieRoundNodes struct {
 }
 
 type PreplayResTrieNode struct {
-	Value       interface{}         `json:"value"` // this value is the key in its parent
-	Children    IChildren           //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
-	NodeType    *AddrLocation       `json:"node_type"`
-	DetailChild *PreplayResTrieNode `json:"detail_child"`
-	Parent      *PreplayResTrieNode
-	IsLeaf      bool `json:"is_leaf"`
-	Round       IRound
-
-	//SRefCount // RefCount in PreplayResTrieNode means the number of children nodes (including DetailChild)
+	Value        interface{} `json:"value"` // this value is the key in its parent
+	Children     IChildren                  //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+	NodeType     *AddrLocation       `json:"node_type"`
+	DetailChild  *PreplayResTrieNode `json:"detail_child"`
+	Parent       *PreplayResTrieNode
+	IsLeaf       bool `json:"is_leaf"`
+	LeafRefCount int
+	Round        IRound
+	RSeqIndex    int // for detail node (which is not dependence node) in mix tree,  ReqIndex means the position of this read AddrLocVal in the origin read detail sequence
 }
 
-func (p *PreplayResTrieNode) GetChildrenCount() uint {
+func (p *PreplayResTrieNode) MarshalJSON() ([]byte, error) {
+	node := struct {
+		Value       interface{}         `json:"value"`    // this value is the key in its parent
+		Children    IChildren           `json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+		NodeType    *AddrLocation       `json:"node_type"`
+		DetailChild *PreplayResTrieNode `json:"detail_child"`
+		IsLeaf      bool                `json:"is_leaf"`
+		RSeqIndex   int
+	}{
+		Value:       p.Value,
+		Children:    p.Children,
+		NodeType:    p.NodeType,
+		DetailChild: p.DetailChild,
+		IsLeaf:      p.IsLeaf,
+		RSeqIndex:   p.RSeqIndex,
+	}
+	return json.Marshal(node)
+}
+
+func (p *PreplayResTrieNode) IsDepNode() bool {
+	return p.NodeType.Field == Dependence
+}
+
+func (p *PreplayResTrieNode) GetChildrenCount() int {
 	res := 0
 	if p.Children != nil {
 		res += p.Children.Size()
@@ -698,10 +761,9 @@ func (p *PreplayResTrieNode) GetChildrenCount() uint {
 	if p.DetailChild != nil {
 		res++
 	}
-	return uint(res)
+	return res
 }
 
-// this function is useless
 func (p *PreplayResTrieNode) removeSelf() (removed int) {
 	MyAssert(p.GetChildrenCount() == 0)
 	removed = 1
@@ -712,6 +774,7 @@ func (p *PreplayResTrieNode) removeSelf() (removed int) {
 			// this is a detailChild
 			MyAssert(p == p.Parent.DetailChild)
 			p.Parent.DetailChild = nil
+			p.Parent.RSeqIndex = p.RSeqIndex
 		} else {
 			parent2child, ok := p.Parent.Children.GetChild(p.Value)
 			MyAssert(ok)
@@ -724,13 +787,16 @@ func (p *PreplayResTrieNode) removeSelf() (removed int) {
 }
 
 func (p *PreplayResTrieNode) RemoveRecursivelyIfNoChildren(value interface{}) (removed int) {
-	refCount := p.GetChildrenCount()
-
+	var refCount int
 	if p.IsLeaf {
-		roundId := value.(uint64)
-		MyAssert(roundId == p.Round.GetRoundId())
-		MyAssert(refCount == 0)
-		p.Round = nil
+		MyAssert(p.LeafRefCount > 0)
+		p.LeafRefCount -= 1
+		if p.LeafRefCount == 0 {
+			p.Round = nil
+		}
+		refCount = p.LeafRefCount
+	} else {
+		refCount = p.GetChildrenCount()
 	}
 
 	if refCount == 0 {
@@ -742,7 +808,7 @@ func (p *PreplayResTrieNode) RemoveRecursivelyIfNoChildren(value interface{}) (r
 type PreplayResTrie struct {
 	Root              *PreplayResTrieNode
 	LatestBN          uint64
-	LeafCount         uint64 // rwset cound for detail trie. round count for dep tree and mix tree
+	RoundCount        uint64 // rwset cound for detail trie. round count for dep tree and mix tree
 	RoundIds          map[uint64]bool
 	RoundRefNodesHead *PreplayResTrieRoundNodes
 	RoundRefNodesTail *PreplayResTrieRoundNodes
@@ -795,14 +861,13 @@ func (tt *PreplayResTrie) GetActiveIRounds() []IRound {
 func (rr *PreplayResTrie) GCRoundNodes() int64 {
 	MyAssert(rr.RoundRefNodesHead != nil && rr.RoundRefNodesTail != nil)
 	totalRemoved := int64(0)
-	if rr.RoundRefCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+	if rr.RoundRefCount >= uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
 
-		for i := 0; i < 1; i++ {
-			head := rr.RoundRefNodesHead
-			totalRemoved += rr.RemoveRoundNodes(head)
+		head := rr.RoundRefNodesHead
+		totalRemoved += rr.RemoveRoundNodes(head)
 
-			rr.RoundRefNodesHead = head.Next
-		}
+		rr.RoundRefNodesHead = head.Next
+
 	}
 	return totalRemoved
 }
@@ -828,16 +893,16 @@ func (p *PreplayResTrie) AddExistedRound(blockNumber uint64) {
 func NewPreplayResTrie() *PreplayResTrie {
 	rootNode := &PreplayResTrieNode{}
 	return &PreplayResTrie{
-		Root:      rootNode,
-		LatestBN:  0,
-		LeafCount: 0,
+		Root:       rootNode,
+		LatestBN:   0,
+		RoundCount: 0,
 	}
 }
 
 //func (t *PreplayResTrie) Clear() {
 //	t.Root = &PreplayResTrieNode{}
 //	t.LatestBN = 0
-//	t.LeafCount = 0
+//	t.RoundCount = 0
 //}
 
 //// used for dep tree and mix tree
@@ -858,4 +923,3 @@ func NewPreplayResTrie() *PreplayResTrie {
 //	}
 //
 //}
-

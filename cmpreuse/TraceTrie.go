@@ -104,7 +104,7 @@ func (st *STrace) ShallowCopyAndExtendTrace() *STrace {
 		cmptypes.MyAssert(st.DebugBuffer != nil)
 		buffer := NewDebugBuffer(st.DebugBuffer)
 		nt.DebugBuffer = buffer
-		nt.debugOut = func(fmtStr string, args... interface{}) {
+		nt.debugOut = func(fmtStr string, args ...interface{}) {
 			buffer.AppendLog(fmtStr, args...)
 		}
 	}
@@ -441,7 +441,7 @@ func (st *STrace) CalculateInputDependencies() {
 
 			//fDeps := MergeInputDependencies(inputFieldDependency, InputDependence{fieldIndex})
 			variableInputFieldDependencies[vid] = InputDependence{fieldIndex} //fDeps // load/read output depend on itself
-			sNodeInputFieldDependencies[nodeIndex] = inputFieldDependency //fDeps
+			sNodeInputFieldDependencies[nodeIndex] = inputFieldDependency     //fDeps
 
 			aDeps := MergeInputDependencies(inputAccountDependency, InputDependence{aIndex})
 			variableInputAccountDependencies[vid] = aDeps    //MergeInputDependencies(inputAccountDependency, InputDependence{aIndex})
@@ -1393,6 +1393,7 @@ func AssertUArrayEqual(indices []uint, indices2 []uint) {
 
 type SNode struct {
 	Op                                     *OpDef
+	OpSeq                                  uint64
 	InputVals                              []interface{}
 	InputRegisterIndices                   []uint
 	OutputRegisterIndex                    uint
@@ -1429,6 +1430,7 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	registerMapping := st.RAlloc
 	n := &SNode{
 		Op:                             s.op,
+		OpSeq:                          s.opSeq,
 		InputVals:                      make([]interface{}, len(s.inputs)),
 		InputRegisterIndices:           make([]uint, len(s.inputs)),
 		Statement:                      s,
@@ -1438,6 +1440,10 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 		Seq:                            nodeIndex,
 		Prev:                           prev,
 		PrevGuardKey:                   prevGuardKey,
+	}
+
+	if prev != nil && prev.OpSeq > n.OpSeq { // transformations might reorder statements
+		n.OpSeq = prev.OpSeq
 	}
 
 	if !DEBUG_TRACER {
@@ -1548,7 +1554,7 @@ func (n *SNode) GetInputVal(index uint, registers *RegisterFile) interface{} {
 	rid := n.InputRegisterIndices[index]
 	if rid == 0 {
 		return n.InputVals[index]
-	}else{
+	} else {
 		return registers.Get(rid)
 	}
 }
@@ -2108,14 +2114,7 @@ type TraceTrieSearchResult struct {
 	accountLaneRounds            []*cache.PreplayResult
 	storeInfo                    *StoreInfo
 	accountIndexToAppliedWObject map[uint]bool
-	TotalJumps                   uint64
-	FailedJumps                  uint64
-	AJumps                       uint64
-	FJumps                       uint64
-	OJumps                       uint64
-	TotalJumpKeys                uint64
-	ExecutedNodes                uint64
-	TraceHitStatus               *cmptypes.TraceHitStatus
+	TraceStatus                  *cmptypes.TraceStatus
 }
 
 func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
@@ -2130,14 +2129,17 @@ func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	return nil
 }
 
-func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, abort func() bool) (bool, cmptypes.TxResIDMap) {
+func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool) (bool, cmptypes.TxResIDMap) {
 	cmptypes.MyAssert(r.Node.Op.isStoreOp)
 	resMap := r.applyWObjects(txPreplay)
+	traceStatus.AccountWrittenCount = uint64(len(r.accountIndexToAppliedWObject))
 	for n := r.Node; !n.Op.IsVirtual(); n = n.Next {
 		if abort != nil && abort() {
 			return true, nil
 		}
 		if !n.Op.IsLog() {
+			traceStatus.TotalNodes++ // we do not count Log nodes as writes
+			traceStatus.FieldPotentialWrittenCount++
 			aIndex := r.storeInfo.StoreNodeIndexToAccountIndex[n.Seq]
 			cmptypes.MyAssert(aIndex > 0)
 			if r.accountIndexToAppliedWObject[aIndex] {
@@ -2147,6 +2149,9 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, abort fu
 				}
 				continue
 			}
+			traceStatus.ExecutedOutputNodes++
+			traceStatus.FieldActualWrittenCount++
+			traceStatus.ExecutedNodes++
 		}
 		if r.debugOut != nil {
 			r.debugOut("ApplyStore: %v", n.SimpleNameString())
@@ -2265,19 +2270,6 @@ func (r *TraceTrieSearchResult) getMatchedRounds(si uint, rounds []*cache.Prepla
 	return rounds
 }
 
-func NewTraceHitStatusFromSearchResult(sr *TraceTrieSearchResult) *cmptypes.TraceHitStatus {
-	return &cmptypes.TraceHitStatus{
-		TotalNodes:    uint64(sr.Node.Seq) + 1,
-		ExecutedNodes: sr.ExecutedNodes,
-		TotalJumps:    sr.TotalJumps,
-		AJumps:        sr.AJumps,
-		FJumps:        sr.FJumps,
-		OJumps:        sr.OJumps,
-		TotalJumpKeys: sr.TotalJumpKeys,
-		FailedJumps:   sr.FailedJumps,
-	}
-}
-
 func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
 	precompiles map[common.Address]vm.PrecompiledContract, abort func() bool, debug bool, globalCache *cache.GlobalCache) (result *TraceTrieSearchResult) {
 
@@ -2285,10 +2277,40 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 	debugOut, fOut, env, registers, fieldHistory, accountHistory := tt.initSearch(db, header, getHashFunc, precompiles, globalCache, debug)
 
 	var accountLaneRounds []*cache.PreplayResult
-	var totalJumps, failedJumps, aJumps, fJumps, oJumps, totalJumpKeys, executedNodes uint64
+	var (
+		traceStatus             = &cmptypes.TraceStatus{}
+		totalJumps              = &traceStatus.TotalJumps
+		failedJumps             = &traceStatus.FailedJumps
+		aJumps                  = &traceStatus.AJumps
+		fJumps                  = &traceStatus.FJumps
+		oJumps                  = &traceStatus.OJumps
+		totalJumpKeys           = &traceStatus.TotalJumpKeys
+		executedNodes           = &traceStatus.ExecutedNodes
+		executedInputNodes      = &traceStatus.ExecutedInputNodes
+		executedChainInputNodes = &traceStatus.ExecutedChainInputNodes
+		accountReadCount        = &traceStatus.AccountReadCount
+		accountReadFailedCount  = &traceStatus.AccountReadFailedCount
+		fieldActualReadCount    = &traceStatus.FieldActualReadCount
+	)
+
 	var hit, aborted bool
 
 	defer func() {
+		var fieldPotentialReadCount uint64
+		if node.IsRLNode {
+			if hit { // hit should be on store op
+				cmptypes.MyAssert(false)
+			}
+			fieldPotentialReadCount = uint64(node.FieldIndex) // FieldIndex starts from 1
+		} else {
+			if node.BeforeFieldHistorySize <= 1 {
+				cmptypes.MyAssert(false)
+			}
+			fieldPotentialReadCount = uint64(node.BeforeFieldHistorySize) - 1
+		}
+		traceStatus.FieldPotentialReadCount = fieldPotentialReadCount
+		traceStatus.TotalNodes = uint64(node.Seq)
+		traceStatus.TotalOpNodes = node.OpSeq
 		result = &TraceTrieSearchResult{
 			Node:              node,
 			hit:               hit,
@@ -2301,16 +2323,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			storeInfo:         node.roundResults,
 			accountLaneRounds: accountLaneRounds,
 			aborted:           aborted,
-			TotalJumps:        totalJumps,
-			FailedJumps:       failedJumps,
-			AJumps:            aJumps,
-			FJumps:            fJumps,
-			OJumps:            oJumps,
-			TotalJumpKeys:     totalJumpKeys,
-			ExecutedNodes:     executedNodes,
-		}
-		if hit {
-			result.TraceHitStatus = NewTraceHitStatusFromSearchResult(result)
+			TraceStatus:       traceStatus,
 		}
 	}()
 
@@ -2323,7 +2336,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	node, fNode, accountLaneRounds, aborted, hit = tt.searchAccountLane(tt.AccountHead,
 		env, registers, accountHistory, fieldHistory,
-		&totalJumps, &totalJumpKeys, &failedJumps, &aJumps,
+		totalJumps, totalJumpKeys, failedJumps, aJumps,
+		executedNodes, executedInputNodes, executedChainInputNodes,
+		accountReadCount, accountReadFailedCount, fieldActualReadCount,
 		debug, debugOut,
 		abort)
 
@@ -2333,7 +2348,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	fNode, node, aborted, hit = tt.searchFieldLane(fNode, node,
 		env, registers, accountHistory, fieldHistory,
-		&totalJumps, &totalJumpKeys, &failedJumps, &fJumps,
+		totalJumps, totalJumpKeys, failedJumps, fJumps,
+		executedNodes, executedInputNodes, executedChainInputNodes,
+		accountReadCount, accountReadFailedCount, fieldActualReadCount,
 		debug, debugOut, abort)
 
 	if aborted || hit {
@@ -2348,15 +2365,19 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	node, aborted, hit = tt.searchOpLane(node,
 		env, accountHistory, fieldHistory, registers,
-		&totalJumps, &totalJumpKeys, &failedJumps, &executedNodes, &oJumps,
+		totalJumps, totalJumpKeys, failedJumps, oJumps,
+		executedNodes, executedInputNodes, executedChainInputNodes,
+		accountReadCount, accountReadFailedCount, fieldActualReadCount,
 		debug, debugOut, abort)
 	return
 }
 
 func (tt *TraceTrie) searchOpLane(nStart *SNode,
 	env *ExecEnv, accountHistory *RegisterFile, fieldHistory *RegisterFile, registers *RegisterFile,
-	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, executedNodes *uint64, oJumps *uint64,
-    debug bool, debugOut func(fmtStr string, params ...interface{}), abort func() bool) (node *SNode, aborted, hit bool) {
+	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, oJumps *uint64,
+	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
+	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
+	debug bool, debugOut func(fmtStr string, params ...interface{}), abort func() bool) (node *SNode, aborted, hit bool) {
 
 	node = nStart
 	for {
@@ -2366,6 +2387,7 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 		}
 		jHead := node.JumpHead
 		beforeJumpNode := node
+
 		if jHead != nil {
 			aCheckCount := 0
 			fCheckCount := 0
@@ -2391,15 +2413,29 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 			}
 			var fVal interface{}
 			if node.IsANode {
-				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
+				aVId, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
 				if debug {
 					cmptypes.MyAssert(newAccount)
 				}
+				if newAccount {
+					if node.Op.isLoadOp {
+						*accountReadCount++
+						if aVId == 0 {
+							*accountReadFailedCount++
+						}
+					}
+				}
 			}
+
+			*executedNodes++
 			if node.IsRLNode {
 				_, fVal = node.LoadFieldValueID(env, registers, fieldHistory)
+				*executedInputNodes++
+				*fieldActualReadCount++
+				if node.Op.isReadOp {
+					*executedChainInputNodes++
+				}
 			} else {
-				*executedNodes++
 				fVal = node.Execute(env, registers)
 			}
 
@@ -2474,6 +2510,8 @@ func (tt *TraceTrie) initSearch(db *state.StateDB, header *types.Header, getHash
 func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
 	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, fJumps *uint64,
+	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
+	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
 	abort func() bool) (fNode *FieldSearchTrieNode, node *SNode, aborted, ok bool) {
 
@@ -2495,15 +2533,27 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 		}
 
 		beforeNode := node
+
+		//if node != nStart {
+		//	*executedNodes++
+		//	*executedInputNodes++
+		//}
+
 		if fNode.LRNode.Op.isLoadOp {
 			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
 			if !node.IsANode {
 				cmptypes.MyAssert(!newAccount)
 			}
+			if newAccount {
+				*accountReadCount++
+			}
 			jd := fNode.GetAJumpDef(aVId)
 			*totalJumps++
 			*totalJumpKeys++
 			if jd == nil {
+				if newAccount {
+					*accountReadFailedCount++
+				}
 				*failedJumps++
 				if debugOut != nil {
 					debugOut("  FieldLane AJump Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
@@ -2544,6 +2594,14 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 			var fVal interface{}
 			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
 			jd := fNode.GetFJumpDef(fVId)
+			if !(node == nStart && node.Op.isReadOp) { // if nStart is ReadOp, it is already counted in AccountLane
+				*executedNodes++
+				*executedInputNodes++
+				if node.Op.isReadOp {
+					*executedChainInputNodes++
+				}
+			}
+			*fieldActualReadCount++
 			*totalJumps++
 			*totalJumpKeys++
 			if jd == nil {
@@ -2591,6 +2649,8 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
 	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, aJumps *uint64,
+	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
+	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
 	abort func() bool) (node *SNode, fNode *FieldSearchTrieNode, accountLaneRounds []*cache.PreplayResult, aborted bool, ok bool) {
 	node = aNode.LRNode
@@ -2600,6 +2660,16 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 			break
 		}
 		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
+		if newAccount {
+			if aNode.LRNode.Op.isReadOp {
+				*executedNodes++
+				*executedInputNodes++
+				*executedChainInputNodes++
+				*fieldActualReadCount++ // for reading chain head fields
+			} else {
+				*accountReadCount++
+			}
+		}
 		if debug {
 			cmptypes.MyAssert(newAccount)
 		}
@@ -2608,6 +2678,9 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 		*totalJumpKeys++
 		if jd == nil {
 			*failedJumps++
+			if newAccount && aNode.LRNode.Op.isLoadOp {
+				*accountReadFailedCount++
+			}
 			if debugOut != nil {
 				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 			}
@@ -3379,7 +3452,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					jd = firstExist
 				}
 
-//				fDeps := node.FieldDependenciesExcludingSelfAccount
+				//				fDeps := node.FieldDependenciesExcludingSelfAccount
 				fDeps := node.FieldDependencies
 
 				for i := 0; i < len(fDeps); i += OP_JUMP_KEY_SIZE {
@@ -3458,7 +3531,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 						jd.FieldHistorySegment.AssertEqual(j.fieldHistroy.Slice(node.FieldIndex, node.FieldIndex+1))
 					}
 				}
-			}else {
+			} else {
 				cmptypes.MyAssert(len(node.FieldDependenciesExcludingSelfAccount) == 0)
 			}
 		}

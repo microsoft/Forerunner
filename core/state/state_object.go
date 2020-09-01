@@ -76,6 +76,7 @@ type ObjectHolder struct {
 	Obj   *stateObject
 	ObjID uintptr
 }
+
 type ObjectHolderList []*ObjectHolder
 
 func NewObjectHolder(obj *stateObject, objID uintptr) *ObjectHolder {

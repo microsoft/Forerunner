@@ -31,6 +31,7 @@ type WriteState struct {
 	Code         *Code    `json:",omitempty"`
 	DirtyStorage Storage  `json:",omitempty"`
 	Suicided     *bool    `json:",omitempty"`
+	ItemCount    int
 }
 
 type ReadStates map[common.Address]*ReadState
@@ -449,11 +450,20 @@ func (h *rwRecorderImpl) updateWField(addr common.Address, field cmptypes.Field,
 	state := h.WState[addr]
 	switch field {
 	case cmptypes.Balance:
+		if state.Balance == nil{
+			state.ItemCount += 1
+		}
 		state.Balance = val.(*big.Int)
 	case cmptypes.Nonce:
+		if state.Nonce == nil{
+			state.ItemCount += 1
+		}
 		nonce := val.(uint64)
 		state.Nonce = &nonce
 	case cmptypes.Code:
+		if state.Code == nil{
+			state.ItemCount += 1
+		}
 		code := val.(Code)
 		state.Code = &code
 	case cmptypes.Suicided:
@@ -468,6 +478,9 @@ func (h *rwRecorderImpl) updateWStorage(addr common.Address, key common.Hash, va
 	}
 	if h.WState[addr].DirtyStorage == nil {
 		h.WState[addr].DirtyStorage = make(Storage)
+	}
+	if _, ok := h.WState[addr].DirtyStorage[key]; !ok{
+		h.WState[addr].ItemCount +=1
 	}
 	h.WState[addr].DirtyStorage[key] = val
 }

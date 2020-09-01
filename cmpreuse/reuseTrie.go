@@ -20,7 +20,7 @@ const (
 // only external transfer tx can call this function
 func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blockNumber uint64) error {
 
-	if trie.LeafCount > 0 {
+	if trie.RoundCount > 0 {
 		// each tx only have one kind of result now.
 		return nil
 	}
@@ -41,7 +41,7 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 					},
 					Value: true,
 				}
-				currentNode, _, err = insertNode(currentNode, adv)
+				currentNode, _, err = insertNode(currentNode, adv, 0)
 				if err != nil {
 					return err
 				}
@@ -49,7 +49,7 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 				cmptypes.MyAssert(index == 3)
 			}
 		} else {
-			currentNode, _, err = insertNode(currentNode, addrFieldValue)
+			currentNode, _, err = insertNode(currentNode, addrFieldValue, -1)
 			if err != nil {
 				return err
 			}
@@ -58,6 +58,7 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 	if currentNode.IsLeaf {
 	} else {
 		currentNode.IsLeaf = true
+		currentNode.LeafRefCount = 1
 		//
 		//// set delta
 		//record.WStateDelta = make(map[common.Address]*cache.WStateDelta)
@@ -71,7 +72,7 @@ func InsertDelta(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *ca
 		//}
 
 		currentNode.Round = round
-		trie.LeafCount += 1
+		trie.RoundCount += 1
 	}
 	return nil
 }
@@ -80,12 +81,12 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 
 	//if blockNumber > trie.LatestBN {
 	//	trie.LatestBN = blockNumber
-	//	if trie.LeafCount > TreeCleanThreshold {
+	//	if trie.RoundCount > TreeCleanThreshold {
 	//		trie.Clear()
 	//	}
 	//}
 	//
-	//if trie.LeafCount > MaxTreeCleanThreshold {
+	//if trie.RoundCount > MaxTreeCleanThreshold {
 	//	trie.Clear()
 	//}
 
@@ -96,7 +97,7 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	seqRecord := record.ReadDetail.ReadDetailSeq
 	var err error
 	for _, addrFieldValue := range seqRecord {
-		currentNode, isNew, err = insertNode(currentNode, addrFieldValue)
+		currentNode, isNew, err = insertNode(currentNode, addrFieldValue, -1)
 		if err != nil {
 			return err
 		}
@@ -112,8 +113,9 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 		//}
 	} else {
 		currentNode.IsLeaf = true
+		currentNode.LeafRefCount = 1
 		currentNode.Round = round
-		trie.LeafCount += 1
+		trie.RoundCount += 1
 		newLeaves := make([]*cmptypes.PreplayResTrieNode, 1)
 		newLeaves[0] = currentNode
 		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
@@ -133,7 +135,7 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) err
 	isNew := false
 	var err error
 	for _, readDep := range round.ReadDepSeq {
-		currentNode, isNew, err = insertNode(currentNode, readDep)
+		currentNode, isNew, err = insertNode(currentNode, readDep, -1)
 		if err != nil {
 			return err
 		}
@@ -199,8 +201,9 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) err
 		//}
 	} else {
 		currentNode.IsLeaf = true
+		currentNode.LeafRefCount = 1
 		currentNode.Round = round
-		trie.LeafCount += 1
+		trie.RoundCount += 1
 		newLeaves := make([]*cmptypes.PreplayResTrieNode, 1)
 		newLeaves[0] = currentNode
 		trie.TrackRoundNodes(newLeaves, newNodeCount, round)
@@ -212,20 +215,9 @@ func InsertAccDep(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult) err
 const FixedDepCheckCount = 4
 
 func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, isExternalTransfer bool) error {
-	var newLeaves []*cmptypes.PreplayResTrieNode
-	newLeavesPtr := &newLeaves
+	var leaves []*cmptypes.PreplayResTrieNode
+	leavesPtr := &leaves
 	newNodeCount := new(uint)
-
-	//if blockNumber > trie.LatestBN {
-	//	trie.LatestBN = blockNumber
-	//	if trie.LeafCount > TreeCleanThreshold {
-	//		trie.Clear()
-	//	}
-	//}
-	//
-	//if trie.LeafCount > MaxTreeCleanThreshold {
-	//	trie.Clear()
-	//}
 
 	currentNode := trie.Root
 
@@ -233,30 +225,30 @@ func InsertMixTree(tx *types.Transaction, trie *cmptypes.PreplayResTrie, round *
 	depCheckedAddr := make(map[common.Address]bool)
 	checkedButNoHit := 0
 
-	err := insertDep2MixTree(currentNode, 0, 0, hitDep, depCheckedAddr, checkedButNoHit, newLeavesPtr, newNodeCount, round, tx, isExternalTransfer)
+	err := insertDep2MixTree(currentNode, 0, 0, hitDep, depCheckedAddr, checkedButNoHit, leavesPtr, newNodeCount, round, tx, isExternalTransfer)
 	if err != nil {
 		return err
 	}
-	trie.LeafCount += 1
+	trie.RoundCount += 1
 
-	trie.TrackRoundNodes(*newLeavesPtr, *newNodeCount, round)
+	trie.TrackRoundNodes(*leavesPtr, *newNodeCount, round)
 	return nil
 }
 
 func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex int, detailDeqIndex int,
 	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int,
-	newLeaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) error {
+	leaves *[]*cmptypes.PreplayResTrieNode, newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) error {
 	readDepSeq := round.ReadDepSeq
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 	var err error
 	// all dep have been inserted, now, insert the rest details
 	if readDepIndex >= len(readDepSeq) {
-		for _, detailalv := range detailSeq[detailDeqIndex:] {
+		for ddindex, detailalv := range detailSeq[detailDeqIndex:] {
 			if cmptypes.IsChainField(detailalv.AddLoc.Field) || hitDep[detailalv.AddLoc.Address] {
 				continue
 			}
 			var isNew bool
-			currentNode, isNew, err = insertNode(currentNode, detailalv)
+			currentNode, isNew, err = insertNode(currentNode, detailalv, detailDeqIndex+ddindex)
 			if err != nil {
 				return err
 			}
@@ -265,11 +257,13 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 			}
 		}
 		if currentNode.IsLeaf {
+			currentNode.LeafRefCount += 1
 		} else {
 			currentNode.IsLeaf = true
 			currentNode.Round = round
-			*newLeaves = append(*newLeaves, currentNode)
+			currentNode.LeafRefCount = 1
 		}
+		*leaves = append(*leaves, currentNode)
 
 		return nil
 	}
@@ -278,21 +272,46 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 	child := currentNode
 
 	if cmptypes.IsChainField(curDep.AddLoc.Field) {
-		hitDep[curDep.AddLoc.Field] = true
-		var isNew bool
-		child, isNew, err = insertNode(currentNode, curDep)
-		if err != nil {
-			return err
-		}
-		if isNew {
-			*newNodeCount = *newNodeCount + 1
-		}
-		err = insertDep2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
-		if err != nil {
-			return err
-		}
 
-		hitDep[curDep.AddLoc.Field] = false
+		if hitDep[curDep.AddLoc.Field] {
+			err = insertDep2MixTree(currentNode, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
+			if err != nil {
+				return err
+			}
+		} else {
+
+			hitDep[curDep.AddLoc.Field] = true
+
+			rbs, _ := json.Marshal(round)
+			hitdepbs, _ := json.Marshal(hitDep)
+			depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+			log.Warn("insert dep wrong", "tx", round.TxHash.Hex(), "readDepIndex", readDepIndex, "detailDeqIndex", detailDeqIndex,
+				"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+
+			panic("insertDep2MixTree may not insert chainfield")
+
+			// find the index of the corresponding alv in the read seq
+			chainFieldItemIndex := detailDeqIndex
+			for ; chainFieldItemIndex < len(detailSeq); chainFieldItemIndex++ {
+				if detailSeq[chainFieldItemIndex].AddLoc.Field == curDep.AddLoc.Field {
+					break
+				}
+			}
+			var isNew bool
+			child, isNew, err = insertNode(currentNode, curDep, detailDeqIndex)
+			if err != nil {
+				return err
+			}
+			if isNew {
+				*newNodeCount = *newNodeCount + 1
+			}
+			err = insertDep2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
+			if err != nil {
+				return err
+			}
+
+			hitDep[curDep.AddLoc.Field] = false
+		}
 	} else {
 		// assert hitDep[curAddr] == false, depCheckedAddr[curAddr]= false
 		//if hitDep[curAddr] || depCheckedAddr[curAddr] {
@@ -308,14 +327,22 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 		hitDep[curAddr] = true
 		depCheckedAddr[curAddr] = true
 		var isNew bool
-		child, isNew, err = insertNode(currentNode, curDep)
+		child, isNew, err = insertNode(currentNode, curDep, -1)
 		if err != nil {
+			round.Trace = nil
+			rbs, _ := json.Marshal(round)
+			hitdepbs, _ := json.Marshal(hitDep)
+			depCheckedAddrbs, _ := json.Marshal(depCheckedAddr)
+			log.Warn("existing dep node has no detail", "tx", round.TxHash.Hex(), "readDepIndex", readDepIndex, "detailDeqIndex", detailDeqIndex,
+				"hitdep", string(hitdepbs), "depChecked", string(depCheckedAddrbs), "round", string(rbs))
+
+			panic("")
 			return err
 		}
 		if isNew {
 			*newNodeCount = *newNodeCount + 1
 		}
-		err = insertDetail2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		err = insertDetail2MixTree(child, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
 		if err != nil {
 			return err
 		}
@@ -326,7 +353,7 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 			*newNodeCount = *newNodeCount + 1
 		}
 
-		err = insertDetail2MixTree(currentNode.DetailChild, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit+1, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		err = insertDetail2MixTree(currentNode.DetailChild, readDepIndex+1, detailDeqIndex, hitDep, depCheckedAddr, noHit+1, leaves, newNodeCount, round, tx, isExternalTransfer)
 		if err != nil {
 			return err
 		}
@@ -336,16 +363,19 @@ func insertDep2MixTree(currentNode *cmptypes.PreplayResTrieNode, readDepIndex in
 }
 
 func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, dIndex int,
-	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int, newLeaves *[]*cmptypes.PreplayResTrieNode,
+	hitDep map[interface{}]bool, depCheckedAddr map[common.Address]bool, noHit int, leaves *[]*cmptypes.PreplayResTrieNode,
 	newNodeCount *uint, round *cache.PreplayResult, tx *types.Transaction, isExternalTransfer bool) error {
 	detailSeq := round.RWrecord.ReadDetail.ReadDetailSeq
 	if dIndex >= len(detailSeq) {
 		if currentNode.IsLeaf {
+			currentNode.LeafRefCount += 1
 		} else {
 			currentNode.IsLeaf = true
 			currentNode.Round = round
-			*newLeaves = append(*newLeaves, currentNode)
+			currentNode.LeafRefCount = 1
 		}
+		*leaves = append(*leaves, currentNode)
+
 		return nil
 	}
 	detailRead := detailSeq[dIndex]
@@ -367,8 +397,11 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				//}
 				rIndex++
 			}
+			hitDep[detailRead.AddLoc.Field] = true
+			defer func() { hitDep[detailRead.AddLoc.Field] = false }()
+
 			var isNew bool
-			currentNode, isNew, err = insertNode(currentNode, detailRead)
+			currentNode, isNew, err = insertNode(currentNode, detailRead, dIndex)
 			if err != nil {
 				return err
 			}
@@ -376,15 +409,16 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				*newNodeCount = *newNodeCount + 1
 			}
 		}
-		err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+		err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
 
 		return err
 	} else {
 		detailReadAddr := detailRead.AddLoc.Address
+
 		isNewAddr := !depCheckedAddr[detailReadAddr]
 		// to reduce the node number, ifnoHit <= FixedDepCheckCount, only append detail node, regardless of this addr is not checked by deb // magic number
 		if isNewAddr && noHit < FixedDepCheckCount && !(noHit > 0 && noHit <= FixedDepCheckCount && rIndex > FixedDepCheckCount+3) {
-			err = insertDep2MixTree(currentNode, rIndex, dIndex, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			err = insertDep2MixTree(currentNode, rIndex, dIndex, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
 			if err != nil {
 				return err
 			}
@@ -405,19 +439,19 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 								},
 								Value: true,
 							}
-							currentNode, isNewNode, err = insertNode(currentNode, adv)
+							currentNode, isNewNode, err = insertNode(currentNode, adv, dIndex)
 							if err != nil {
 								return err
 							}
 						} // else : the balance of `to` is unnecessary, and it would not be inserted.
 					} else {
-						currentNode, isNewNode, err = insertNode(currentNode, detailRead)
+						currentNode, isNewNode, err = insertNode(currentNode, detailRead, dIndex)
 						if err != nil {
 							return err
 						}
 					}
 				} else {
-					currentNode, isNewNode, err = insertNode(currentNode, detailRead)
+					currentNode, isNewNode, err = insertNode(currentNode, detailRead, dIndex)
 					if err != nil {
 						return err
 					}
@@ -450,7 +484,7 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 				noHit++
 				rIndex++
 			}
-			err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, newLeaves, newNodeCount, round, tx, isExternalTransfer)
+			err = insertDetail2MixTree(currentNode, rIndex, dIndex+1, hitDep, depCheckedAddr, noHit, leaves, newNodeCount, round, tx, isExternalTransfer)
 			if err != nil {
 				return err
 			}
@@ -461,6 +495,7 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 	}
 	return nil
 }
+
 //
 //type BIGINT struct {
 //	B *big.Int
@@ -474,13 +509,18 @@ func insertDetail2MixTree(currentNode *cmptypes.PreplayResTrieNode, rIndex int, 
 //	return a.B.Cmp(b.B) > 0
 //}
 
+//   @params	index: for detail node (which is not dependence node) in mix tree, index means the position of this read AddrLocVal in the origin read detail sequence
 //	 @return    *cmptypes.PreplayResTrieNode	"the child node(which is supposed to be inserted)"
 //				bool 	"whether a new node is inserted"
-func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue) (*cmptypes.PreplayResTrieNode, bool, error) {
+func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocValue, index int) (*cmptypes.PreplayResTrieNode, bool, error) {
 	if currentNode.NodeType == nil {
 		currentNode.NodeType = alv.AddLoc
+		currentNode.RSeqIndex = index
 		currentNode.Children = cmptypes.NewChildren(alv.AddLoc)
 	} else {
+		if alv.AddLoc.Field != cmptypes.Dependence {
+			cmptypes.MyAssert(currentNode.RSeqIndex == index, "index is not consistent")
+		}
 
 		////TODO: debug code, test well(would not be touched), can be removed
 		//key := currentNode.NodeType
@@ -536,6 +576,13 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 		if !ok {
 			child = &cmptypes.PreplayResTrieNode{Parent: currentNode, Value: value}
 			realChild[value] = child
+		} else {
+			//if currentNode.DetailChild == nil {
+			//	cnj, _ := json.Marshal(currentNode.NodeType)
+			//	log.Warn("", "currentNode", string(cnj))
+			//	return nil, false, &cmptypes.NodeTypeDiffError{CurNodeType: currentNode.NodeType, NewNodeType: alv.AddLoc}
+			//	//panic("the detail child of dep node should not be nil")
+			//}
 		}
 	default:
 		panic("Wrong Field")
@@ -591,15 +638,22 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 
 		allDepMatched    = true
 		allDetailMatched = true
+
+		checkedDepCount  = 0
+		checkedNodeCount = 0
 	)
 
 	for ; !currentNode.IsLeaf; {
 		if abort != nil && abort() {
 			return nil, nil, nil, nil, true, false
 		}
-		childNode, ok := getChild(currentNode, db, bc, header, debug)
-
 		nodeType := currentNode.NodeType
+
+		childNode, ok := getChild(currentNode, db, bc, header, debug)
+		checkedNodeCount++
+		if nodeType.Field == cmptypes.Dependence {
+			checkedDepCount++
+		}
 		if ok {
 			currentNode = childNode
 			if nodeType.Field == cmptypes.Dependence {
@@ -609,9 +663,13 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 			}
 		} else {
 			if currentNode.DetailChild != nil {
-				// Note: for external transfer, mixcheck is disabled.
+				// Note: for external transfer when preplaying, mixcheck is disabled.
 				if isExternalTransfer && !isBlockProcess {
-					mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit}
+					correspondingDetailCount := currentNode.RSeqIndex + 1
+
+					mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: len(matchedDeps),
+						UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
+						BasicDetailCount: correspondingDetailCount}
 					return nil, mixStatus, nil, nil, false, false
 				}
 				// assert cmptypes.IsStateField(nodeType.Field) is false
@@ -619,7 +677,30 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 				currentNode = currentNode.DetailChild
 
 			} else {
-				mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
+				mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
+					HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
+					BasicDetailCount: currentNode.RSeqIndex + 1}
+
+				if currentNode.RSeqIndex < 0 {
+					if currentNode == trie.Root {
+
+					} else if isBlockProcess {
+						if !debug {
+							cntj, _ := json.Marshal(currentNode.NodeType)
+							mm, _ := json.Marshal(mixStatus)
+							log.Warn("??", "curNode is root", currentNode == trie.Root, "rindex", currentNode.RSeqIndex, "nodet", string(cntj), "value", currentNode.Value, "mm", string(mm))
+							rootJson, _ := json.Marshal(trie.Root)
+							log.Warn("print tree", "tree", string(rootJson))
+							log.Warn("*******************************************************")
+
+							SearchMixTree(trie, db, bc, header, abort, true, isBlockProcess, isExternalTransfer)
+
+						} else {
+							panic("BasicDetailCount is at least 1")
+
+						}
+					}
+				}
 
 				if isBlockProcess {
 					// to reduce the cost of converting interfaces, mute the miss Value
@@ -642,9 +723,12 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	} else if isExternalTransfer {
 		mixHitType = cmptypes.PartialDeltaHit
 	}
+	reuseRound := currentNode.Round.(*cache.PreplayResult)
 
-	mixStatus = &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap}
-	return currentNode.Round.(*cache.PreplayResult), mixStatus, nil, nil, false, true
+	mixStatus = &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
+		HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
+		BasicDetailCount: len(reuseRound.RWrecord.ReadDetail.ReadDetailSeq)}
+	return reuseRound, mixStatus, nil, nil, false, true
 }
 
 func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {

@@ -140,7 +140,7 @@ func (v *ReuseVerifier) TestBlock(block *types.Block, statedb *state.StateDB, cf
 
 		rw := p1.getRWRecord()
 
-		if !cmpreuse.CheckRChain(rw, v.bc, header) {
+		if !cmpreuse.CheckRChain(rw, v.bc, header, false) {
 			log.Info("ReuseVerifier !CheckRChain",
 				"block", block.NumberU64(), "i", i, "txHash", tx.Hash())
 			jsonStr, err := json.Marshal(rw.Dump())
