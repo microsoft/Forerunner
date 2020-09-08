@@ -66,7 +66,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 		RWRecordTrie:         cmptypes.NewPreplayResTrie(),
 		RWRecordTrieMu:       cmptypes.NewSimpleTryLock(), // trylock.New(),
 		wobjectHolderMap:     make(state.ObjectHolderMap),
-		wobjectHolderMapMu:   cmptypes.NewSimpleTryLock(),//trylock.New(),
+		wobjectHolderMapMu:   cmptypes.NewSimpleTryLock(), //trylock.New(),
 		objectPointerToObjID: make(map[uintptr]uintptr),
 		//RWrecords:            RWrecords,
 	}
@@ -86,7 +86,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 
 func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue, tx *types.Transaction) bool {
 
-	if tx.To() == nil{
+	if tx.To() == nil {
 		// this check is necessary.
 		return false
 	}
@@ -217,11 +217,11 @@ type PreplayResults struct {
 	// deprecated
 	ReadDepTree    *cmptypes.PreplayResTrie `json:"-"`
 	MixTree        *cmptypes.PreplayResTrie
-	MixTreeMu      *cmptypes.SimpleTryLock//trylock.TryLocker
+	MixTreeMu      *cmptypes.SimpleTryLock //trylock.TryLocker
 	TraceTrie      ITracerTrie
-	TraceTrieMu    *cmptypes.SimpleTryLock//trylock.TryLocker
+	TraceTrieMu    *cmptypes.SimpleTryLock //trylock.TryLocker
 	DeltaTree      *cmptypes.PreplayResTrie
-	DeltaTreeMu    *cmptypes.SimpleTryLock//trylock.TryLocker
+	DeltaTreeMu    *cmptypes.SimpleTryLock //trylock.TryLocker
 	RWRecordTrie   *cmptypes.PreplayResTrie
 	RWRecordTrieMu *cmptypes.SimpleTryLock
 
@@ -229,7 +229,7 @@ type PreplayResults struct {
 	DeltaWrites        map[common.Address]*WStateDelta
 
 	wobjectHolderMap     state.ObjectHolderMap
-	wobjectHolderMapMu   *cmptypes.SimpleTryLock//trylock.TryLocker
+	wobjectHolderMapMu   *cmptypes.SimpleTryLock //trylock.TryLocker
 	wobjectIDCounter     uintptr
 	objectPointerToObjID map[uintptr]uintptr
 
@@ -949,7 +949,10 @@ func (r *GlobalCache) SearchReduplicatedNonceTxn(sender common.Address, minNonce
 			return txns[i].Nonce() > maxNonce
 		})
 		if maxIndex > minIndex {
-			return types.Transactions(txns[minIndex:maxIndex]), true
+			retTxns := txns[minIndex:maxIndex]
+			txnsCpy := make(types.Transactions, len(retTxns))
+			copy(txnsCpy, retTxns)
+			return txnsCpy, true
 		}
 	}
 	return nil, false
