@@ -2600,8 +2600,9 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				if node.Op.isReadOp {
 					*executedChainInputNodes++
 				}
+				*fieldActualReadCount++
 			}
-			*fieldActualReadCount++
+
 			*totalJumps++
 			*totalJumpKeys++
 			if jd == nil {

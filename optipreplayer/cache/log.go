@@ -389,14 +389,14 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				switch ReuseResult[index].HitType {
 				case cmptypes.MixHit:
 					infoResult.MixHit++
-					switch ReuseResult[index].MixHitStatus.MixHitType {
+					switch ReuseResult[index].MixStatus.MixHitType {
 					case cmptypes.AllDepHit:
 						infoResult.AllDepMixHit++
 					case cmptypes.AllDetailHit:
 						infoResult.AllDetailMixHit++
 					case cmptypes.PartialHit:
 						infoResult.PartialDetailMixHit++
-						unHitHead := ReuseResult[index].MixHitStatus.DepUnmatchedInHead
+						unHitHead := ReuseResult[index].MixStatus.DepUnmatchedInHead
 						if unHitHead < 9 {
 							infoResult.UnhitHeadCount[unHitHead]++
 						} else {

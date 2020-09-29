@@ -2003,14 +2003,18 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 						if reuseStatus.BaseStatus == cmptypes.Hit {
 							reuseStr += fmt.Sprintf(" hitType '%v'", reuseStatus.HitType.String())
 							//if reuseStatus.HitType == cmptypes.MixHit {
-							if reuseStatus.MixHitStatus != nil {
-								reuseStr += fmt.Sprintf(" mixHitType '%v'", reuseStatus.MixHitStatus.MixHitType.String())
+							if reuseStatus.MixStatus != nil && reuseStatus.MixStatus.MixHitType != cmptypes.NotMixHit {
+								reuseStr += fmt.Sprintf(" mixHitType '%v'", reuseStatus.MixStatus.MixHitType.String())
 							}
 							//if reuseStatus.HitType == cmptypes.TraceHit {
 						}
 
 						if reuseStatus.BaseStatus == cmptypes.Miss {
 							reuseStr += fmt.Sprintf(" missType '%v'", reuseStatus.MissType.String())
+						}
+
+						if reuseStatus.MixStatus != nil {
+							reuseStr += " " + reuseStatus.MixStatus.GetPerfString()
 						}
 
 						if reuseStatus.TraceStatus != nil {

@@ -111,7 +111,7 @@ type ReuseStatus struct {
 	BaseStatus        ReuseBaseStatus
 	HitType           HitType
 	MissType          MissType
-	MixHitStatus      *MixHitStatus
+	MixStatus         *MixStatus
 	TraceStatus       *TraceStatus
 	MissNode          *PreplayResTrieNode
 	MissValue         interface{} // to reduce the cost of converting interfaces, mute the miss Value
@@ -119,7 +119,7 @@ type ReuseStatus struct {
 	TraceTrieHitAddrs TxResIDMap
 }
 
-type MixHitStatus struct {
+type MixStatus struct {
 	MixHitType         MixHitType
 	DepHitAddr         []common.Address
 	DepHitAddrMap      map[common.Address]interface{}
@@ -131,6 +131,12 @@ type MixHitStatus struct {
 	WriteDepCount      int
 	WriteDetailCount   int
 	WriteDetailTotal   int
+}
+
+func (ms *MixStatus) GetPerfString() string {
+	return fmt.Sprintf("fARm %v fPRm %v aRm %v aRFm %v fAWm %v fPWm %v aWm %v",
+		ms.DetailCheckedCount, ms.BasicDetailCount, ms.HitDepNodeCount+ms.UnhitDepNodeCount, ms.UnhitDepNodeCount,
+		ms.WriteDetailCount, ms.WriteDetailTotal, ms.WriteDepCount)
 }
 
 type TraceStatus struct {

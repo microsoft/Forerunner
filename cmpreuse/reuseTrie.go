@@ -620,7 +620,7 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 }
 
 func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool,
-	debug bool, isBlockProcess bool, isExternalTransfer bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixHitStatus,
+	debug bool, isBlockProcess bool, isExternalTransfer bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixStatus,
 	missNode *cmptypes.PreplayResTrieNode, missValue interface{}, isAbort bool, ok bool) {
 	currentNode := trie.Root
 
@@ -667,7 +667,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 				if isExternalTransfer && !isBlockProcess {
 					correspondingDetailCount := currentNode.RSeqIndex + 1
 
-					mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: len(matchedDeps),
+					mixStatus = &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: len(matchedDeps),
 						UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
 						BasicDetailCount: correspondingDetailCount}
 					return nil, mixStatus, nil, nil, false, false
@@ -677,7 +677,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 				currentNode = currentNode.DetailChild
 
 			} else {
-				mixStatus = &cmptypes.MixHitStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
+				mixStatus = &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
 					HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
 					BasicDetailCount: currentNode.RSeqIndex + 1}
 
@@ -725,7 +725,7 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 	}
 	reuseRound := currentNode.Round.(*cache.PreplayResult)
 
-	mixStatus = &cmptypes.MixHitStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
+	mixStatus = &cmptypes.MixStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,
 		HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
 		BasicDetailCount: len(reuseRound.RWrecord.ReadDetail.ReadDetailSeq)}
 	return reuseRound, mixStatus, nil, nil, false, true

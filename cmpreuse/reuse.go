@@ -270,7 +270,7 @@ func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool)
 }
 
 func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs cache.WObjectWeakRefMap,
-	txPreplay *cache.TxPreplay, mixStatus *cmptypes.MixHitStatus, abort func() bool) {
+	txPreplay *cache.TxPreplay, mixStatus *cmptypes.MixStatus, abort func() bool) {
 	var suicideAddr []common.Address
 	WDeltas := txPreplay.PreplayResults.DeltaWrites
 	var wroteObjCount, wroteDetailCount, writeDetailTotal int
@@ -324,7 +324,7 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc core.ChainContext, statedb *state.StateDB, header *types.Header, abort func() bool,
-	blockPre *cache.BlockPre, isBlockProcess bool, cmpReuseChecking bool) (*cache.PreplayResult, *cmptypes.MixHitStatus, *cmptypes.PreplayResTrieNode,
+	blockPre *cache.BlockPre, isBlockProcess bool, cmpReuseChecking bool) (*cache.PreplayResult, *cmptypes.MixStatus, *cmptypes.PreplayResTrieNode,
 	interface{}, bool, bool) {
 	trie := txPreplay.PreplayResults.MixTree
 	res, mixHitStatus, missNode, missValue, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false, isBlockProcess, txPreplay.PreplayResults.IsExternalTransfer)
@@ -722,7 +722,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.TrieHit:
 			ApplyWStates(statedb, round.RWrecord, abort)
 		case status.HitType == cmptypes.MixHit:
-			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixHitStatus, abort)
+			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
 			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort)
 			if isAbort {
@@ -791,7 +791,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	status *cmptypes.ReuseStatus, round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
 
 	var ok, isAbort bool
-	var mixStatus *cmptypes.MixHitStatus
+	var mixStatus *cmptypes.MixStatus
 	var missNode *cmptypes.PreplayResTrieNode
 	var missValue interface{}
 	var sr *TraceTrieSearchResult
@@ -845,7 +845,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
 		txPreplay.PreplayResults.MixTreeMu.Unlock()
 
-		status.MixHitStatus = mixStatus
+		status.MixStatus = mixStatus
 
 		if ok {
 			d0 = time.Since(t0)

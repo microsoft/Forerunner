@@ -64,18 +64,18 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 		cache.TxFinalize = append(cache.TxFinalize, time.Since(t0))
 
 		t1 := time.Now()
-		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit {
 			//use account level update instead of :
 			curtxResId := cmptypes.DEFAULT_TXRESID
 			for addr, change := range round.AccountChanges {
-				if _, ok := reuseStatus.MixHitStatus.DepHitAddrMap[addr]; ok && header.Coinbase != addr {
+				if _, ok := reuseStatus.MixStatus.DepHitAddrMap[addr]; ok && header.Coinbase != addr {
 					statedb.UpdateAccountChanged(addr, change)
 				} else {
 					statedb.UpdateAccountChanged(addr, curtxResId)
 				}
 			}
 			statedb.UpdateAccountChanged(header.Coinbase, curtxResId)
-		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 			statedb.ApplyAccountChanged(round.AccountChanges)
 			//if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
 			//	reuseDB.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)

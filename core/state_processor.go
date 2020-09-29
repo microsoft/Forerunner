@@ -389,7 +389,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				if reuseStatus.BaseStatus == cmptypes.Hit {
 					reuseStr += "-" + reuseStatus.HitType.String()
 					if reuseStatus.HitType == cmptypes.MixHit {
-						reuseStr += "-" + reuseStatus.MixHitStatus.MixHitType.String()
+						reuseStr += "-" + reuseStatus.MixStatus.MixHitType.String()
 					}
 					if reuseStatus.HitType == cmptypes.TraceHit {
 						reuseStr += "-" + reuseStatus.TraceStatus.GetPerfString()
@@ -556,7 +556,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				if status.BaseStatus == cmptypes.Hit {
 					statusStr += "-" + status.HitType.String()
 					if status.HitType == cmptypes.MixHit {
-						statusStr += "-" + status.MixHitStatus.MixHitType.String()
+						statusStr += "-" + status.MixStatus.MixHitType.String()
 					}
 					if status.HitType == cmptypes.TraceHit {
 						statusStr += "-" + status.TraceStatus.GetPerfString()

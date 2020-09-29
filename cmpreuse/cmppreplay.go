@@ -63,7 +63,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	// * Insert rwrecord tree for scenario 1
 	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
 	if reuseStatus.BaseStatus != cmptypes.Hit ||
-		!(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit) {
+		!(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit) {
 
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
@@ -265,15 +265,15 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 	if reuseStatus.BaseStatus == cmptypes.Hit {
 		cmptypes.MyAssert(reuseStatus.HitType != cmptypes.TraceHit)
 		cmptypes.MyAssert(reuseStatus.HitType != cmptypes.DeltaHit)
-		cmptypes.MyAssert(!(reuseStatus.HitType == cmptypes.MixHit && (reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDeltaHit || reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialDeltaHit)))
+		cmptypes.MyAssert(!(reuseStatus.HitType == cmptypes.MixHit && (reuseStatus.MixStatus.MixHitType == cmptypes.AllDeltaHit || reuseStatus.MixStatus.MixHitType == cmptypes.PartialDeltaHit)))
 
 		var saveFlag bool
-		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 			saveFlag = statedb.IsAllowObjCopy()
 			statedb.SetAllowObjCopy(false)
 		}
 		receipt = reuse.finalise(config, statedb, header, tx, usedGas, reuseRound.Receipt.GasUsed, reuseRound.RWrecord.Failed, msg)
-		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+		if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 			statedb.SetAllowObjCopy(saveFlag)
 		}
 		rwrecord = reuseRound.RWrecord
@@ -368,7 +368,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		var accChanges cmptypes.TxResIDMap
 
 		if reuseStatus.BaseStatus == cmptypes.Hit {
-			if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.PartialHit {
+			if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit {
 				readDeps = updateNewReadDepSeq(statedb, reuseRound.ReadDepSeq)
 				wobjects, wobjectCopy, wobjectNotCopy = statedb.RWRecorder().WObjectDump()
 
@@ -378,7 +378,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 				//reusedTxRes := reuseRound.TxResID
 
 				for addr, oldChange := range oldAccChanged {
-					if _, ok := reuseStatus.MixHitStatus.DepHitAddrMap[addr]; ok {
+					if _, ok := reuseStatus.MixStatus.DepHitAddrMap[addr]; ok {
 						statedb.UpdateAccountChanged(addr, oldChange)
 						accChanges[addr] = oldChange
 
@@ -387,7 +387,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 						accChanges[addr] = curTxRes
 					}
 				}
-			} else if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixHitStatus.MixHitType == cmptypes.AllDepHit {
+			} else if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 				readDeps = reuseRound.ReadDepSeq
 				wobjects = GetWObjectsFromWObjectWeakRefs(reuse.MSRACache, reuseRound.WObjectWeakRefs)
 				accChanges = reuseRound.AccountChanges
