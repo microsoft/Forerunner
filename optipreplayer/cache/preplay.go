@@ -127,8 +127,11 @@ func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transact
 		wDeltas := make(map[common.Address]*WStateDelta)
 		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address
 		to := *tx.To()
-		senderBalanceDelta := new(big.Int).Sub(record.WState[sender].Balance, record.RState[sender].Balance)
-		wDeltas[sender] = &WStateDelta{senderBalanceDelta}
+
+		if senderWB := record.WState[sender].Balance; senderWB != nil {
+			senderBalanceDelta := new(big.Int).Sub(senderWB, record.RState[sender].Balance)
+			wDeltas[sender] = &WStateDelta{senderBalanceDelta}
+		}
 
 		if to != sender {
 			if _, ok := record.WState[to]; ok {
