@@ -918,6 +918,22 @@ var (
 		Name:  "reportmissdetail",
 		Usage: "Report transactions' miss detail",
 	}
+	SingleFutureFlag = cli.BoolFlag{
+		Name:  "single-future",
+		Usage: "Preplay in single future mode",
+	}
+	SingleGranularityFlag = cli.BoolFlag{
+		Name:  "single-granularity",
+		Usage: "Preplay in single granularity mode",
+	}
+	NoWarmuperFlag = cli.BoolFlag{
+		Name:  "nowarmuper",
+		Usage: "Close warmuper during preplay",
+	}
+	NoOverMatchingFlag = cli.BoolFlag{
+		Name:  "noovermatching",
+		Usage: "Close over matching during preplay",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1760,23 +1776,23 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		}
 	}
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
-		Silent:              ctx.GlobalBool(SilentFlag.Name),
-		LogRoot:             "/datadrive/reuse",
-		CmpReuse:            ctx.GlobalBool(CmpReuseEnabledFlag.Name),
-		CmpReuseChecking:    ctx.GlobalBool(CmpReuseCheckFlag.Name),
-		TxApplyPerfLogging:  ctx.GlobalBool(TxApplyPerfLogFlag.Name),
-		PerfLogging:         ctx.GlobalBool(PerfLogFlag.Name),
-		CmpReuseLogging:     ctx.GlobalBool(CmpReuseLogFlag.Name),
-		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
-		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),
-		CacheRecord:         ctx.GlobalBool(CacheRecordEnabledFlag.Name),
-		GroundRecord:        ctx.GlobalBool(GroundRecordEnabledFlag.Name),
-		PreplayRecord:       ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
-		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
-		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
-		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
-		ReuseTracerChecking: ctx.GlobalBool(ReuseTracerCheckFlag.Name),
-		Selfish:             ctx.GlobalBool(SelfishFlag.Name),
+		Silent:               ctx.GlobalBool(SilentFlag.Name),
+		LogRoot:              "/datadrive/reuse",
+		CmpReuse:             ctx.GlobalBool(CmpReuseEnabledFlag.Name),
+		CmpReuseChecking:     ctx.GlobalBool(CmpReuseCheckFlag.Name),
+		TxApplyPerfLogging:   ctx.GlobalBool(TxApplyPerfLogFlag.Name),
+		PerfLogging:          ctx.GlobalBool(PerfLogFlag.Name),
+		CmpReuseLogging:      ctx.GlobalBool(CmpReuseLogFlag.Name),
+		CmpReuseLoggingDir:   filepath.Join(node.DefaultDataDir(), "cmpreuse"),
+		EnablePreplay:        ctx.GlobalBool(PreplayFlag.Name),
+		CacheRecord:          ctx.GlobalBool(CacheRecordEnabledFlag.Name),
+		GroundRecord:         ctx.GlobalBool(GroundRecordEnabledFlag.Name),
+		PreplayRecord:        ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
+		EnableReuseVerifier:  ctx.GlobalBool(ReuseVerifierFlag.Name),
+		HasherParallelism:    ctx.GlobalInt(HasherParallelismFlag.Name),
+		PipelinedBloom:       ctx.GlobalBool(ParallelBloomFlag.Name),
+		ReuseTracerChecking:  ctx.GlobalBool(ReuseTracerCheckFlag.Name),
+		Selfish:              ctx.GlobalBool(SelfishFlag.Name),
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",

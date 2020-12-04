@@ -230,6 +230,10 @@ var (
 		utils.ReportMissDetailFlag,
 		utils.ReuseTracerCheckFlag,
 		utils.SelfishFlag,
+		utils.SingleFutureFlag,
+		utils.SingleGranularityFlag,
+		utils.NoWarmuperFlag,
+		utils.NoOverMatchingFlag,
 		alliedNodeFileFlag,
 	}
 )
