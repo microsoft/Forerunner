@@ -642,7 +642,7 @@ func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc core.ChainConte
 }
 
 func (reuse *Cmpreuse) traceCheck(txPreplay *cache.TxPreplay, statedb *state.StateDB, header *types.Header, abort func() bool, isBlockProcess bool,
-	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tracerCheck bool) *TraceTrieSearchResult {
+	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tracerCheck bool, noOverMatching bool) *TraceTrieSearchResult {
 	if !isBlockProcess {
 		return nil
 	} else {
@@ -657,7 +657,7 @@ func (reuse *Cmpreuse) traceCheck(txPreplay *cache.TxPreplay, statedb *state.Sta
 	}
 
 	if trie != nil {
-		return trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, tracerCheck, reuse.MSRACache)
+		return trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, tracerCheck, reuse.MSRACache, noOverMatching)
 	}
 	return nil
 }
@@ -724,7 +724,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort)
+			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching)
 			if isAbort {
 				return
 			} else {
@@ -869,7 +869,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		if status.BaseStatus == cmptypes.Undefined {
 			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
 				traceTrieChecked = true
-				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking)
+				sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking,
+					cfg.MSRAVMSettings.NoOverMatching)
 				txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 				if sr != nil {

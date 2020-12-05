@@ -35,7 +35,8 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
 	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
-	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay, enablePause bool) {
+	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay, enablePause bool,
+	noOverMatching, noMemoization bool) {
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -120,7 +121,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			traceTrieStart := time.Now()
 
 			txPreplay.PreplayResults.TraceTrieMu.Lock()
-			reuse.setTraceTrie(tx, txPreplay, round, trace)
+			reuse.setTraceTrie(tx, txPreplay, round, trace, noOverMatching, noMemoization)
 			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 			cost := time.Since(traceTrieStart)
@@ -157,7 +158,8 @@ func (reuse *Cmpreuse) setDeltaTree(tx *types.Transaction, txPreplay *cache.TxPr
 	return InsertDelta(tx, txPreplay.PreplayResults.DeltaTree, round, curBlockNumber)
 }
 
-func (reuse *Cmpreuse) setTraceTrie(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, trace *STrace) {
+func (reuse *Cmpreuse) setTraceTrie(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, trace *STrace,
+	noOverMatching, noMemoization bool) {
 	var traceTrie *TraceTrie
 	if txPreplay.PreplayResults.TraceTrie != nil {
 		traceTrie = txPreplay.PreplayResults.TraceTrie.(*TraceTrie)
@@ -165,7 +167,7 @@ func (reuse *Cmpreuse) setTraceTrie(tx *types.Transaction, txPreplay *cache.TxPr
 		traceTrie = NewTraceTrie(tx)
 		txPreplay.PreplayResults.TraceTrie = traceTrie
 	}
-	traceTrie.InsertTrace(trace, round)
+	traceTrie.InsertTrace(trace, round, noOverMatching, noMemoization)
 }
 
 func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receipt, rwrecord *cache.RWRecord, groundFlag uint64) {
@@ -414,7 +416,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 
 		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy,
-			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause)
+			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause, cfg.MSRAVMSettings.NoOverMatching,
+			cfg.MSRAVMSettings.NoTraceMemoization)
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)

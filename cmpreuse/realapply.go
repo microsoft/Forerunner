@@ -37,8 +37,7 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.
 	evm := vm.NewEVM(context, statedb, config, *cfg)
 	//expCount := 10000000
 	//expCount = 1
-	if cfg.MSRAVMSettings.EnableReuseTracer { //&& ReuseTracerTracedTxCount < expCount {
-		//if strings.ToLower(tx.To().Hex()) == "0xdac17f958d2ee523a2206206994597c13d831ec7" {
+	if cfg.MSRAVMSettings.EnableReuseTracer && !cfg.MSRAVMSettings.NoTrace {
 		rt := NewReuseTracer(statedb, header, evm.GetHash, evm.ChainConfig().ChainID, evm.ChainConfig().Rules(header.Number))
 		if cfg.MSRAVMSettings.ReuseTracerChecking {
 			rt.DebugFlag = true

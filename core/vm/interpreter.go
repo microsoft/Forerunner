@@ -61,6 +61,10 @@ type MSRAVMConfig struct {
 	PipelinedBloom      bool
 	ReuseTracerChecking bool
 	Selfish             bool
+	NoTrace             bool
+	NoTraceMemoization  bool
+	NoOverMatching      bool
+
 	// emulator
 	EmulatorDir          string
 	EnableEmulatorLogger bool
