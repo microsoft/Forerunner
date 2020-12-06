@@ -122,9 +122,10 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 	if statedbInstance == nil {
 		panic(fmt.Sprintf("Get nil statedb parent: %d-%s-%s", parent.NumberU64(), parent.Hash().Hex(), parent.Root().Hex()))
 	}
+
 	if e.chain.GetVMConfig().MSRAVMSettings.EnablePreplay {
 		statedb = state.NewRWStateDB(statedbInstance)
-		if !e.basicPreplay {
+		if !e.basicPreplay || e.chain.GetVMConfig().MSRAVMSettings.NoOverMatching {
 			statedb.SetAllowObjCopy(false)
 		}
 		statedb.SetAddrNotCopy(e.addrNotCopy)

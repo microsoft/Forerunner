@@ -3076,25 +3076,27 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 		cmptypes.MyAssert(node.Op.isLoadOp || node.Op.isReadOp)
 		s := j.trace.Stats[nodeIndex]
 		var aVId, fVId uint
-		if node.IsANode {
-			var aval interface{}
-			var ok bool
-			if node.Op.isLoadOp {
-				aval, ok = j.nodeIndexToAccountValue[node.Seq]
-				cmptypes.MyAssert(ok)
+		if !j.noOverMatching {
+			if node.IsANode {
+				var aval interface{}
+				var ok bool
+				if node.Op.isLoadOp {
+					aval, ok = j.nodeIndexToAccountValue[node.Seq]
+					cmptypes.MyAssert(ok)
+				} else {
+					aval = s.output.val
+				}
+				aVId = node.GetOrCreateAccountValueID(aval)
+				accountHistory.AppendRegister(node.AccountIndex, aVId)
+				if tt.DebugOut != nil {
+					tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aval, aVId)
+				}
 			} else {
-				aval = s.output.val
-			}
-			aVId = node.GetOrCreateAccountValueID(aval)
-			accountHistory.AppendRegister(node.AccountIndex, aVId)
-			if tt.DebugOut != nil {
-				tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aval, aVId)
-			}
-		} else {
-			cmptypes.MyAssert(node.Op.isLoadOp)
-			aVId = accountHistory.Get(node.AccountIndex).(uint)
-			if tt.DebugOut != nil {
-				tt.DebugOut("AccountVID for %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aVId)
+				cmptypes.MyAssert(node.Op.isLoadOp)
+				aVId = accountHistory.Get(node.AccountIndex).(uint)
+				if tt.DebugOut != nil {
+					tt.DebugOut("AccountVID for %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aVId)
+				}
 			}
 		}
 
@@ -3939,6 +3941,9 @@ func (j *JumpInserter) SetupOpJumpLane() {
 }
 
 func (j *JumpInserter) SetupRoundMapping() {
+	if j.noOverMatching {
+		return
+	}
 	node := j.snodes[j.trace.FirstStoreNodeIndex]
 	cmptypes.MyAssert(node.Op.isStoreOp)
 	node.roundResults.SetupRoundMapping(j.registers, j.accountHistory, j.fieldHistroy, j.round, j.tt.DebugOut)
