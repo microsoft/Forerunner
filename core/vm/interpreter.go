@@ -64,6 +64,7 @@ type MSRAVMConfig struct {
 	NoTrace             bool
 	NoTraceMemoization  bool
 	NoOverMatching      bool
+	SingleFuture        bool
 
 	// emulator
 	EmulatorDir          string

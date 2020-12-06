@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -82,6 +83,7 @@ type ReuseTracer struct {
 	hasNonConstBlockHashNum    bool
 	methodCache                map[string]reflect.Value
 	execEnv                    *ExecEnv
+	TraceStartTime             time.Time
 }
 
 var ReuseTracerTracedTxCount uint64
@@ -115,6 +117,7 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 		execEnv: &ExecEnv{inputs: make([]interface{}, 0, 10), state: statedb, header: header, getHash: hashFunc,
 			precompiles: vm.GetPrecompiledMapping(&(chainRules))},
 		DebugBuffer: NewDebugBuffer(nil),
+		TraceStartTime: time.Now(),
 	}
 
 	rt.snapshotStartingPoints[0] = 0

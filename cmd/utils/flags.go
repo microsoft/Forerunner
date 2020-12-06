@@ -1800,6 +1800,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		NoTrace:              ctx.GlobalBool(NoTraceFlag.Name),
 		NoTraceMemoization:   ctx.GlobalBool(NoTraceMemoizationFlag.Name),
 		NoOverMatching:       ctx.GlobalBool(NoOverMatchingFlag.Name),
+		SingleFuture:         ctx.GlobalBool(SingleFutureFlag.Name),
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",

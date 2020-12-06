@@ -36,7 +36,8 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
 	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
 	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay, enablePause bool,
-	noOverMatching, noMemoization bool, noTrace bool) {
+	noOverMatching, noMemoization bool, noTrace bool, singleFuture bool) {
+
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
@@ -74,16 +75,21 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		}
 
 		var err error
+
 		if !noOverMatching {
 			txPreplay.PreplayResults.MixTreeMu.Lock()
+			if singleFuture {
+				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+			}
 			if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq, tx) {
 				// if isExternalTransfer is changed from true to false, only set dep in mix tree:
 				err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
 			} else {
 				err = reuse.setMixTree(tx, txPreplay, round, !noTrace)
 			}
+			txPreplay.PreplayResults.MixTreeMu.Unlock()
 		}
-		txPreplay.PreplayResults.MixTreeMu.Unlock()
+
 
 		if err != nil {
 			roundjs, _ := json.Marshal(round)
@@ -93,6 +99,9 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 		if reuseStatus.BaseStatus != cmptypes.Hit {
 			txPreplay.PreplayResults.RWRecordTrieMu.Lock()
+			if singleFuture {
+				txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+			}
 			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
 			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
@@ -125,6 +134,9 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			traceTrieStart := time.Now()
 
 			txPreplay.PreplayResults.TraceTrieMu.Lock()
+			if singleFuture {
+				txPreplay.PreplayResults.TraceTrie = nil
+			}
 			reuse.setTraceTrie(tx, txPreplay, round, trace, noOverMatching, noMemoization)
 			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
@@ -349,6 +361,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 
 				trace = NewSTrace(stats, debugOut, debugBuffer)
 
+
 				//writeDoubleOut := func(fmtStr string, args ...interface{}) {
 				//	//fmt.Printf(fmtStr, args...)
 				//	debugOut(fmtStr, args...)
@@ -362,6 +375,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 						atomic.LoadUint64(&ReuseTracerTracedTxCount), tx.Hash().Hex(), len(registerMapping), highestIndex, loadCount, readCount, storeCount, logCount)
 					debugOut(summary + "\n")
 				}
+
+				trace.TraceDuration = time.Since(rt.TraceStartTime)
 
 				if rt.IsExternalTransfer {
 					trace = nil // do not process external transfer
@@ -428,7 +443,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy,
 			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause, cfg.MSRAVMSettings.NoOverMatching,
-			cfg.MSRAVMSettings.NoTraceMemoization, cfg.MSRAVMSettings.NoTrace)
+			cfg.MSRAVMSettings.NoTraceMemoization, cfg.MSRAVMSettings.NoTrace, cfg.MSRAVMSettings.SingleFuture)
+
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)

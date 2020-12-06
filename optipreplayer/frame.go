@@ -67,7 +67,7 @@ type Frame struct {
 }
 
 // NewFrame create a new frame
-func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64) *Frame {
+func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64, singleFuture bool) *Frame {
 	listener := NewListener(eth)
 	frame := &Frame{
 		eth:         eth,
@@ -76,7 +76,7 @@ func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engin
 		mux:         mux,
 		engine:      engine,
 		exitCh:      make(chan struct{}),
-		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil, listener),
+		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil, listener, singleFuture),
 		collector:   NewCollector(eth, config),
 		listener:    listener,
 		canStart:    1,

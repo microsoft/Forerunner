@@ -160,15 +160,20 @@ type TraceStatus struct {
 	OJumps        uint64
 	TotalJumpKeys uint64
 	FailedJumps   uint64
+
+	AvgSpecializationDurationInNanoSeconds int64
+	AvgMemoizationDurationInNanoSeconds    int64
+	TotalTraceCount                        int64
 }
 
 func (th *TraceStatus) GetPerfString() string {
-	return fmt.Sprintf("eN %v tN %v pN %v iN %v oN %v cN %v fAR %v fPR %v aR %v aRF %v fAW %v fPW %v aW %v faJ %v tJ %v tK %v aJ %v fiJ %v OJ %v",
+	return fmt.Sprintf("eN %v tN %v pN %v iN %v oN %v cN %v fAR %v fPR %v aR %v aRF %v fAW %v fPW %v aW %v faJ %v tJ %v tK %v aJ %v fiJ %v OJ %v sD %v mD %v tC %v",
 		th.ExecutedNodes, th.TotalNodes, th.TotalOpNodes, th.ExecutedInputNodes, th.ExecutedOutputNodes, th.ExecutedChainInputNodes,
 		th.FieldActualReadCount, th.FieldPotentialReadCount, th.AccountReadCount, th.AccountReadFailedCount,
 		th.FieldActualWrittenCount, th.FieldPotentialWrittenCount, th.AccountWrittenCount,
 		th.FailedJumps, th.TotalJumps, th.TotalJumpKeys,
-		th.AJumps, th.FJumps, th.OJumps)
+		th.AJumps, th.FJumps, th.OJumps,
+		th.AvgSpecializationDurationInNanoSeconds, th.AvgMemoizationDurationInNanoSeconds, th.TotalTraceCount)
 }
 
 func (s ReuseStatus) String() string {

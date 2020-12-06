@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -42,16 +43,17 @@ type STrace struct {
 	StoreAccountIndexToStoreAccountDependencies map[uint][]uint
 	StoreAccountIndexToStoreVarRegisterIndices  map[uint][]uint
 	RLNodeIndexToAccountIndex                   map[uint]uint
-	RLNodeIndexToFieldIndex                     map[uint]uint
-	FieldIndexToRLNodeIndex                     map[uint]uint
-	TLNodeIndices                               []uint
-	TLNodeSet                                   map[uint]bool
-	FirstStoreNodeIndex                         uint
-	JSPIndices                                  []uint
-	JSPSet                                      map[uint]bool
-	StoreNodeIndexToStoreAccountIndex           map[uint]uint
-	computed                                    bool
-	DebugBuffer                                 *DebugBuffer
+	RLNodeIndexToFieldIndex           map[uint]uint
+	FieldIndexToRLNodeIndex           map[uint]uint
+	TLNodeIndices                     []uint
+	TLNodeSet                         map[uint]bool
+	FirstStoreNodeIndex               uint
+	JSPIndices                        []uint
+	JSPSet                            map[uint]bool
+	StoreNodeIndexToStoreAccountIndex map[uint]uint
+	computed                          bool
+	DebugBuffer                       *DebugBuffer
+	TraceDuration                     time.Duration
 }
 
 func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer) *STrace {
@@ -1825,16 +1827,20 @@ type TraceTrie struct {
 	Tx                    *types.Transaction
 	PathCount             uint
 	RegisterSize          uint
-	DebugOut              DebugOutFunc
-	AccountHead           *AccountSearchTrieNode
-	FieldHead             *FieldSearchTrieNode
-	PreAllocatedExecEnvs  []*ExecEnv
-	PreAllocatedHistory   []*RegisterFile
-	PreAllocatedRegisters []*RegisterFile
-	RoundRefNodesHead     *TrieRoundRefNodes
-	RoundRefNodesTail     *TrieRoundRefNodes
-	RefedRoundCount       uint
-	TrieNodeCount         int64
+	DebugOut                DebugOutFunc
+	AccountHead             *AccountSearchTrieNode
+	FieldHead               *FieldSearchTrieNode
+	PreAllocatedExecEnvs    []*ExecEnv
+	PreAllocatedHistory     []*RegisterFile
+	PreAllocatedRegisters   []*RegisterFile
+	RoundRefNodesHead       *TrieRoundRefNodes
+	RoundRefNodesTail       *TrieRoundRefNodes
+	RefedRoundCount         uint
+	TrieNodeCount           int64
+
+	TotalSpecializationDuration time.Duration
+	TotalMemoizationDuration    time.Duration
+	TotalTraceCount             int64
 }
 
 func NewTraceTrie(tx *types.Transaction) *TraceTrie {
@@ -1955,6 +1961,7 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOverMatching, noMemoization bool) {
 	gcMutex.Lock()
 	defer gcMutex.Unlock()
+	insertStartTime := time.Now()
 	tt.DebugOut = trace.debugOut
 	stats := trace.Stats
 	if len(stats) == 0 {
@@ -1987,6 +1994,12 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 	firstStoreNode := currentTraceNodes[trace.FirstStoreNodeIndex]
 	firstStoreNode.AddStoreInfo(round, trace)
 
+	tt.TotalTraceCount += 1
+	tt.TotalSpecializationDuration += trace.TraceDuration
+	tt.TotalSpecializationDuration += time.Since(insertStartTime)
+
+	memoizationStartTime := time.Now()
+
 	var jiRefNodes []ISRefCountNode
 	var jiNewNodeCount uint = 0
 	if !noMemoization {
@@ -1999,6 +2012,9 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 
 	refNodes = append(refNodes, jiRefNodes...)
 	tt.TrackRoundRefNodes(refNodes, newNodeCount+jiNewNodeCount, round)
+
+
+	tt.TotalMemoizationDuration += time.Since(memoizationStartTime)
 }
 
 func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
@@ -2329,6 +2345,9 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		traceStatus.FieldPotentialReadCount = fieldPotentialReadCount
 		traceStatus.TotalNodes = uint64(node.Seq)
 		traceStatus.TotalOpNodes = node.OpSeq
+		traceStatus.AvgSpecializationDurationInNanoSeconds = tt.TotalSpecializationDuration.Nanoseconds() / tt.TotalTraceCount
+		traceStatus.AvgMemoizationDurationInNanoSeconds = tt.TotalMemoizationDuration.Nanoseconds() / tt.TotalTraceCount
+		traceStatus.TotalTraceCount = tt.TotalTraceCount
 		result = &TraceTrieSearchResult{
 			Node:              node,
 			hit:               hit,

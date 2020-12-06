@@ -65,9 +65,11 @@ type Preplayer struct {
 	taskBuilder  *TaskBuilder
 	missReporter *MissReporter
 	routinePool  *grpool.Pool
+
+	singleFuture bool
 }
 
-func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener) *Preplayer {
+func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener, singleFuture bool) *Preplayer {
 	mu := new(sync.RWMutex)
 	taskBuilder := NewTaskBuilder(config, eth, mu, TYPE0)
 	preplayer := &Preplayer{
@@ -89,6 +91,7 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 		taskBuilder:      taskBuilder,
 		missReporter:     NewMissReporter(config.ChainID, eth.BlockChain().GetVMConfig().MSRAVMSettings.ReportMissDetail),
 		routinePool:      grpool.NewPool(executorNum*2, executorNum*2),
+		singleFuture:     singleFuture,
 	}
 	preplayer.taskBuilder.setPreplayer(preplayer)
 	preplayer.missReporter.preplayer = preplayer
@@ -171,7 +174,11 @@ func (p *Preplayer) mainLoop() {
 					}
 					p.preplayLog.reportGroupPreplay(task)
 					task.updateByPreplay(resultMap, orderAndHeader)
-					if task.getPreplayCount() < config.TXN_PREPLAY_ROUND_LIMIT {
+					roundLimit := config.TXN_PREPLAY_ROUND_LIMIT
+					if p.singleFuture {
+						roundLimit = 1
+					}
+					if task.getPreplayCount() < roundLimit {
 						p.preplayTaskQueue.pushTask(task)
 					} else {
 						task.setInvalid()
@@ -332,10 +339,10 @@ func (p *Preplayer) reportWobjectCopy(rounds []*cache.PreplayResult) {
 
 type Preplayers []*Preplayer
 
-func NewPreplayers(eth Backend, config *params.ChainConfig, engine consensus.Engine, gasFloor, gasCeil uint64, listener *Listener) Preplayers {
+func NewPreplayers(eth Backend, config *params.ChainConfig, engine consensus.Engine, gasFloor, gasCeil uint64, listener *Listener, singleFuture bool) Preplayers {
 	preplayers := Preplayers{}
 	for i := 0; i < 1; i++ {
-		preplayers = append(preplayers, NewPreplayer(config, engine, eth, gasFloor, gasCeil, listener))
+		preplayers = append(preplayers, NewPreplayer(config, engine, eth, gasFloor, gasCeil, listener, singleFuture))
 	}
 	return preplayers
 }
