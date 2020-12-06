@@ -72,7 +72,7 @@ func (b *StatedbBox) warmupDbLoop() {
 							statedb.GetCommittedState(addr, key)
 							b.processedForDb[addr][key] = struct{}{}
 						}
-					}else {
+					} else {
 						panic("addr should always exist in warmup mode")
 					}
 				}
@@ -128,7 +128,7 @@ type Warmuper struct {
 	continueWg sync.WaitGroup
 
 	// Cache
-	GlobalCache *cache.GlobalCache
+	globalCache *cache.GlobalCache
 
 	valid           bool
 	root            common.Hash
@@ -139,6 +139,9 @@ type Warmuper struct {
 }
 
 func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
+	if cfg.MSRAVMSettings.NoWarmuper {
+		return nil
+	}
 	chainHeadCh := make(chan ChainHeadEvent, chainHeadChanSize)
 	warmuper := &Warmuper{
 		chain:           chain,
@@ -216,6 +219,9 @@ func (w *Warmuper) warmupObjLoop(objWarmupCh <-chan *ObjWarmupTask) {
 }
 
 func (w *Warmuper) Pause() {
+	if w == nil {
+		return
+	}
 	w.pauseWg.Add(int(objSubgroupSize))
 	atomic.StoreInt32(&w.pause, 1)
 	for i := byte(0); i < objSubgroupSize; i++ {
@@ -225,6 +231,9 @@ func (w *Warmuper) Pause() {
 }
 
 func (w *Warmuper) Continue() {
+	if w == nil {
+		return
+	}
 	w.continueWg.Add(int(objSubgroupSize))
 	atomic.StoreInt32(&w.pause, 0)
 	w.continueWg.Wait()
@@ -236,7 +245,17 @@ func (w *Warmuper) exit() {
 	}
 }
 
+func (w *Warmuper) SetGlobalCache(globalCache *cache.GlobalCache) {
+	if w == nil {
+		return
+	}
+	w.globalCache = globalCache
+}
+
 func (w *Warmuper) AddWarmupTask(rounds []*cache.PreplayResult, root common.Hash) {
+	if w == nil {
+		return
+	}
 	if !w.valid {
 		return
 	}
@@ -277,9 +296,12 @@ func (w *Warmuper) AddWarmupTask(rounds []*cache.PreplayResult, root common.Hash
 }
 
 func (w *Warmuper) GetStateDB(root common.Hash) (retDb *state.StateDB) {
+	if w == nil {
+		return nil
+	}
 	start := time.Now()
 	defer func() {
-		if cost := time.Since(start); cost > 10 * time.Millisecond {
+		if cost := time.Since(start); cost > 10*time.Millisecond {
 			log.Info("Get stateDB cost too more", "cost", time.Since(start))
 		}
 	}()
@@ -326,7 +348,7 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 }
 
 func (w *Warmuper) getObjectHolder(wref *cache.WObjectWeakReference) *state.ObjectHolder {
-	txPreplay := w.GlobalCache.PeekTxPreplay(wref.TxHash)
+	txPreplay := w.globalCache.PeekTxPreplay(wref.TxHash)
 	if txPreplay != nil && txPreplay.Timestamp == wref.Timestamp {
 		if holder, hok := txPreplay.PreplayResults.GetHolder(wref); hok {
 			return holder

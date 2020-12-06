@@ -1806,6 +1806,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 
 		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
 		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
+		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
 	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {

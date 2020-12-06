@@ -217,7 +217,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if vmConfig.MSRAVMSettings.EnablePreplay || vmConfig.MSRAVMSettings.GroundRecord {
 		cmpr = cmpreuse.NewCmpreuse()
 		cmpr.MSRACache = msracache
-		eth.blockchain.Warmuper.GlobalCache = msracache
+		eth.blockchain.Warmuper.SetGlobalCache(msracache)
 	}
 
 	eth.blockchain.Cmpreuse = cmpr
