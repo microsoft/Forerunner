@@ -744,7 +744,8 @@ func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
 	return nodeCpy
 }
 
-func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext, header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
+func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext,
+	header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
 
 	addr := currentNode.NodeType.Address
 	nodeType := currentNode.NodeType
@@ -849,16 +850,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 
 		return child, ok
 	case cmptypes.Dependence:
-		value := statedb.GetAccountSnapOrChangedBy(addr)
-		child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
-
-		if debug {
-			albs, _ := json.Marshal(&cmptypes.AddrLocValue{AddLoc: nodeType, Value: value})
-			log.Warn("search node type", "ok", ok, "addr", nodeType.Address, "field", nodeType.Field,
-				"loc", nodeType.Loc, "value", value, "alv", string(albs))
-		}
-
-		return child, ok
+		return getDepChild(addr, currentNode, statedb)
 	case cmptypes.MinBalance:
 		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) >= 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
@@ -874,6 +866,13 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 		log.Error("wrong field", "field ", currentNode.NodeType.Field)
 	}
 	return nil, false
+}
+
+func getDepChild(address common.Address, currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB) (*cmptypes.PreplayResTrieNode, bool) {
+	value := statedb.GetAccountSnapOrChangedBy(address)
+	child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
+
+	return child, ok
 }
 
 // return : child node  &&  whether new node is inserted

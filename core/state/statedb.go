@@ -802,8 +802,10 @@ func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) string {
 	changed, ok := s.AccountChangedBy[address]
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
-		changed = cmptypes.NewChangedBy2(accSnap)
-		s.AccountChangedBy[address] = changed
+
+		return *accSnap.Hash()
+		//changed = cmptypes.NewChangedBy2(accSnap)
+		//s.AccountChangedBy[address] = changed
 	}
 	return changed.Hash()
 }

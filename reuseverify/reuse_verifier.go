@@ -188,7 +188,7 @@ func (v *ReuseVerifier) TestBlock(block *types.Block, statedb *state.StateDB, cf
 			return false
 		}
 
-		cmpreuse.ApplyWStates(testDb, rw, cmpreuse.AlwaysFalse)
+		cmpreuse.ApplyWStates(testDb, rw, nil, cmpreuse.AlwaysFalse)
 
 		testDb.Finalise(true)
 		root2 := state.IntermediateRootCalc(testDb).Bytes()

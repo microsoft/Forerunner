@@ -193,8 +193,10 @@ func ApplyWStateDelta(statedb *state.StateDB, addr common.Address, wstate *state
 	return wstate.Suicided != nil && *wstate.Suicided
 }
 
-func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.Address]*cache.WStateDelta, abort func() bool) {
+func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.Address]*cache.WStateDelta, mixStatus *cmptypes.MixStatus, abort func() bool) {
 	var suicideAddr []common.Address
+	wroteDetailCount := 0
+
 	for addr, wstate := range rw.WState {
 		if abort != nil && abort() {
 			return
@@ -209,6 +211,8 @@ func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.A
 				suicideAddr = append(suicideAddr, addr)
 			}
 		}
+		wroteDetailCount += wstate.ItemCount
+
 	}
 	for _, addr := range suicideAddr {
 		if abort != nil && abort() {
@@ -216,43 +220,16 @@ func ApplyDelta(statedb *state.StateDB, rw *cache.RWRecord, WDeltas map[common.A
 		}
 		statedb.Suicide(addr)
 	}
+
+	mixStatus.WriteDetailCount = wroteDetailCount
+	mixStatus.WriteDetailTotal = wroteDetailCount
 }
 
-//
-//func ApplyDeltaWithObj(statedb *state.StateDB, rw *cache.RWRecord, wobject state.ObjectMap, mixStatus *cmptypes.MixHitStatus, abort func() bool) {
-//	var suicideAddr []common.Address
-//	for addr, wstate := range rw.WState {
-//		if abort() {
-//			return
-//		}
-//		wStateDelta, ok := rw.WStateDelta[addr]
-//		if ok {
-//			if ApplyWStateDelta(statedb, addr, wstate, wStateDelta) {
-//				suicideAddr = append(suicideAddr, addr)
-//			}
-//		} else {
-//			wObj, objOk := wobject[addr]
-//			if objOk {
-//				statedb.ApplyStateObject(wObj)
-//				wobject[addr] = nil
-//			} else {
-//				if ApplyWState(statedb, addr, wstate) {
-//					suicideAddr = append(suicideAddr, addr)
-//				}
-//			}
-//		}
-//	}
-//	for _, addr := range suicideAddr {
-//		if abort() {
-//			return
-//		}
-//		statedb.Suicide(addr)
-//	}
-//}
-
 // ApplyWStates apply write state for each address in wstate
-func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool) {
+func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, mixStatus *cmptypes.MixStatus, abort func() bool) {
 	var suicideAddr []common.Address
+	wroteDetailCount := 0
+
 	for addr, wstate := range rw.WState {
 		if abort != nil && abort() {
 			return
@@ -260,12 +237,17 @@ func ApplyWStates(statedb *state.StateDB, rw *cache.RWRecord, abort func() bool)
 		if ApplyWState(statedb, addr, wstate) {
 			suicideAddr = append(suicideAddr, addr)
 		}
+		wroteDetailCount += wstate.ItemCount
 	}
 	for _, addr := range suicideAddr {
 		if abort != nil && abort() {
 			return
 		}
 		statedb.Suicide(addr)
+	}
+	if mixStatus != nil {
+		mixStatus.WriteDetailCount = wroteDetailCount
+		mixStatus.WriteDetailTotal = wroteDetailCount
 	}
 }
 
@@ -718,9 +700,9 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 	if !statedb.IsRWMode() {
 		switch {
 		case status.HitType == cmptypes.DeltaHit:
-			ApplyDelta(statedb, round.RWrecord, txPreplay.PreplayResults.DeltaWrites, abort)
+			ApplyDelta(statedb, round.RWrecord, txPreplay.PreplayResults.DeltaWrites, status.MixStatus, abort)
 		case status.HitType == cmptypes.TrieHit:
-			ApplyWStates(statedb, round.RWrecord, abort)
+			ApplyWStates(statedb, round.RWrecord, status.MixStatus, abort)
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
@@ -737,9 +719,9 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 	} else {
 		cmptypes.MyAssert(status.HitType != cmptypes.TraceHit)
 		if status.HitType == cmptypes.DeltaHit {
-			ApplyDelta(statedb, round.RWrecord, txPreplay.PreplayResults.DeltaWrites, abort)
+			ApplyDelta(statedb, round.RWrecord, txPreplay.PreplayResults.DeltaWrites, status.MixStatus, abort)
 		} else {
-			ApplyWStates(statedb, round.RWrecord, abort)
+			ApplyWStates(statedb, round.RWrecord, status.MixStatus, abort)
 		}
 	}
 
@@ -850,12 +832,17 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 
 					if ok {
 						d0 = time.Since(t0)
-						//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DeltaHit, MixHitStatus: mixStatus}
 						status.BaseStatus = cmptypes.Hit
 						status.HitType = cmptypes.DeltaHit
-						// debug info
-						//rss, _ := json.Marshal(status)
-						//log.Info("reuse delta", "txhash", tx.Hash().Hex(), "status", string(rss))
+
+						checkedNode := 3
+						if len(round.RWrecord.ReadDetail.ReadDetailSeq) == 5 {
+							checkedNode = 4
+						}
+
+						mixStatus = &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: 0, UnhitDepNodeCount: -1,
+							DetailCheckedCount: checkedNode, BasicDetailCount: len(round.RWrecord.ReadDetail.ReadDetailSeq)}
+						status.MixStatus = mixStatus
 					} else if isAbort {
 						d0 = time.Since(t0)
 						//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.DeltaCheck} // abort before hit or miss
@@ -882,8 +869,10 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TrieHit, MixHitStatus: mixStatus}
 					status.BaseStatus = cmptypes.Hit
 					status.HitType = cmptypes.TrieHit
-					// why trie hit instead of mixhit:
-					//       over matching dep leads to a wrong way; the round found by trie might miss all deps
+					mixStatus = &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: 0, UnhitDepNodeCount: -1,
+						DetailCheckedCount: len(round.RWrecord.ReadDetail.ReadDetailSeq), BasicDetailCount: len(round.RWrecord.ReadDetail.ReadDetailSeq)}
+					status.MixStatus = mixStatus
+
 					if false && isBlockProcess {
 						mixbs, _ := json.Marshal(mixStatus)
 						roundbs, _ := json.Marshal(round)
@@ -1057,7 +1046,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		// The delta reuse should be banned when preplaying, because:
 		//	1. Reusing delta would reduce variety of dep relations and reduce the hit rate of dep match
 		//	2. Delta reuse will be still helpful for blockprocessing
-		if !cfg.MSRAVMSettings.NoOverMatching {
+		// deprecated the pure delta check
+		if false && !cfg.MSRAVMSettings.NoOverMatching {
 			if status.BaseStatus == cmptypes.Undefined {
 				if tryHoldLock(txPreplay.PreplayResults.DeltaTreeMu) {
 					round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
@@ -1089,7 +1079,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		}
 	}
 
-	if !cfg.MSRAVMSettings.NoOverMatching {
+	// deprecated the pure trie check
+	if false && !cfg.MSRAVMSettings.NoOverMatching {
 		if status.BaseStatus == cmptypes.Undefined {
 			if tryHoldLock(txPreplay.PreplayResults.RWRecordTrieMu) {
 				round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
