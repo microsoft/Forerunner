@@ -154,19 +154,22 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithT
 			objectSize, storageItemCount := txPreplay.PreplayResults.GetWObjectSize()
 			wobjectCount += objectSize
 			wobjectStorageSize += storageItemCount
-			if txPreplay.PreplayResults.MixTree != nil {
-				totalMixTrieNodeCount += txPreplay.PreplayResults.MixTree.GetNodeCount()
+			mixTree := txPreplay.PreplayResults.MixTree
+			if mixTree != nil {
+				totalMixTrieNodeCount += mixTree.GetNodeCount()
 			}
-			if txPreplay.PreplayResults.TraceTrie != nil {
+			traceTrie := txPreplay.PreplayResults.TraceTrie
+			if traceTrie != nil {
 				cachedTxWithTraceCount++
-				nodeCount := txPreplay.PreplayResults.TraceTrie.GetNodeCount()
+				nodeCount := traceTrie.GetNodeCount()
 				totalTrieNodeCount += nodeCount
 				if nodeCount > maxTrieNodeCount {
 					maxTrieNodeCount = nodeCount
 				}
 			}
-			if txPreplay.PreplayResults.RWRecordTrie != nil {
-				totalRWTrieNodeCount += txPreplay.PreplayResults.RWRecordTrie.GetNodeCount()
+			rwRecordTrie := txPreplay.PreplayResults.RWRecordTrie
+			if rwRecordTrie != nil {
+				totalRWTrieNodeCount += rwRecordTrie.GetNodeCount()
 			}
 		}
 	}

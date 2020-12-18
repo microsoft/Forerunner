@@ -1377,7 +1377,8 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	defer bc.wg.Done()
 
 	var delayedWrites []func()
-	pipelinedWrite := state.BloomProcessor != nil && !bc.cacheConfig.TrieDirtyDisabled // Todo: use a dedicated control
+	// disable pipelined write as there are unresolved concurrency issue
+	pipelinedWrite := false // state.BloomProcessor != nil && !bc.cacheConfig.TrieDirtyDisabled // Todo: use a dedicated control
 	if pipelinedWrite {
 		bc.asyncWriteWg.Wait()
 		defer func() {

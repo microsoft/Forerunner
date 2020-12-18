@@ -88,7 +88,7 @@ func NewObjectHolder(obj *stateObject, objID uintptr) *ObjectHolder {
 
 type ObjectHolderMap map[uintptr]*ObjectHolder
 
-func (hm ObjectHolderMap) GetAndDelete(key uintptr) (holder *ObjectHolder, hok bool) {
+func (hm ObjectHolderMap) GetAndDeleteNoLock(key uintptr) (holder *ObjectHolder, hok bool) {
 	if holder, hok = hm[key]; hok {
 		delete(hm, key)
 	}

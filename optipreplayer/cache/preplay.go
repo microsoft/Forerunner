@@ -148,13 +148,18 @@ func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjec
 	result := make(WObjectWeakRefMap)
 	for addr, obj := range objMap {
 		cmptypes.MyAssert(obj != nil)
-		id := t.PreplayResults.GetOrNewObjectID((uintptr)((unsafe.Pointer)(obj)))
+
+		t.PreplayResults.wobjectHolderMapMu.Lock()
+
+		id := t.PreplayResults.GetOrNewObjectIDNoLock((uintptr)((unsafe.Pointer)(obj)))
 		ref := NewWObjectWeakReference(t.TxHash, addr, t.Timestamp, id, roundId)
-		if _, hasHolder := t.PreplayResults.GetHolder(ref); !hasHolder {
+		if _, hasHolder := t.PreplayResults.GetHolderNoLock(ref); !hasHolder {
 			holder := state.NewObjectHolder(obj, id)
-			t.PreplayResults.SetHolder(ref, holder)
+			t.PreplayResults.SetHolderNoLock(ref, holder)
 			result[addr] = ref
 		}
+
+		t.PreplayResults.wobjectHolderMapMu.Unlock()
 	}
 	return result
 }
@@ -244,9 +249,19 @@ type PreplayResults struct {
 	txPreplay *TxPreplay
 }
 
-func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
-	rs.wobjectHolderMapMu.Lock()
-	defer rs.wobjectHolderMapMu.Unlock()
+//func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
+//	rs.wobjectHolderMapMu.Lock()
+//	defer rs.wobjectHolderMapMu.Unlock()
+//	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; ok {
+//		return objID
+//	}
+//	objID := rs.wobjectIDCounter
+//	rs.objectPointerToObjID[objPointerAsInt] = objID
+//	rs.wobjectIDCounter++
+//	return objID
+//}
+
+func (rs *PreplayResults) GetOrNewObjectIDNoLock(objPointerAsInt uintptr) uintptr {
 	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; ok {
 		return objID
 	}
@@ -258,16 +273,15 @@ func (rs *PreplayResults) GetOrNewObjectID(objPointerAsInt uintptr) uintptr {
 
 func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
 	if rs.wobjectHolderMapMu.TryLock() {
-		//rs.wobjectHolderMapMu.Lock()
-		//defer rs.wobjectHolderMapMu.Unlock()
-		holder, hok := rs.wobjectHolderMap.GetAndDelete(wref.ObjectID)
-		if hok {
-			objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
-			if _, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
-				panic("unsynced wobjectHolderMap and objectPointerToObjID")
-			}
-			delete(rs.objectPointerToObjID, objPointerAsInt)
-		}
+		//holder, hok := rs.wobjectHolderMap.GetAndDeleteNoLock(wref.ObjectID)
+		//if hok {
+		//	objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
+		//	if _, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
+		//		panic("unsynced wobjectHolderMap and objectPointerToObjID")
+		//	}
+		//	delete(rs.objectPointerToObjID, objPointerAsInt)
+		//}
+		holder, hok := rs.GetAndDeleteHolderNoLock(wref.ObjectID)
 		rs.wobjectHolderMapMu.Unlock()
 		return holder, hok
 	} else {
@@ -275,16 +289,39 @@ func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state
 	}
 }
 
+func (rs *PreplayResults) GetAndDeleteHolderNoLock(ObjectID  uintptr) (*state.ObjectHolder, bool) {
+
+	holder, hok := rs.wobjectHolderMap.GetAndDeleteNoLock(ObjectID)
+	if hok {
+		objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
+		if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
+			panic("unsynced wobjectHolderMap and objectPointerToObjID")
+		}else{
+			if objID != ObjectID {
+				panic("objID mismatch with ObjectID")
+			}
+		}
+
+		delete(rs.objectPointerToObjID, objPointerAsInt)
+	}
+	return holder, hok
+}
+
 func (rs *PreplayResults) GetHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
 	rs.wobjectHolderMapMu.Lock()
 	defer rs.wobjectHolderMapMu.Unlock()
+	return rs.GetHolderNoLock(wref)
+}
+
+func (rs *PreplayResults) GetHolderNoLock(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
 	h, ok := rs.wobjectHolderMap[wref.ObjectID]
+	if ok && h.ObjID != wref.ObjectID {
+		cmptypes.MyAssert(false)
+	}
 	return h, ok
 }
 
-func (rs *PreplayResults) SetHolder(wref *WObjectWeakReference, holder *state.ObjectHolder) {
-	rs.wobjectHolderMapMu.Lock()
-	defer rs.wobjectHolderMapMu.Unlock()
+func (rs *PreplayResults) SetHolderNoLock(wref *WObjectWeakReference, holder *state.ObjectHolder) {
 	_, ok := rs.wobjectHolderMap[wref.ObjectID]
 	cmptypes.MyAssert(!ok)
 	rs.wobjectHolderMap[wref.ObjectID] = holder
@@ -315,13 +352,14 @@ func (rs *PreplayResults) GCWObjects() {
 	defer rs.wobjectHolderMapMu.Unlock()
 	for objID, _ := range rs.wobjectHolderMap {
 		if !activeHolderIDs[objID] {
-			holder := rs.wobjectHolderMap[objID]
-			delete(rs.wobjectHolderMap, objID)
-			objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
-			cmptypes.MyAssert(holder.ObjID == objID)
-			_, ok := rs.objectPointerToObjID[objPointerAsInt]
-			cmptypes.MyAssert(ok)
-			delete(rs.objectPointerToObjID, objPointerAsInt)
+			//holder := rs.wobjectHolderMap[objID]
+			//delete(rs.wobjectHolderMap, objID)
+			//objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
+			//cmptypes.MyAssert(holder.ObjID == objID)
+			//_, ok := rs.objectPointerToObjID[objPointerAsInt]
+			//cmptypes.MyAssert(ok)
+			//delete(rs.objectPointerToObjID, objPointerAsInt)
+			rs.GetAndDeleteHolderNoLock(objID)
 		}
 	}
 }
