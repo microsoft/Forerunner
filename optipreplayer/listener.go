@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"math/big"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,7 +33,7 @@ func NewListener(eth Backend) *Listener {
 		txPool:   eth.TxPool(),
 	}
 
-	go listener.cacheEvictionLoop()
+	go listener.cacheEvictionLoop2()
 	go listener.dropReduplicatedNonceTxnLoop()
 
 	go listener.listenCommitLoop()
@@ -40,6 +41,88 @@ func NewListener(eth Backend) *Listener {
 	go listener.enpendingCommitLoop()
 
 	return listener
+}
+
+// eviction is triggered by the heap info
+func (l *Listener) cacheEvictionLoop2() {
+	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
+	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
+	defer chainHeadSub.Unsubscribe()
+
+	m := new(runtime.MemStats)
+	runtime.ReadMemStats(m)
+	lastNumGC := m.NumGC
+	lastHeapAlloc := m.HeapAlloc
+	var removed, oldSize int
+	for chainHeadEvent := range chainHeadCh {
+		currentBlock := chainHeadEvent.Block
+		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
+
+		newSize := l.globalCache.LenOfTxPreplay()
+		startNodeCount, startWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
+		inc := newSize - oldSize
+
+		removed12 := 0
+		removed6 := 0
+		removed2 := 0
+		removedHalf := 0
+
+		m := new(runtime.MemStats)
+		runtime.ReadMemStats(m)
+		if m.NumGC > lastNumGC {
+			// remove txs with 12 confirmations
+			before12 := l.globalCache.LenOfTxPreplay()
+			l.removeBefore(currentBlock.NumberU64() - 12)
+			removed12 = before12 - l.globalCache.LenOfTxPreplay()
+
+			if m.HeapAlloc > config.CACHE_START_EVICTION_SIZE_LIMIT {
+
+				if m.HeapAlloc > config.CACHE_LIGHT_EVICTION_SIZE_LIMIT {
+					// remove txs with 6 confirmations
+					before6 := l.globalCache.LenOfTxPreplay()
+					l.removeBefore(currentBlock.NumberU64() - 6)
+					removed6 = before6 - l.globalCache.LenOfTxPreplay()
+					//before6 := l.globalCache.LenOfTxPreplay()
+					//l.removeBefore(currentBlock.NumberU64() - 6)
+					//removed6 = before6 - l.globalCache.LenOfTxPreplay()
+					// remove txs with 2 confirmations
+				}
+				if m.HeapAlloc > config.CACHE_SOFT_EVICTION_SIZE_LIMIT {
+					// remove txs with 2 confirmations
+					before2 := l.globalCache.LenOfTxPreplay()
+					l.removeBefore(currentBlock.NumberU64() - 2)
+					removed2 = before2 - l.globalCache.LenOfTxPreplay()
+				}
+				if m.HeapAlloc > config.CACHE_HARD_EVICTION_SIZE_LIMIT {
+					currentCacheSize := l.globalCache.LenOfTxPreplay()
+					targetCacheSize := currentCacheSize / 2
+					l.globalCache.ResizeTxPreplay(targetCacheSize)
+					removedHalf = currentCacheSize - l.globalCache.LenOfTxPreplay()
+				}
+			}
+		}
+
+		l.globalCache.GCWObjects()
+
+
+		afterSize := l.globalCache.LenOfTxPreplay()
+		removed = newSize - afterSize
+
+		endNodeCount, endWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
+
+		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
+			"removed", fmt.Sprintf("%d(12:%d,6:%d,2:%d,half:%d)", removed, removed12, removed6, removed2, removedHalf),
+			"newHeapAlloc", m.HeapAlloc/1024/1024/1024,
+			"newSize", afterSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
+			"oldHeapAlloc", lastHeapAlloc/1024/1024/1024,
+			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
+			"numGC", m.NumGC, "lastNumGC", lastNumGC,
+		)
+
+		lastNumGC = m.NumGC
+		lastHeapAlloc = m.HeapAlloc
+		oldSize = afterSize
+	}
 }
 
 func (l *Listener) cacheEvictionLoop() {

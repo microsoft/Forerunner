@@ -1106,6 +1106,10 @@ func (rt *ReuseTracer) TraceOpByName(opName string, pc uint64, gas uint64) {
 		return
 	}
 
+	rt.CallTraceMethod(opName)
+
+	return
+
 	name := strings.ToLower(opName)
 	name = strings.ToUpper(name[0:1]) + name[1:]
 	method := rt.GetTraceMethod(name)
@@ -1114,6 +1118,158 @@ func (rt *ReuseTracer) TraceOpByName(opName string, pc uint64, gas uint64) {
 		panic(fmt.Sprintf("Op %v not implemented", name))
 	}
 	method.Call(make([]reflect.Value, 0))
+}
+
+func (rt *ReuseTracer) CallTraceMethod(name string) {
+	switch name {
+	case "ADD":
+		rt.Trace_opAdd()
+	case "SUB":
+		rt.Trace_opSub()
+	case "MUL":
+		rt.Trace_opMul()
+	case "DIV":
+		rt.Trace_opDiv()
+	case "SDIV":
+		rt.Trace_opSdiv()
+	case "MOD":
+		rt.Trace_opMod()
+	case "SMOD":
+		rt.Trace_opSmod()
+	case "EXP":
+		rt.Trace_opExp()
+	case "SIGNEXTEND":
+		rt.Trace_opSignextend()
+	case "NOT":
+		rt.Trace_opNot()
+	case "LT":
+		rt.Trace_opLt()
+	case "GT":
+		rt.Trace_opGt()
+	case "SLT":
+		rt.Trace_opSlt()
+	case "SGT":
+		rt.Trace_opSgt()
+	case "EQ":
+		rt.Trace_opEq()
+	case "ISZERO":
+		rt.Trace_opIszero()
+	case "AND":
+		rt.Trace_opAnd()
+	case "OR":
+		rt.Trace_opOr()
+	case "XOR":
+		rt.Trace_opXor()
+	case "BYTE":
+		rt.Trace_opByte()
+	case "ADDMOD":
+		rt.Trace_opAddmod()
+	case "MULMOD":
+		rt.Trace_opMulmod()
+	case "SHL":
+		rt.Trace_opShl()
+	case "SHR":
+		rt.Trace_opShr()
+	case "SAR":
+		rt.Trace_opSar()
+	case "SHA3":
+		rt.Trace_opSha3()
+	case "ADDRESS":
+		rt.Trace_opAddress()
+	case "BALANCE":
+		rt.Trace_opBalance()
+	case "ORIGIN":
+		rt.Trace_opOrigin()
+	case "CALLER":
+		rt.Trace_opCaller()
+	case "CALLVALUE":
+		rt.Trace_opCallvalue()
+	case "CALLDATALOAD":
+		rt.Trace_opCalldataload()
+	case "CALLDATASIZE":
+		rt.Trace_opCalldatasize()
+	case "CALLDATACOPY":
+		rt.Trace_opCalldatacopy()
+	case "RETURNDATASIZE":
+		rt.Trace_opReturndatasize()
+	case "RETURNDATACOPY":
+		rt.Trace_opReturndatacopy()
+	case "EXTCODESIZE":
+		rt.Trace_opExtcodesize()
+	case "CODESIZE":
+		rt.Trace_opCodesize()
+	case "CODECOPY":
+		rt.Trace_opCodecopy()
+	case "EXTCODECOPY":
+		rt.Trace_opExtcodecopy()
+	case "EXTCODEHASH":
+		rt.Trace_opExtcodehash()
+	case "GASPRICE":
+		rt.Trace_opGasprice()
+	case "BLOCKHASH":
+		rt.Trace_opBlockhash()
+	case "COINBASE":
+		rt.Trace_opCoinbase()
+	case "TIMESTAMP":
+		rt.Trace_opTimestamp()
+	case "NUMBER":
+		rt.Trace_opNumber()
+	case "DIFFICULTY":
+		rt.Trace_opDifficulty()
+	case "GASLIMIT":
+		rt.Trace_opGaslimit()
+	case "POP":
+		rt.Trace_opPop()
+	case "MLOAD":
+		rt.Trace_opMload()
+	case "MSTORE":
+		rt.Trace_opMstore()
+	case "MSTORE8":
+		rt.Trace_opMstore8()
+	case "SLOAD":
+		rt.Trace_opSload()
+	case "SSTORE":
+		rt.Trace_opSstore()
+	case "JUMP":
+		rt.Trace_opJump()
+	case "JUMPI":
+		rt.Trace_opJumpi()
+	case "JUMPDEST":
+		rt.Trace_opJumpdest()
+	case "PC":
+		rt.Trace_opPc()
+	case "MSIZE":
+		rt.Trace_opMsize()
+	case "GAS":
+		rt.Trace_opGas()
+	case "CREATE":
+		rt.Trace_opCreate()
+	case "CREATE2":
+		rt.Trace_opCreate2()
+	case "CALL":
+		rt.Trace_opCall()
+	case "CALLCODE":
+		rt.Trace_opCallcode()
+	case "DELEGATECALL":
+		rt.Trace_opDelegatecall()
+	case "STATICCALL":
+		rt.Trace_opStaticcall()
+	case "RETURN":
+		rt.Trace_opReturn()
+	case "REVERT":
+		rt.Trace_opRevert()
+	case "STOP":
+		rt.Trace_opStop()
+	case "SELFDESTRUCT":
+		rt.Trace_opSelfdestruct()
+	case "SELFBALANCE":
+		rt.Trace_opSelfbalance()
+	case "CHAINID":
+		rt.Trace_opChainid()
+	default:
+		rt.MarkUnimplementedOp()
+		panic(fmt.Sprintf("Op %v not implemented", name))
+	}
 }
 
 func (rt *ReuseTracer) GetTraceMethod(name string) reflect.Value {

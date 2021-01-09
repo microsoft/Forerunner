@@ -6,13 +6,6 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"math"
-	"math/big"
-	"sort"
-	"sync"
-	"time"
-	"unsafe"
-
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -22,6 +15,11 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
+	"math"
+	"math/big"
+	"sort"
+	"sync"
+	"time"
 )
 
 var (
@@ -67,7 +65,7 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 		RWRecordTrieMu:       cmptypes.NewSimpleTryLock(), // trylock.New(),
 		wobjectHolderMap:     make(state.ObjectHolderMap),
 		wobjectHolderMapMu:   cmptypes.NewSimpleTryLock(), //trylock.New(),
-		objectPointerToObjID: make(map[uintptr]uintptr),
+		//objectPointerToObjID: make(map[uintptr]uintptr),
 		//RWrecords:            RWrecords,
 	}
 
@@ -144,25 +142,27 @@ func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transact
 	}
 }
 
-func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
-	result := make(WObjectWeakRefMap)
-	for addr, obj := range objMap {
-		cmptypes.MyAssert(obj != nil)
 
-		t.PreplayResults.wobjectHolderMapMu.Lock()
 
-		id := t.PreplayResults.GetOrNewObjectIDNoLock((uintptr)((unsafe.Pointer)(obj)))
-		ref := NewWObjectWeakReference(t.TxHash, addr, t.Timestamp, id, roundId)
-		if _, hasHolder := t.PreplayResults.GetHolderNoLock(ref); !hasHolder {
-			holder := state.NewObjectHolder(obj, id)
-			t.PreplayResults.SetHolderNoLock(ref, holder)
-			result[addr] = ref
-		}
-
-		t.PreplayResults.wobjectHolderMapMu.Unlock()
-	}
-	return result
-}
+//func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
+//	result := make(WObjectWeakRefMap)
+//	for addr, obj := range objMap {
+//		cmptypes.MyAssert(obj != nil)
+//
+//		t.PreplayResults.wobjectHolderMapMu.Lock()
+//
+//		id := t.PreplayResults.GetOrNewObjectIDNoLock((uintptr)((unsafe.Pointer)(obj)))
+//		ref := NewWObjectWeakReference(t.TxHash, addr, t.Timestamp, id, roundId)
+//		if _, hasHolder := t.PreplayResults.GetHolderNoLock(ref); !hasHolder {
+//			holder := state.NewObjectHolder(obj, id)
+//			t.PreplayResults.SetHolderNoLock(ref, holder)
+//			result[addr] = ref
+//		}
+//
+//		t.PreplayResults.wobjectHolderMapMu.Unlock()
+//	}
+//	return result
+//}
 
 func (t *TxPreplay) RLockRound() {
 	t.PreplayResults.RoundsMu.RLock()
@@ -217,6 +217,15 @@ func (t *TxPreplay) KeysOfRound() []uint64 {
 	return keys
 }
 
+func (t *TxPreplay) GetWObjectHolder(wref *WObjectWeakReference) *state.ObjectHolder {
+	if t.Timestamp == wref.Timestamp {
+		if holder, hok := t.PreplayResults.GetHolder(wref); hok {
+			return holder
+		}
+	}
+	return nil
+}
+
 // PreplayResults record results of several rounds
 type PreplayResults struct {
 	Rounds   *lru.Cache `json:"-"`
@@ -239,7 +248,7 @@ type PreplayResults struct {
 	wobjectHolderMap     state.ObjectHolderMap
 	wobjectHolderMapMu   *cmptypes.SimpleTryLock //trylock.TryLocker
 	wobjectIDCounter     uintptr
-	objectPointerToObjID map[uintptr]uintptr
+	//objectPointerToObjID map[uintptr]uintptr
 
 	// deprecated
 	RWrecords *lru.Cache `json:"-"`
@@ -261,15 +270,75 @@ type PreplayResults struct {
 //	return objID
 //}
 
-func (rs *PreplayResults) GetOrNewObjectIDNoLock(objPointerAsInt uintptr) uintptr {
-	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; ok {
-		return objID
+func (rs *PreplayResults) GetMixTreeActiveRounds() []cmptypes.IRound {
+	rs.MixTreeMu.Lock()
+	defer rs.MixTreeMu.Unlock()
+	mixTree := rs.MixTree
+	if mixTree != nil {
+		return mixTree.GetActiveIRounds()
 	}
+	return nil
+}
+
+func (rs *PreplayResults) GetTraceTrieActiveRounds() []*PreplayResult {
+	rs.TraceTrieMu.Lock()
+	defer rs.TraceTrieMu.Unlock()
+	traceTrie := rs.TraceTrie
+	if traceTrie != nil {
+		return traceTrie.GetActiveRounds()
+	}
+	return nil
+}
+
+func (rs *PreplayResults) TryGetMixTreeNodeCount() int64 {
+	if rs.MixTreeMu.TryLock() {
+		defer rs.MixTreeMu.Unlock()
+		mixTree := rs.MixTree
+		if mixTree != nil {
+			return mixTree.GetNodeCount()
+		}
+	}
+	return 0
+}
+
+func (rs *PreplayResults) TryGetTraceTrieNodeCount() int64 {
+	if rs.TraceTrieMu.TryLock() {
+		defer rs.TraceTrieMu.Unlock()
+		traceTrie := rs.TraceTrie
+		if traceTrie != nil {
+			return traceTrie.GetNodeCount()
+		}
+	}
+	return 0
+}
+
+func (rs *PreplayResults) TryGetRWRecordTrieNodeCount() int64 {
+	if rs.RWRecordTrieMu.TryLock() {
+		defer rs.RWRecordTrieMu.Unlock()
+		trie := rs.RWRecordTrie
+		if trie != nil {
+			return trie.GetNodeCount()
+		}
+	}
+	return 0
+}
+
+func (rs *PreplayResults) NewObjectIDNoLock() uintptr {
 	objID := rs.wobjectIDCounter
-	rs.objectPointerToObjID[objPointerAsInt] = objID
 	rs.wobjectIDCounter++
 	return objID
 }
+
+//func (rs *PreplayResults) GetOrNewObjectIDNoLock(objPointerAsInt uintptr) uintptr {
+//	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; ok {
+//		panic("same wobject stored twice!")
+//		return objID
+//	}
+//	objID := rs.wobjectIDCounter
+//	rs.objectPointerToObjID[objPointerAsInt] = objID
+//	rs.wobjectIDCounter++
+//	return objID
+//}
 
 func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state.ObjectHolder, bool) {
 	if rs.wobjectHolderMapMu.TryLock() {
@@ -292,18 +361,18 @@ func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state
 func (rs *PreplayResults) GetAndDeleteHolderNoLock(ObjectID  uintptr) (*state.ObjectHolder, bool) {
 
 	holder, hok := rs.wobjectHolderMap.GetAndDeleteNoLock(ObjectID)
-	if hok {
-		objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
-		if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
-			panic("unsynced wobjectHolderMap and objectPointerToObjID")
-		}else{
-			if objID != ObjectID {
-				panic("objID mismatch with ObjectID")
-			}
-		}
-
-		delete(rs.objectPointerToObjID, objPointerAsInt)
-	}
+	//if hok {
+	//	objPointerAsInt := uintptr(unsafe.Pointer(holder.Obj))
+	//	if objID, ok := rs.objectPointerToObjID[objPointerAsInt]; !ok {
+	//		panic("unsynced wobjectHolderMap and objectPointerToObjID")
+	//	}else{
+	//		if objID != ObjectID {
+	//			panic("objID mismatch with ObjectID")
+	//		}
+	//	}
+	//
+	//	delete(rs.objectPointerToObjID, objPointerAsInt)
+	//}
 	return holder, hok
 }
 
@@ -329,17 +398,25 @@ func (rs *PreplayResults) SetHolderNoLock(wref *WObjectWeakReference, holder *st
 
 func (rs *PreplayResults) GCWObjects() {
 	activeRounds := make(map[*PreplayResult]bool)
-	if rs.MixTree != nil {
-		for _, iRound := range rs.MixTree.GetActiveIRounds() {
-			round := iRound.(*PreplayResult)
-			activeRounds[round] = true
-		}
+	for _, iRound := range rs.GetMixTreeActiveRounds() {
+		round := iRound.(*PreplayResult)
+		activeRounds[round] = true
 	}
-	if rs.TraceTrie != nil {
-		for _, round := range rs.TraceTrie.GetActiveRounds() {
-			activeRounds[round] = true
-		}
+	for _, round := range rs.GetTraceTrieActiveRounds() {
+		activeRounds[round] = true
 	}
+
+	//if rs.MixTree != nil {
+	//	for _, iRound := range rs.MixTree.GetActiveIRounds() {
+	//		round := iRound.(*PreplayResult)
+	//		activeRounds[round] = true
+	//	}
+	//}
+	//if rs.TraceTrie != nil {
+	//	for _, round := range rs.TraceTrie.GetActiveRounds() {
+	//		activeRounds[round] = true
+	//	}
+	//}
 
 	activeHolderIDs := make(map[uintptr]bool)
 	for round, _ := range activeRounds {
@@ -372,6 +449,24 @@ func (rs *PreplayResults) GetWObjectSize() (objectCount uint64, storageItemCount
 		storageItemCount += uint64(len(holder.Obj.GetOriginStorage()))
 	}
 	return
+}
+
+func (rs *PreplayResults) StoreUniqueWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
+	result := make(WObjectWeakRefMap)
+	for addr, obj := range objMap {
+		cmptypes.MyAssert(obj != nil)
+
+		rs.wobjectHolderMapMu.Lock()
+
+		id := rs.NewObjectIDNoLock()
+		ref := NewWObjectWeakReference(rs.txPreplay.TxHash, addr, rs.txPreplay.Timestamp, id, roundId)
+		holder := state.NewObjectHolder(obj, id)
+		rs.SetHolderNoLock(ref, holder)
+		result[addr] = ref
+
+		rs.wobjectHolderMapMu.Unlock()
+	}
+	return result
 }
 
 type ITracerTrie interface {
@@ -1136,7 +1231,7 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 
 	nowTime := time.Now()
 	//round.WObjects = wobjects
-	round.WObjectWeakRefs = txPreplay.StoreWObjects(wobjects, roundID)
+	round.WObjectWeakRefs = txPreplay.PreplayResults.StoreUniqueWObjects(wobjects, roundID)//txPreplay.StoreWObjects(wobjects, roundID)
 	round.WObjectCopy = wobjectCopy
 	round.WObjectNotCopy = wobjectNotCopy
 	round.Timestamp = uint64(nowTime.Unix())

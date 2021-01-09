@@ -154,23 +154,33 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithT
 			objectSize, storageItemCount := txPreplay.PreplayResults.GetWObjectSize()
 			wobjectCount += objectSize
 			wobjectStorageSize += storageItemCount
-			mixTree := txPreplay.PreplayResults.MixTree
-			if mixTree != nil {
-				totalMixTrieNodeCount += mixTree.GetNodeCount()
-			}
-			traceTrie := txPreplay.PreplayResults.TraceTrie
-			if traceTrie != nil {
+			totalMixTrieNodeCount += txPreplay.PreplayResults.TryGetMixTreeNodeCount()
+			traceNodeCount := txPreplay.PreplayResults.TryGetTraceTrieNodeCount()
+			if traceNodeCount != 0 {
 				cachedTxWithTraceCount++
-				nodeCount := traceTrie.GetNodeCount()
-				totalTrieNodeCount += nodeCount
-				if nodeCount > maxTrieNodeCount {
-					maxTrieNodeCount = nodeCount
+				totalTrieNodeCount += traceNodeCount
+				if traceNodeCount > maxTrieNodeCount {
+					maxTrieNodeCount = traceNodeCount
 				}
 			}
-			rwRecordTrie := txPreplay.PreplayResults.RWRecordTrie
-			if rwRecordTrie != nil {
-				totalRWTrieNodeCount += rwRecordTrie.GetNodeCount()
-			}
+			totalRWTrieNodeCount += txPreplay.PreplayResults.TryGetRWRecordTrieNodeCount()
+			//mixTree := txPreplay.PreplayResults.MixTree
+			//if mixTree != nil {
+			//	totalMixTrieNodeCount += mixTree.GetNodeCount()
+			//}
+			//traceTrie := txPreplay.PreplayResults.TraceTrie
+			//if traceTrie != nil {
+			//	cachedTxWithTraceCount++
+			//	nodeCount := traceTrie.GetNodeCount()
+			//	totalTrieNodeCount += nodeCount
+			//	if nodeCount > maxTrieNodeCount {
+			//		maxTrieNodeCount = nodeCount
+			//	}
+			//}
+			//rwRecordTrie := txPreplay.PreplayResults.RWRecordTrie
+			//if rwRecordTrie != nil {
+			//	totalRWTrieNodeCount += rwRecordTrie.GetNodeCount()
+			//}
 		}
 	}
 	return
