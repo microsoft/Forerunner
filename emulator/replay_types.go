@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"math/big"
 	"time"
 )
 
@@ -24,6 +25,7 @@ const (
 
 type ReplayMsg interface {
 	GetTime() time.Time
+	GetType() int
 }
 
 type replayMsg struct {
@@ -33,6 +35,10 @@ type replayMsg struct {
 
 func (r replayMsg) GetTime() time.Time {
 	return r.Time
+}
+
+func (r replayMsg) GetType() int{
+	return r.Type
 }
 
 func newReplayMsg(Type int, time time.Time) replayMsg {
@@ -104,7 +110,9 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 		if c.txPoolLoaded {
 			pending, queued := c.TxPool.(*core.TxPool).Stats()
 
-			var lag time.Duration
+			var avgLag *big.Int
+			var curLag time.Duration
+			var count int64
 			if GlobalGethReplayer.IsRealtimeMode() {
 				broker, ok := GlobalGethReplayer.broker.(*RealtimeBroker)
 				if !ok {
@@ -112,8 +120,10 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 				}
 				metrics := broker.Metrics
 				if metrics.count > 0 {
-					lag = time.Duration(int64(metrics.totalLag) / metrics.count)
+					avgLag = new(big.Int).Mul(metrics.totalLag, big.NewInt(metrics.count))
 				}
+				curLag = metrics.curLag
+				count = metrics.count
 			}
 
 			blocks := msg.(*insertChainData).Blocks
@@ -124,7 +134,8 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 
 			c.callInsertChain(msg.(*insertChainData))
 			//GlobalGethReplayer.SetRealtimeMode()
-			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued, "lag", lag)
+			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued,
+				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "count", count)
 			c.LastBlockNumber = lastBlockNumber
 			if lastBlockNumber >= rawdb.GlobalEmulateHook.EmulateFrom()-1 { // might be - 100
 				GlobalGethReplayer.SetRealtimeMode()
@@ -189,7 +200,7 @@ func parseReplayMsgBlocks(line []byte) (*insertChainData, error) {
 
 func (c *replayMsgConsumer) callInsertChain(dec *insertChainData) {
 	if c.BlockChain != nil {
-		for _, block := range dec.Blocks{
+		for _, block := range dec.Blocks {
 			c.BlockChain.CommitBlockPreWithListenTime(block, dec.GetTime())
 		}
 		_, _ = c.BlockChain.InsertChain(dec.Blocks)

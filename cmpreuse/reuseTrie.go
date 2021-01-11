@@ -869,9 +869,21 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 }
 
 func getDepChild(address common.Address, currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB) (*cmptypes.PreplayResTrieNode, bool) {
-	value := statedb.GetAccountSnapOrChangedBy(address)
-	child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
+	value, isSnap := statedb.GetAccountSnapOrChangedBy(address)
+	if isSnap {
+		return getSnapChild(currentNode, value)
+	} else {
+		return getTxResIDChild(currentNode, value)
+	}
+}
 
+func getSnapChild(currentNode *cmptypes.PreplayResTrieNode, value string) (*cmptypes.PreplayResTrieNode, bool) {
+	child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
+	return child, ok
+}
+
+func getTxResIDChild(currentNode *cmptypes.PreplayResTrieNode, value string) (*cmptypes.PreplayResTrieNode, bool) {
+	child, ok := currentNode.Children.(cmptypes.StringChildren)[value]
 	return child, ok
 }
 

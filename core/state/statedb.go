@@ -20,12 +20,12 @@ package state
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"math/big"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -798,16 +798,23 @@ func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy 
 	return changed.Copy()
 }
 
-func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) string {
+// return hash & IsSnap
+func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) (string, bool) {
 	changed, ok := s.AccountChangedBy[address]
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
 
-		return *accSnap.Hash()
+		return *accSnap.Hash(), true
 		//changed = cmptypes.NewChangedBy2(accSnap)
 		//s.AccountChangedBy[address] = changed
 	}
-	return changed.Hash()
+
+	if !s.rwRecorderEnabled {
+
+		cmptypes.MyAssert(changed.AccountSnap == nil)
+	}
+
+	return changed.Hash(), false
 }
 
 //func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
@@ -1329,24 +1336,6 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 	}
 	return cmptypes.BytesToAccountSnap(snap)
 
-	//var obj *stateObject
-	//var ok bool
-	//if s.IsShared() {
-	//	obj, ok = s.delta.stateObjects[address]
-	//} else {
-	//	obj, ok = s.stateObjects[address]
-	//}
-	//if ok && obj != nil {
-	//	if obj.snap != nil {
-	//		return obj.snap
-	//	}
-	//}
-	//
-	//snap, err := s.trie.TryGet(address[:])
-	//if err != nil { // this address does not exist
-	//	return &cmptypes.AccountSnap{}
-	//}
-	//return cmptypes.BytesToAccountSnap(snap)
 }
 
 func (s *StateDB) TrieGet(address common.Address) ([]byte, error) {
@@ -1653,7 +1642,7 @@ func (s *StateDB) Prepare(thash, bhash common.Hash, ti int) {
 func (s *StateDB) clearJournalAndRefund() {
 	if len(s.journal.entries) > 0 || len(s.journal.dirties) > 0 {
 		s.savedDirties = s.journal.dirties
-		s.journal = s.GetNewJournal()//newJournal()
+		s.journal = s.GetNewJournal() //newJournal()
 		s.refund = 0
 	}
 	s.validRevisions = s.validRevisions[:0] // Snapshots can be created without journal entires

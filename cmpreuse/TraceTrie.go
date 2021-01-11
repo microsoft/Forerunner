@@ -43,17 +43,17 @@ type STrace struct {
 	StoreAccountIndexToStoreAccountDependencies map[uint][]uint
 	StoreAccountIndexToStoreVarRegisterIndices  map[uint][]uint
 	RLNodeIndexToAccountIndex                   map[uint]uint
-	RLNodeIndexToFieldIndex           map[uint]uint
-	FieldIndexToRLNodeIndex           map[uint]uint
-	TLNodeIndices                     []uint
-	TLNodeSet                         map[uint]bool
-	FirstStoreNodeIndex               uint
-	JSPIndices                        []uint
-	JSPSet                            map[uint]bool
-	StoreNodeIndexToStoreAccountIndex map[uint]uint
-	computed                          bool
-	DebugBuffer                       *DebugBuffer
-	TraceDuration                     time.Duration
+	RLNodeIndexToFieldIndex                     map[uint]uint
+	FieldIndexToRLNodeIndex                     map[uint]uint
+	TLNodeIndices                               []uint
+	TLNodeSet                                   map[uint]bool
+	FirstStoreNodeIndex                         uint
+	JSPIndices                                  []uint
+	JSPSet                                      map[uint]bool
+	StoreNodeIndexToStoreAccountIndex           map[uint]uint
+	computed                                    bool
+	DebugBuffer                                 *DebugBuffer
+	TraceDuration                               time.Duration
 }
 
 func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer) *STrace {
@@ -1641,7 +1641,7 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 		} else {
 			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
-		changedBy := env.state.GetAccountSnapOrChangedBy(addr)
+		changedBy, _ := env.state.GetAccountSnapOrChangedBy(addr)
 		k := GetGuardKey(changedBy)
 		vid = n.AccountValueToID[k]
 	}
@@ -1827,16 +1827,16 @@ type TraceTrie struct {
 	Tx                    *types.Transaction
 	PathCount             uint
 	RegisterSize          uint
-	DebugOut                DebugOutFunc
-	AccountHead             *AccountSearchTrieNode
-	FieldHead               *FieldSearchTrieNode
-	PreAllocatedExecEnvs    []*ExecEnv
-	PreAllocatedHistory     []*RegisterFile
-	PreAllocatedRegisters   []*RegisterFile
-	RoundRefNodesHead       *TrieRoundRefNodes
-	RoundRefNodesTail       *TrieRoundRefNodes
-	RefedRoundCount         uint
-	TrieNodeCount           int64
+	DebugOut              DebugOutFunc
+	AccountHead           *AccountSearchTrieNode
+	FieldHead             *FieldSearchTrieNode
+	PreAllocatedExecEnvs  []*ExecEnv
+	PreAllocatedHistory   []*RegisterFile
+	PreAllocatedRegisters []*RegisterFile
+	RoundRefNodesHead     *TrieRoundRefNodes
+	RoundRefNodesTail     *TrieRoundRefNodes
+	RefedRoundCount       uint
+	TrieNodeCount         int64
 
 	TotalSpecializationDuration time.Duration
 	TotalMemoizationDuration    time.Duration
@@ -2012,7 +2012,6 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 
 	refNodes = append(refNodes, jiRefNodes...)
 	tt.TrackRoundRefNodes(refNodes, newNodeCount+jiNewNodeCount, round)
-
 
 	tt.TotalMemoizationDuration += time.Since(memoizationStartTime)
 }
@@ -2393,8 +2392,6 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		return
 	}
 
-
-
 	if fNode != nil {
 		fNode, node, aborted, hit = tt.searchFieldLane(fNode, node,
 			env, registers, accountHistory, fieldHistory,
@@ -2596,7 +2593,6 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 		//	*executedNodes++
 		//	*executedInputNodes++
 		//}
-
 
 		if !noOverMatching && fNode.LRNode.Op.isLoadOp {
 			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
@@ -2809,7 +2805,7 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 	accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}),
 	fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode,
 	pTotalJumps, pTotalJumpKeys, pFailedJumps *uint64,
-    noOverMatching bool) *SNode {
+	noOverMatching bool) *SNode {
 	for {
 		if debug {
 			cmptypes.MyAssert(jNode.OpNode == node)
@@ -3193,7 +3189,7 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 	}
 
 	// setup additional FieldAJumps
-    if !j.noOverMatching {
+	if !j.noOverMatching {
 		j.aNodeFJds = aNodeJds
 
 		for si, fSrc := range fNodes {
@@ -3667,7 +3663,7 @@ func (j *JumpInserter) SetupOpJumpLane() {
 					if jumpSrc.JumpHead.IsAccountJump {
 						cmptypes.MyAssert(false, "Unexpected Account Jump when overmatching is disabled.")
 					}
-				}else {
+				} else {
 					jd = jumpSrc.JumpHead.Exit
 				}
 				cmptypes.MyAssert(jd != nil)
@@ -3791,11 +3787,11 @@ func (j *JumpInserter) SetupOpJumpLane() {
 				jumpDes = snodes[jumpDes.Seq+1]
 			}
 
-			if j.noOverMatching{
+			if j.noOverMatching {
 				if jumpSrc.JumpHead == nil {
 					jumpSrc.JumpHead = fjdHead.Next
 				}
-			}else {
+			} else {
 				// create OpAJumps
 				nodeBudget += 5
 				jumpDes = jumpSrc

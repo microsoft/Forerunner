@@ -9,6 +9,9 @@ type GethReplayer struct {
 	consumer *replayMsgConsumer
 	broker   Broker
 
+	rawLineChan chan []byte
+	msgChan     chan ReplayMsg
+
 	realtime bool
 }
 
@@ -29,6 +32,9 @@ func NewGethReplayer(blockchain ReplayBlockChain, txPool ReplayTxPool) *GethRepl
 		consumer: consumer,
 		broker:   broker,
 		realtime: realtime,
+
+		rawLineChan: make(chan []byte, 100),
+		msgChan:     make(chan ReplayMsg, 100),
 	}
 }
 
@@ -42,18 +48,53 @@ func (e *GethReplayer) SetRealtimeMode() {
 }
 
 func (e *GethReplayer) RunReplay(reader LogReader) {
+	go e.readLog(reader)
+	go e.deserializeLog()
+	go e.publishLog()
+}
+
+func (e *GethReplayer) readLog(reader LogReader) {
 	for {
 		line, ok := reader.readln()
 		if !ok {
 			return
 		}
+		e.rawLineChan <- line
+	}
+}
 
-		msg, err := deserializeLine(line)
-		if err != nil {
-			panic(err)
+func (e *GethReplayer) deserializeLog() {
+	deserializeWaitChan := make(chan struct{}, 20)
+	for {
+		select {
+		case line := <-e.rawLineChan:
+			deserializeWaitChan <- struct{}{}
+			go func(raw []byte) {
+				msg, err := deserializeLine(raw)
+				if err != nil {
+					panic(err)
+				}
+				e.msgChan <- msg
+				<-deserializeWaitChan
+			}(line)
+
 		}
+	}
+}
 
-		e.broker.Publish(msg)
+func (e *GethReplayer) publishLog() {
+	waitChan := make(chan struct{}, 20)
+
+	for {
+		select {
+		case msg := <-e.msgChan:
+			waitChan <- struct{}{}
+			go func(m ReplayMsg) {
+				e.broker.Publish(m)
+				<-waitChan
+			}(msg)
+
+		}
 	}
 }
 
@@ -101,6 +142,12 @@ func NewRealtimeBroker(consumer Consumer) *RealtimeBroker {
 func (b *RealtimeBroker) Publish(msg ReplayMsg) {
 	b.waitingCh <- struct{}{}
 
+	execMsg := func() {
+		b.Metrics.ReplayTimeMeter(msg, time.Now())
+		b.Consumer.Accept(msg)
+		<-b.waitingCh
+	}
+
 	t := msg.GetTime()
 
 	var realDelta time.Duration
@@ -115,16 +162,10 @@ func (b *RealtimeBroker) Publish(msg ReplayMsg) {
 	}
 	expectedDelta := t.Sub(*b.recordedStart)
 
-	execMsg := func() {
-		<-b.waitingCh
-
-		b.Metrics.ReplayTimeMeter(msg.GetTime(), time.Now())
-		b.Consumer.Accept(msg)
-	}
-
-	if expectedDelta-realDelta > 0 {
-		time.AfterFunc(expectedDelta-realDelta, execMsg)
+	gap := expectedDelta - realDelta
+	if gap > 0 {
+		time.AfterFunc(gap, execMsg)
 	} else {
-		execMsg()
+		go execMsg()
 	}
 }

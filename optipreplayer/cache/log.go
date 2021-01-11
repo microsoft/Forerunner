@@ -471,6 +471,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 	}
 
 	for word := range WarmupMissTxnCount {
+		log.Warn("                     there is a warmupmiss word !!!!!!!!!!!!!!!", "word", word)
+
 		CumWarmupMissTxnCount[word] += WarmupMissTxnCount[word]
 		CumAccountCreate[word] += AccountCreate[word]
 		CumAddrWarmupMiss[word] += AddrWarmupMiss[word]

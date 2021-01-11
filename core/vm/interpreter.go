@@ -72,6 +72,7 @@ type MSRAVMConfig struct {
 	IsEmulateMode        bool
 	EmulateFromBlock     uint64
 	EmulateFile          string
+
 	EnableReuseTracer    bool
 	TxApplyPerfLogging   bool
 	PerfLogging          bool
