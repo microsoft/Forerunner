@@ -288,9 +288,8 @@ func (b *TaskBuilder) commitNewWork() {
 		}
 
 		group.defaultInit(b.parent, false)
-
+		wg.Add(1)
 		go func(group *TxnGroup, txns types.Transactions) {
-			wg.Add(1)
 			b.groupTaskQueue.pushTask(group)
 
 			nowTime := uint64(time.Now().UnixNano())
