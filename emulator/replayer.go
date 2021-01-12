@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const RawLineChanCount = 10000
+const MsgChanCount = 1000
+const DeserializerCount = 200
+const PushlisherCount = 120
+
 type GethReplayer struct {
 	consumer *replayMsgConsumer
 	broker   Broker
@@ -33,9 +38,13 @@ func NewGethReplayer(blockchain ReplayBlockChain, txPool ReplayTxPool) *GethRepl
 		broker:   broker,
 		realtime: realtime,
 
-		rawLineChan: make(chan []byte, 100),
-		msgChan:     make(chan ReplayMsg, 100),
+		rawLineChan: make(chan []byte, RawLineChanCount),
+		msgChan:     make(chan ReplayMsg, MsgChanCount),
 	}
+}
+
+func (e *GethReplayer) GetChanLen() (int, int){
+	return len(e.rawLineChan), len(e.msgChan)
 }
 
 func (e *GethReplayer) SetRealtimeMode() {
@@ -64,7 +73,7 @@ func (e *GethReplayer) readLog(reader LogReader) {
 }
 
 func (e *GethReplayer) deserializeLog() {
-	deserializeWaitChan := make(chan struct{}, 20)
+	deserializeWaitChan := make(chan struct{}, DeserializerCount)
 	for {
 		select {
 		case line := <-e.rawLineChan:
@@ -83,7 +92,7 @@ func (e *GethReplayer) deserializeLog() {
 }
 
 func (e *GethReplayer) publishLog() {
-	waitChan := make(chan struct{}, 20)
+	waitChan := make(chan struct{}, PushlisherCount)
 
 	for {
 		select {
@@ -135,8 +144,12 @@ func NewRealtimeBroker(consumer Consumer) *RealtimeBroker {
 
 		Metrics: &ReplayMetrics{},
 
-		waitingCh: make(chan struct{}, 64),
+		waitingCh: make(chan struct{}, 100),
 	}
+}
+
+func (b *RealtimeBroker) GetWaitingBufferSize() int{
+	return len(b.waitingCh)
 }
 
 func (b *RealtimeBroker) Publish(msg ReplayMsg) {

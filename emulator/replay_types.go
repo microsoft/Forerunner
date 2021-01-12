@@ -37,7 +37,7 @@ func (r replayMsg) GetTime() time.Time {
 	return r.Time
 }
 
-func (r replayMsg) GetType() int{
+func (r replayMsg) GetType() int {
 	return r.Type
 }
 
@@ -112,7 +112,8 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 
 			var avgLag *big.Int
 			var curLag time.Duration
-			var count int64
+			var msgCount int64
+			var publisherCount int
 			if GlobalGethReplayer.IsRealtimeMode() {
 				broker, ok := GlobalGethReplayer.broker.(*RealtimeBroker)
 				if !ok {
@@ -120,10 +121,11 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 				}
 				metrics := broker.Metrics
 				if metrics.count > 0 {
-					avgLag = new(big.Int).Mul(metrics.totalLag, big.NewInt(metrics.count))
+					avgLag = new(big.Int).Div(metrics.totalLag, big.NewInt(metrics.count))
 				}
 				curLag = metrics.curLag
-				count = metrics.count
+				msgCount = metrics.count
+				publisherCount = broker.GetWaitingBufferSize()
 			}
 
 			blocks := msg.(*insertChainData).Blocks
@@ -134,8 +136,11 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 
 			c.callInsertChain(msg.(*insertChainData))
 			//GlobalGethReplayer.SetRealtimeMode()
+			rb, mb := GlobalGethReplayer.GetChanLen()
 			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued,
-				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "count", count)
+				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "msgCount", msgCount,
+				"rawLineBuffer", rb, "msgBuffer", mb, "publisherCount", publisherCount)
+
 			c.LastBlockNumber = lastBlockNumber
 			if lastBlockNumber >= rawdb.GlobalEmulateHook.EmulateFrom()-1 { // might be - 100
 				GlobalGethReplayer.SetRealtimeMode()
