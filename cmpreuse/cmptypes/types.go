@@ -346,9 +346,22 @@ func (t *TxResID) Hash() *string {
 	return t.hash
 }
 
+func (t *TxResID) Copy() AccountDepValue{
+	return &TxResID{Txhash: t.Txhash, RoundID: t.RoundID, hash: t.hash}
+}
+
+type AccountDepValue interface{
+	Hash() *string
+	Copy() AccountDepValue
+}
+
 type AccountSnap struct {
 	hash  *string // convert bytes into `string`, that would be helpful for comparing
 	bytes []byte
+}
+
+func (a *AccountSnap) Copy() AccountDepValue{
+	return &AccountSnap{hash: a.hash, bytes: a.bytes}
 }
 
 func (a AccountSnap) String() string {
@@ -378,35 +391,35 @@ func ImmutableBytesToStringPtr(buf []byte) *string {
 	res := *(*string)(unsafe.Pointer(&buf))
 	return &res
 }
-
-type ChangedBy struct {
-	AccountSnap *AccountSnap `json:"snap"`
-	LastTxResID *TxResID     `json:"lastRes"`
-}
-
-func NewChangedBy(id *TxResID) *ChangedBy {
-	return &ChangedBy{LastTxResID: id}
-}
-
-func NewChangedBy2(accountSnap *AccountSnap) *ChangedBy {
-	return &ChangedBy{AccountSnap: accountSnap, LastTxResID: nil}
-}
-
-func (c *ChangedBy) AppendTx(txResID *TxResID) {
-	c.LastTxResID = txResID
-}
-
-func (c *ChangedBy) Copy() *ChangedBy {
-	return &ChangedBy{AccountSnap: c.AccountSnap, LastTxResID: c.LastTxResID}
-}
-
-func (c *ChangedBy) Hash() string {
-	if c.LastTxResID == nil {
-		return *c.AccountSnap.Hash()
-	} else {
-		return *c.LastTxResID.Hash()
-	}
-}
+//
+//type ChangedBy struct {
+//	AccountSnap *AccountSnap `json:"snap"`
+//	LastTxResID *TxResID     `json:"lastRes"`
+//}
+//
+//func NewChangedBy(id *TxResID) *ChangedBy {
+//	return &ChangedBy{LastTxResID: id}
+//}
+//
+//func NewChangedBy2(accountSnap *AccountSnap) *ChangedBy {
+//	return &ChangedBy{AccountSnap: accountSnap, LastTxResID: nil}
+//}
+//
+//func (c *ChangedBy) AppendTx(txResID *TxResID) {
+//	c.LastTxResID = txResID
+//}
+//
+//func (c *ChangedBy) Copy() *ChangedBy {
+//	return &ChangedBy{AccountSnap: c.AccountSnap, LastTxResID: c.LastTxResID}
+//}
+//
+//func (c *ChangedBy) Hash() string {
+//	if c.LastTxResID == nil {
+//		return *c.AccountSnap.Hash()
+//	} else {
+//		return *c.LastTxResID.Hash()
+//	}
+//}
 
 func GetBytes(v interface{}) []byte {
 	var b bytes.Buffer
@@ -415,16 +428,9 @@ func GetBytes(v interface{}) []byte {
 	return b.Bytes()
 }
 
-type ChangedMap map[common.Address]*ChangedBy
+type AccountDepMap map[common.Address]AccountDepValue
 type TxResIDMap map[common.Address]*TxResID
 
-func (cm ChangedMap) Copy() ChangedMap {
-	newCM := make(map[common.Address]*ChangedBy)
-	for addr, changedBy := range cm {
-		newCM[addr] = changedBy.Copy()
-	}
-	return newCM
-}
 
 type Location struct {
 	Field Field

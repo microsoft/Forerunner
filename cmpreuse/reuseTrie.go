@@ -570,7 +570,7 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 			realChild[value] = child
 		}
 	case cmptypes.Dependence:
-		value := alv.Value.(*cmptypes.ChangedBy).Hash()
+		value := *alv.Value.(cmptypes.AccountDepValue).Hash()
 		realChild := currentNode.Children.(cmptypes.StringChildren)
 		child, ok = realChild[value]
 		if !ok {
@@ -871,9 +871,9 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 func getDepChild(address common.Address, currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB) (*cmptypes.PreplayResTrieNode, bool) {
 	value, isSnap := statedb.GetAccountSnapOrChangedBy(address)
 	if isSnap {
-		return getSnapChild(currentNode, value)
+		return getSnapChild(currentNode, *value.Hash())
 	} else {
-		return getTxResIDChild(currentNode, value)
+		return getTxResIDChild(currentNode, *value.Hash())
 	}
 }
 
@@ -925,7 +925,7 @@ func getChildOrInsert(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.Ad
 			realChild[value] = child
 		}
 	case cmptypes.Dependence:
-		value := alv.Value.(*cmptypes.ChangedBy).Hash()
+		value := *alv.Value.(cmptypes.AccountDepValue).Hash()
 		realChild := currentNode.Children.(cmptypes.StringChildren)
 		child, ok = realChild[value]
 		if !ok {

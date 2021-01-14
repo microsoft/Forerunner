@@ -421,7 +421,7 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 						continue
 					}
 					addr := adv.AddLoc.Address
-					preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+					preTxResId := adv.Value.(*cmptypes.TxResID)
 					if preTxResId == nil {
 						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 					} else {
@@ -443,8 +443,8 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc core.ChainContext
 						}
 
 					}
-					newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
-					if newTxResId == nil {
+					newTxResId, ok := statedb.GetTxDepByAccount(addr).(*cmptypes.TxResID)
+					if !ok {
 						log.Info("show read dep (no tx changed)", "readaddress", addr)
 					} else {
 						log.Info("show read dep", "readaddress", addr, "lastTxhash", newTxResId.Txhash.Hex(), "preRoundID", newTxResId.RoundID)
@@ -530,7 +530,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 						continue
 					}
 					addr := adv.AddLoc.Address
-					preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+					preTxResId := adv.Value.(*cmptypes.TxResID)
 					if preTxResId == nil {
 						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 					} else {
@@ -552,7 +552,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc core.ChainContex
 						}
 
 					}
-					newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
+					newTxResId := statedb.GetTxDepByAccount(addr).(*cmptypes.TxResID)
 					if newTxResId == nil {
 						log.Info("show read dep (no tx changed)", "readaddress", addr)
 					} else {
@@ -891,7 +891,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 								continue
 							}
 							addr := adv.AddLoc.Address
-							preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+							preTxResId := adv.Value.(*cmptypes.TxResID)
 							if preTxResId == nil {
 								log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 							} else {
@@ -913,7 +913,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 								}
 
 							}
-							newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
+							newTxResId := statedb.GetTxDepByAccount(addr).(*cmptypes.TxResID)
 							if newTxResId == nil {
 								log.Info("show read dep (no tx changed)", "readaddress", addr)
 							} else {
@@ -1111,7 +1111,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 								continue
 							}
 							addr := adv.AddLoc.Address
-							preTxResId := adv.Value.(*cmptypes.ChangedBy).LastTxResID
+							preTxResId := adv.Value.(*cmptypes.TxResID)
 							if preTxResId == nil {
 								log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 							} else {
@@ -1133,7 +1133,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 								}
 
 							}
-							newTxResId := statedb.GetTxDepByAccount(addr).LastTxResID
+							newTxResId := statedb.GetTxDepByAccount(addr).(*cmptypes.TxResID)
 							if newTxResId == nil {
 								log.Info("show read dep (no tx changed)", "readaddress", addr)
 							} else {

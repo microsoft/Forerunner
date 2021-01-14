@@ -65,16 +65,15 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 
 		t1 := time.Now()
 		if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit {
-			//use account level update instead of :
-			curtxResId := cmptypes.DEFAULT_TXRESID
+
 			for addr, change := range round.AccountChanges {
 				if _, ok := reuseStatus.MixStatus.DepHitAddrMap[addr]; ok && header.Coinbase != addr {
 					statedb.UpdateAccountChanged(addr, change)
 				} else {
-					statedb.UpdateAccountChanged(addr, curtxResId)
+					statedb.UpdateAccountChanged(addr, cmptypes.DEFAULT_TXRESID)
 				}
 			}
-			statedb.UpdateAccountChanged(header.Coinbase, curtxResId)
+			statedb.UpdateAccountChanged(header.Coinbase, cmptypes.DEFAULT_TXRESID)
 		} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 			statedb.ApplyAccountChanged(round.AccountChanges)
 			//if msg.From() == header.Coinbase || (msg.To() != nil && *msg.To() == header.Coinbase) {
@@ -95,8 +94,7 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.Chai
 				panic("can not find the TraceTrieHitAddrs")
 			}
 		} else {
-			curtxResId := cmptypes.DEFAULT_TXRESID
-			statedb.UpdateAccountChangedByMap2(round.AccountChanges, curtxResId, &header.Coinbase)
+			statedb.UpdateAccountChangedByMap2(round.AccountChanges, cmptypes.DEFAULT_TXRESID, &header.Coinbase)
 		}
 		statedb.ClearSavedDirties()
 		cache.Update = append(cache.Update, time.Since(t1))

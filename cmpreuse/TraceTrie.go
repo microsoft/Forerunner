@@ -1642,7 +1642,8 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
 		changedBy, _ := env.state.GetAccountSnapOrChangedBy(addr)
-		k := GetGuardKey(changedBy)
+		depHash := *changedBy.Hash()
+		k := GetGuardKey(depHash)
 		vid = n.AccountValueToID[k]
 	}
 
@@ -1938,7 +1939,7 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 		switch alv.AddLoc.Field {
 		case cmptypes.Dependence:
 			key = alv.AddLoc.Address.Hex()
-			val = val.(*cmptypes.ChangedBy).Hash()
+			val = *val.(cmptypes.AccountDepValue).Hash()
 			temp[key] = val
 		}
 	}

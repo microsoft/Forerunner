@@ -149,7 +149,7 @@ type StateDB struct {
 	// Deprecated
 	ProcessedTxs []common.Hash // txs which have been processed after the base block
 
-	AccountChangedBy cmptypes.ChangedMap
+	AccountDeps      cmptypes.AccountDepMap
 	IsParallelHasher bool
 	BloomProcessor   *types.ParallelBloomProcessor
 	ReceiptMutex     sync.Mutex
@@ -370,7 +370,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		addrNotCopy:         make(map[common.Address]struct{}),
 		rwRecorder:          emptyRWRecorder{}, // RWRecord mode default off
 		ProcessedTxs:        []common.Hash{},
-		AccountChangedBy:    make(map[common.Address]*cmptypes.ChangedBy, 400),
+		AccountDeps:         make(cmptypes.AccountDepMap, 400),
 	}, nil
 }
 
@@ -780,44 +780,36 @@ func (s *StateDB) ApplyAccountChanged(changes cmptypes.TxResIDMap) {
 }
 
 func (s *StateDB) UpdateAccountChanged(addr common.Address, txRes *cmptypes.TxResID) {
-	if changedBy, ok := s.AccountChangedBy[addr]; ok {
-		changedBy.AppendTx(txRes)
-	} else {
-		changedBy = cmptypes.NewChangedBy(txRes)
-		s.AccountChangedBy[addr] = changedBy
-	}
+	s.AccountDeps[addr] = txRes
+
 }
 
-func (s *StateDB) GetTxDepByAccount(address common.Address) *cmptypes.ChangedBy {
-	changed, ok := s.AccountChangedBy[address]
+func (s *StateDB) GetTxDepByAccount(address common.Address) cmptypes.AccountDepValue {
+	changed, ok := s.AccountDeps[address]
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
-		changed = cmptypes.NewChangedBy2(accSnap)
-		s.AccountChangedBy[address] = changed
+		s.AccountDeps[address] = accSnap
+		return accSnap
 	}
-	return changed.Copy()
+	return changed
 }
 
-// return hash & IsSnap
-func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) (string, bool) {
-	changed, ok := s.AccountChangedBy[address]
+// return hash & IsSnap & IsNil
+func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) (cmptypes.AccountDepValue, bool) {
+	changed, ok := s.AccountDeps[address]
+
 	if !ok {
 		accSnap := s.GetAccountSnap(address)
 
-		return *accSnap.Hash(), true
+		return accSnap, true
 		//changed = cmptypes.NewChangedBy2(accSnap)
-		//s.AccountChangedBy[address] = changed
+		//s.AccountDeps[address] = changed
 	}
 
-	if !s.rwRecorderEnabled {
-
-		cmptypes.MyAssert(changed.AccountSnap == nil)
-	}
-
-	return changed.Hash(), false
+	return changed, false
 }
 
-//func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.ChangedMap {
+//func (s *StateDB) GetTxDepsByAccounts(addresses []*common.Address) cmptypes.AccountDepMap {
 //	res := make(map[common.Address]*cmptypes.ChangedBy)
 //	for _, addr := range addresses {
 //		res[*addr] = s.GetTxDepByAccount(*addr)
@@ -1200,7 +1192,7 @@ func (s *StateDB) Copy() *StateDB {
 		preimages:              make(map[common.Hash][]byte, len(s.preimages)),
 		journal:                newJournal(),
 		ProcessedTxs:           make([]common.Hash, len(s.ProcessedTxs)),
-		AccountChangedBy:       make(map[common.Address]*cmptypes.ChangedBy, len(s.AccountChangedBy)),
+		AccountDeps:            make(cmptypes.AccountDepMap, len(s.AccountDeps)),
 
 		EnableFeeToCoinbase: s.EnableFeeToCoinbase,
 		allowObjCopy:        s.allowObjCopy,
@@ -1258,8 +1250,10 @@ func (s *StateDB) Copy() *StateDB {
 		state.ProcessedTxs[index] = txhash
 	}
 
-	for address, changedBy := range s.AccountChangedBy {
-		state.AccountChangedBy[address] = changedBy.Copy()
+	for address, depValue := range s.AccountDeps {
+		//state.AccountDeps[address] = depValue.Copy()
+		state.AccountDeps[address] = depValue
+
 	}
 
 	return state

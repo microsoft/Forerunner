@@ -2505,6 +2505,7 @@ func (bc *BlockChain) addBadBlock(block *types.Block) {
 // reportBlock logs a bad block error.
 func (bc *BlockChain) reportBlock(block *types.Block, receipts types.Receipts, err error) {
 	bc.addBadBlock(block)
+	debug.PrintStack()
 
 	var receiptString string
 	for i, receipt := range receipts {

@@ -6,9 +6,9 @@ import (
 )
 
 const RawLineChanCount = 10000
-const MsgChanCount = 1000
+const MsgChanCount = 4000
 const DeserializerCount = 200
-const PushlisherCount = 120
+const PublisherCount = 120
 
 type GethReplayer struct {
 	consumer *replayMsgConsumer
@@ -43,7 +43,7 @@ func NewGethReplayer(blockchain ReplayBlockChain, txPool ReplayTxPool) *GethRepl
 	}
 }
 
-func (e *GethReplayer) GetChanLen() (int, int){
+func (e *GethReplayer) GetChanLen() (int, int) {
 	return len(e.rawLineChan), len(e.msgChan)
 }
 
@@ -77,32 +77,44 @@ func (e *GethReplayer) deserializeLog() {
 	for {
 		select {
 		case line := <-e.rawLineChan:
-			deserializeWaitChan <- struct{}{}
-			go func(raw []byte) {
-				msg, err := deserializeLine(raw)
+
+			if e.IsRealtimeMode() {
+				deserializeWaitChan <- struct{}{}
+				go func(raw []byte) {
+					msg, err := deserializeLine(raw)
+					if err != nil {
+						panic(err)
+					}
+					e.msgChan <- msg
+					<-deserializeWaitChan
+				}(line)
+			} else {
+				msg, err := deserializeLine(line)
 				if err != nil {
 					panic(err)
 				}
 				e.msgChan <- msg
-				<-deserializeWaitChan
-			}(line)
+			}
 
 		}
 	}
 }
 
 func (e *GethReplayer) publishLog() {
-	waitChan := make(chan struct{}, PushlisherCount)
+	waitChan := make(chan struct{}, PublisherCount)
 
 	for {
 		select {
 		case msg := <-e.msgChan:
-			waitChan <- struct{}{}
-			go func(m ReplayMsg) {
-				e.broker.Publish(m)
-				<-waitChan
-			}(msg)
-
+			if e.IsRealtimeMode() {
+				waitChan <- struct{}{}
+				go func(m ReplayMsg) {
+					e.broker.Publish(m)
+					<-waitChan
+				}(msg)
+			} else {
+				e.broker.Publish(msg)
+			}
 		}
 	}
 }
@@ -148,13 +160,12 @@ func NewRealtimeBroker(consumer Consumer) *RealtimeBroker {
 	}
 }
 
-func (b *RealtimeBroker) GetWaitingBufferSize() int{
+func (b *RealtimeBroker) GetWaitingBufferSize() int {
 	return len(b.waitingCh)
 }
 
 func (b *RealtimeBroker) Publish(msg ReplayMsg) {
 	b.waitingCh <- struct{}{}
-
 	execMsg := func() {
 		b.Metrics.ReplayTimeMeter(msg, time.Now())
 		b.Consumer.Accept(msg)
