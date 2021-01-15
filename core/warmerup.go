@@ -130,10 +130,12 @@ type Warmuper struct {
 	// Cache
 	globalCache *cache.GlobalCache
 
-	valid           bool
-	root            common.Hash
-	statedbBoxCache *lru.Cache
-	minerList       *lru.Cache
+	valid            bool
+	root             common.Hash
+	statedbBoxCache  *lru.Cache
+	minerList        *lru.Cache
+	warmupedTxByRoot *lru.Cache
+	warmupedTxByRootMutex sync.Mutex
 
 	objWarmupChList [objSubgroupSize]chan *ObjWarmupTask
 }
@@ -154,6 +156,10 @@ func NewWarmuper(chain *BlockChain, cfg vm.Config) *Warmuper {
 		objWarmupChList: [objSubgroupSize]chan *ObjWarmupTask{},
 	}
 	warmuper.statedbBoxCache, _ = lru.New(dbCacheSize)
+	if cfg.MSRAVMSettings.SingleFuture {
+		warmuper.warmupedTxByRoot, _ = lru.New(dbCacheSize)
+	}
+
 	go warmuper.mainLoop()
 	for index := range warmuper.objWarmupChList {
 		warmuper.objWarmupChList[index] = make(chan *ObjWarmupTask, warmupQueueSize)
@@ -259,6 +265,31 @@ func (w *Warmuper) AddWarmupTask(rounds []*cache.PreplayResult, root common.Hash
 	if !w.valid {
 		return
 	}
+
+	if w.warmupedTxByRoot != nil {
+		w.warmupedTxByRootMutex.Lock()
+		var warmupedTx map[common.Hash]struct{}
+		_warmupedTx, ok := w.warmupedTxByRoot.Get(root)
+		if ok {
+			warmupedTx = _warmupedTx.(map[common.Hash]struct{})
+		}else {
+			warmupedTx = make(map[common.Hash]struct{})
+		}
+		if warmupedTx == nil {
+			panic("warmupedTx should not be nil")
+		}
+		var new_rounds []*cache.PreplayResult
+		for _, round := range rounds {
+			if _, ok := warmupedTx[round.TxHash]; !ok {
+				new_rounds = append(new_rounds, round)
+				warmupedTx[round.TxHash] = struct{}{}
+			}
+		}
+		w.warmupedTxByRoot.Add(root, warmupedTx)
+		w.warmupedTxByRootMutex.Unlock()
+		rounds = new_rounds
+	}
+
 	addrMap := make(map[common.Address]map[common.Hash]struct{})
 	objectRefListMap := make(cache.WObjectWeakRefListMap)
 	for _, round := range rounds {

@@ -79,6 +79,7 @@ type MSRAVMConfig struct {
 	ParallelizeReuse     bool
 	WarmupMissDetail     bool
 	NoWarmuper           bool
+	NoReuse              bool
 	ReportMissDetail     bool
 }
 

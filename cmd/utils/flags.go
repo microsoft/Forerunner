@@ -938,6 +938,10 @@ var (
 		Name:  "no-overmatching",
 		Usage: "Close over matching during preplay",
 	}
+	NoReuseFlag = cli.BoolFlag{
+		Name:  "no-reuse",
+		Usage: "Disable computation reuse",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1808,6 +1812,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
 		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
 		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
+		NoReuse:          ctx.GlobalBool(NoReuseFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
 	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {

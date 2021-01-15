@@ -779,24 +779,27 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				}
 			}
 		}
-		if len(noPreplayTxns) > 0 || len(missTxns) > 0 {
-			reporter.SetBlock(block)
-			for index, txn := range noPreplayTxns {
-				reporter.SetNoPreplayTxn(txn, enqueues[index])
-			}
-			for i, txn := range missTxns {
-				var txnType int
-				if txn.To() == nil {
-					txnType = 1
-				} else {
-					if statedb.GetCodeSize(*txn.To()) != 0 {
-						txnType = 2
-					}
+
+		if !cfg.MSRAVMSettings.NoReuse {
+			if len(noPreplayTxns) > 0 || len(missTxns) > 0 {
+				reporter.SetBlock(block)
+				for index, txn := range noPreplayTxns {
+					reporter.SetNoPreplayTxn(txn, enqueues[index])
 				}
-				reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
+				for i, txn := range missTxns {
+					var txnType int
+					if txn.To() == nil {
+						txnType = 1
+					} else {
+						if statedb.GetCodeSize(*txn.To()) != 0 {
+							txnType = 2
+						}
+					}
+					reporter.SetMissTxn(txn, nodes[i], values[i], txnType)
+				}
 			}
+			reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-enpending, enpending-Package, Package-enqueue, enqueue-preplay)
 		}
-		reporter.ReportMiss(txnCount-listen, listenOrEthermine-listen, listen-enpool, enpool-enpending, enpending-Package, Package-enqueue, enqueue-preplay)
 	}
 	return noEnpoolSender
 }

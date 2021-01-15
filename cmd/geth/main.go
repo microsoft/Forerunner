@@ -235,6 +235,7 @@ var (
 		utils.NoTraceMemoizationFlag,
 		utils.NoWarmuperFlag,
 		utils.NoOverMatchingFlag,
+		utils.NoReuseFlag,
 		alliedNodeFileFlag,
 	}
 )

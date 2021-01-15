@@ -45,7 +45,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
 	if txPreplay == nil {
-		txPreplay = reuse.addNewTx(tx, rwrecord, !noTrace)
+		txPreplay = reuse.addNewTx(tx, rwrecord, !noTrace && !singleFuture)
 	}
 
 	start := time.Now()
@@ -85,7 +85,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 				// if isExternalTransfer is changed from true to false, only set dep in mix tree:
 				err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
 			} else {
-				err = reuse.setMixTree(tx, txPreplay, round, !noTrace)
+				err = reuse.setMixTree(tx, txPreplay, round, !noTrace && !singleFuture)
 			}
 			txPreplay.PreplayResults.MixTreeMu.Unlock()
 		}
@@ -111,7 +111,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 				panic(err.Error())
 			}
 
-			if !noTrace {
+			if !noTrace && !singleFuture {
 				if txPreplay.PreplayResults.IsExternalTransfer {
 					txPreplay.PreplayResults.DeltaTreeMu.Lock()
 					err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
@@ -130,13 +130,10 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			reuse.MSRACache.PauseForProcess()
 		}
 
-		if trace != nil {
+		if !singleFuture && trace != nil {
 			traceTrieStart := time.Now()
 
 			txPreplay.PreplayResults.TraceTrieMu.Lock()
-			if singleFuture {
-				txPreplay.PreplayResults.TraceTrie = nil
-			}
 			reuse.setTraceTrie(tx, txPreplay, round, trace, noOverMatching, noMemoization)
 			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 

@@ -799,7 +799,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 	} else {
 		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
 	}
-	if txPreplay == nil {
+	if cfg.MSRAVMSettings.NoReuse || txPreplay == nil {
 		d0 = time.Since(t0)
 		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
 		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
