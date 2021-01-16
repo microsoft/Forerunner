@@ -681,26 +681,26 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 					HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
 					BasicDetailCount: currentNode.RSeqIndex + 1}
 
-				if currentNode.RSeqIndex < 0 {
-					if currentNode == trie.Root {
-
-					} else if isBlockProcess {
-						if !debug {
-							cntj, _ := json.Marshal(currentNode.NodeType)
-							mm, _ := json.Marshal(mixStatus)
-							log.Warn("??", "curNode is root", currentNode == trie.Root, "rindex", currentNode.RSeqIndex, "nodet", string(cntj), "value", currentNode.Value, "mm", string(mm))
-							rootJson, _ := json.Marshal(trie.Root)
-							log.Warn("print tree", "tree", string(rootJson))
-							log.Warn("*******************************************************")
-
-							SearchMixTree(trie, db, bc, header, abort, true, isBlockProcess, isExternalTransfer)
-
-						} else {
-							panic("BasicDetailCount is at least 1")
-
-						}
-					}
-				}
+				//if currentNode.RSeqIndex < 0 {
+				//	if currentNode == trie.Root {
+				//
+				//	} else if isBlockProcess {
+				//		if !debug {
+				//			cntj, _ := json.Marshal(currentNode.NodeType)
+				//			mm, _ := json.Marshal(mixStatus)
+				//			log.Warn("??", "curNode is root", currentNode == trie.Root, "rindex", currentNode.RSeqIndex, "nodet", string(cntj), "value", currentNode.Value, "mm", string(mm))
+				//			rootJson, _ := json.Marshal(trie.Root)
+				//			log.Warn("print tree", "tree", string(rootJson))
+				//			log.Warn("*******************************************************")
+				//
+				//			SearchMixTree(trie, db, bc, header, abort, true, isBlockProcess, isExternalTransfer)
+				//
+				//		} else {
+				//			panic("BasicDetailCount is at least 1")
+				//
+				//		}
+				//	}
+				//} 
 
 				if isBlockProcess {
 					// to reduce the cost of converting interfaces, mute the miss Value
