@@ -1989,8 +1989,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 			go func() {
 				timeStr := time.Now().Format("01-02|15:04:05.000")
-				blockResult := fmt.Sprintf("t '[%s]' block '%v' process %v process+verify %v gas %v\n",
-					timeStr, block.Hash().Hex(),
+				blockResult := fmt.Sprintf("t '[%s]' block '%v_%v'  process %v process+verify %v gas %v\n",
+					timeStr, block.Number().String(), block.Hash().Hex(),
 					processInMicroSeconds, processInMicroSeconds+verifyInMicroSeconds, block.GasUsed())
 				bc.blockLogFile.WriteString(blockResult)
 
@@ -2023,7 +2023,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 						}
 
 						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' reuse %v gas %v delay %v %v\n",
-							timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+							timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 							tf.Receipt.TxHash.Hex(),
 							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 						bc.txLogFile.WriteString(txResult)
@@ -2034,13 +2034,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 								reuseStr = "baseStatus 'NoListen'"
 							}
 							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v delay %v %v\n",
-								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
 							bc.txLogFile.WriteString(txResult)
 						} else {
 							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v\n",
-								timeStr, block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
+								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed)
 							bc.txLogFile.WriteString(txResult)
