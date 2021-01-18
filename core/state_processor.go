@@ -39,25 +39,25 @@ import (
 )
 
 type TransactionApplier interface {
-	ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+	ApplyTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg *vm.Config, blockPre *cache.BlockPre, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
 		pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
 
-	ReuseTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+	ReuseTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller,
 		getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
 		tmsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
 
-	ReuseTransactionPerfTest(config *params.ChainConfig, bc ChainContext, author *common.Address,
+	ReuseTransactionPerfTest(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *Controller,
 		getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
 		pMsg *types.Message, signer types.Signer) (*types.Receipt,
 		error, *cmptypes.ReuseStatus, time.Duration, time.Duration)
 
-	PreplayTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address,
+	PreplayTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay, enablePause bool) (*types.Receipt, error)
 }

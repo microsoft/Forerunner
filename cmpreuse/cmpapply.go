@@ -27,7 +27,7 @@ import (
 // 		2: cache hit;
 // 		3: cache miss(cache but not in or cache but result not match);
 //		4: abort before hit or miss;
-func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg *vm.Config, blockPre *cache.BlockPre, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
 	pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus) {

@@ -50,12 +50,16 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
+
+	setDelta := !noTrace && !singleFuture
 	if txPreplay == nil {
-		txPreplay = reuse.addNewTx(tx, rwrecord, !noTrace && !singleFuture)
+		txPreplay = reuse.addNewTx(tx, rwrecord, setDelta)
 	}
 
 	start := time.Now()
 	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
+	reuse.MSRACache.AddAccountSnapByReadDetail(preBlockHash, rwrecord.ReadDetail)
+
 	if ok {
 		round.Trace = trace
 	}
@@ -87,20 +91,24 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			if singleFuture {
 				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
 			}
-			if txPreplay.PreplayResults.IsExternalTransfer && !cache.IsExternalTransfer(rwrecord.ReadDetail.ReadDetailSeq, tx) {
-				// if isExternalTransfer is changed from true to false, only set dep in mix tree:
-				err = reuse.setMixTreeWithOnlyDependence(txPreplay, round)
-			} else {
-				err = reuse.setMixTree(tx, txPreplay, round, !noTrace && !singleFuture)
+			if setDelta {
+				curIsExternalTransfer := cache.IsExternalTransfer(rwrecord.ReadDetail, tx)
+				if curIsExternalTransfer != txPreplay.PreplayResults.IsExternalTransfer {
+					log.Warn("IsExternalTransfer changes", "tx", txPreplay.TxHash.Hex(),
+						"old", txPreplay.PreplayResults.IsExternalTransfer, "newValue", curIsExternalTransfer)
+					txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+				}
+				txPreplay.PreplayResults.IsExternalTransfer = curIsExternalTransfer
 			}
+			err = reuse.setMixTree(tx, txPreplay, round, setDelta)
+
+			if err != nil {
+				roundjs, _ := json.Marshal(round)
+				log.Error("setMixTree error", "round", string(roundjs))
+				panic(err.Error())
+			}
+
 			txPreplay.PreplayResults.MixTreeMu.Unlock()
-		}
-
-
-		if err != nil {
-			roundjs, _ := json.Marshal(round)
-			log.Error("setMixTree error", "round", string(roundjs))
-			panic(err.Error())
 		}
 
 		if reuseStatus.BaseStatus != cmptypes.Hit {
@@ -156,9 +164,9 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
 		}
 	} //else {
-		//if !basicPreplay {
-		//	reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
-		//}
+	//if !basicPreplay {
+	//	reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
+	//}
 	//}
 }
 
@@ -262,7 +270,7 @@ var traceMutex sync.Mutex
 //		`basicPreplay`:
 //			true for basic preplay, scenario 1, 2 or 3;
 //			false for preplay for grouping transactions or reporting miss, scenario 4 or 5;
-func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg vm.Config, roundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay, enablePause bool) (*types.Receipt, error) {
 
@@ -366,7 +374,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 
 				trace = NewSTrace(stats, debugOut, debugBuffer)
 
-
 				//writeDoubleOut := func(fmtStr string, args ...interface{}) {
 				//	//fmt.Printf(fmtStr, args...)
 				//	debugOut(fmtStr, args...)
@@ -422,7 +429,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 					}
 				} else if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit {
 					readDeps = reuseRound.ReadDepSeq
-					wobjects = nil//GetWObjectsFromWObjectWeakRefs(reuse.MSRACache, reuseRound.WObjectWeakRefs)
+					wobjects = nil //GetWObjectsFromWObjectWeakRefs(reuse.MSRACache, reuseRound.WObjectWeakRefs)
 					accChanges = reuseRound.AccountChanges
 					statedb.ApplyAccountChanged(accChanges)
 				} else {
@@ -448,7 +455,6 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 		}
 		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy,
 			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause, &cfg.MSRAVMSettings)
-
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {
 		//	fn := fmt.Sprintf("/tmp/debug%v_round%v.txt", tx.Hash().Hex(), roundID)

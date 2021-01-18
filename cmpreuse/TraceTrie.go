@@ -1641,10 +1641,14 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 		} else {
 			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
-		changedBy, _ := env.state.GetAccountSnapOrChangedBy(addr)
-		depHash := *changedBy.Hash()
-		k := GetGuardKey(depHash)
-		vid = n.AccountValueToID[k]
+		changedBy, _ := env.state.GetAccountDepValue(addr)
+		if  changedBy == cmptypes.DEFAULT_TXRESID {
+			vid = 0
+		} else {
+			depHash := *changedBy.Hash()
+			k := GetGuardKey(depHash)
+			vid = n.AccountValueToID[k]
+		}
 	}
 
 	if DEBUG_TRACER {

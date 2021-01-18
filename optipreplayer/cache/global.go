@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -57,6 +58,9 @@ type GlobalCache struct {
 	PreplayRoundID   uint64
 	PreplayRoundIDMu sync.RWMutex
 	PreplayTimestamp uint64 // Last time stamp
+
+	// Account Snap
+	AccountSnapCache *lru.Cache
 
 	reduplicatedNonceTxnMu sync.RWMutex
 	reduplicatedNonceTxn   map[common.Address]types.TxByNonce
@@ -115,6 +119,8 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.PreplayTimestamp = uint64(time.Now().Unix())
 	g.TimestampField = -2
 
+	g.AccountSnapCache, _ = lru.New(100000)
+
 	g.reduplicatedNonceTxn = make(map[common.Address]types.TxByNonce)
 
 	g.PrimaryGasUsedCache, _ = lru.New(pSize)
@@ -140,6 +146,50 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 }
 
 var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
+
+type SnapWithBlockHash struct {
+	ParentBlockhash *common.Hash
+	Snap            *cmptypes.AccountSnap
+}
+
+func (r *GlobalCache) GetAccountSnapWithParentBlockHash(address common.Address) (*common.Hash, *cmptypes.AccountSnap) {
+	value, ok := r.AccountSnapCache.Get(address)
+	if !ok {
+		return nil, nil
+	}
+
+	swb, ok := value.(*SnapWithBlockHash)
+	if !ok {
+		return nil, nil
+	}
+	return swb.ParentBlockhash, swb.Snap
+}
+
+func (r *GlobalCache) AddAccountSnapWithParentBlockhash(address common.Address, bhash *common.Hash, snap *cmptypes.AccountSnap) {
+	oldphash, _ := r.GetAccountSnapWithParentBlockHash(address)
+	if oldphash != nil && *oldphash == *bhash {
+		return
+	} else {
+		swb := &SnapWithBlockHash{bhash, snap}
+		r.AccountSnapCache.Add(address, swb)
+	}
+}
+
+func (r *GlobalCache) AddAccountSnapByReadDetail(pbhash common.Hash, detail *cmptypes.ReadDetail) {
+	for _, alv := range detail.ReadAddressAndBlockSeq {
+		if alv.AddLoc.Field == cmptypes.Dependence {
+
+			switch alv.Value.(type) {
+			case *cmptypes.AccountSnap:
+				r.AddAccountSnapWithParentBlockhash(alv.AddLoc.Address, &pbhash, alv.Value.(*cmptypes.AccountSnap))
+			case *cmptypes.TxResID:
+			default:
+				panic("unexpected type")
+			}
+		}
+	}
+
+}
 
 func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithTraceCount int,
 	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64,

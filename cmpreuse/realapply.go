@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, abort func() bool, setEvm func(evm *vm.EVM),
 	msg core.Message, tx *types.Transaction) (gas uint64, failed bool, err error, d time.Duration) {
 	t := time.Now()

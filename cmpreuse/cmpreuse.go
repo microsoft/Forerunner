@@ -27,7 +27,7 @@ func NewCmpreuse() *Cmpreuse {
 	return &Cmpreuse{}
 }
 
-func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, c *core.Controller, msg core.Message) (uint64,
 	bool, error) {
 
@@ -41,7 +41,7 @@ func (reuse *Cmpreuse) tryRealApplyTransaction(config *params.ChainConfig, bc co
 	}
 }
 
-func (reuse *Cmpreuse) tryReuseTransaction(bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
+func (reuse *Cmpreuse) tryReuseTransaction(bc *core.BlockChain, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
 	header *types.Header, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tx *types.Transaction, c *core.Controller, blockPre *cache.BlockPre, cfg *vm.Config) (*cmptypes.ReuseStatus, *cache.PreplayResult) {
 
 	if cfg.MSRAVMSettings.CmpReuseChecking {
@@ -162,7 +162,7 @@ func (reuse *Cmpreuse) TryCreateReceipt(statedb *state.StateDB, header *types.He
 // 		2: cache hit;
 // 		3: cache miss(cache but not in or cache but result not match);
 //		4: abort before hit or miss;
-func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller,
 	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
@@ -313,7 +313,7 @@ func (reuse *Cmpreuse) ReuseTransaction(config *params.ChainConfig, bc core.Chai
 	}
 }
 
-func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc core.ChainContext, author *common.Address,
+func (reuse *Cmpreuse) ReuseTransactionPerfTest(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 	cfg *vm.Config, blockPre *cache.BlockPre, asyncPool *types.SingleThreadSpinningAsyncProcessor, controller *core.Controller,
 	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,

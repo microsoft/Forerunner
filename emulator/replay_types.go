@@ -86,6 +86,10 @@ type replayMsgConsumer struct {
 	afterFirstBlock bool
 }
 
+func (c *replayMsgConsumer) IsTxPoolLoaded() bool{
+	return c.txPoolLoaded
+}
+
 func (c *replayMsgConsumer) Accept(msg interface{}) {
 	switch msg.(type) {
 	case *insertChainData:

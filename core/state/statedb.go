@@ -795,7 +795,7 @@ func (s *StateDB) GetTxDepByAccount(address common.Address) cmptypes.AccountDepV
 }
 
 // return hash & IsSnap & IsNil
-func (s *StateDB) GetAccountSnapOrChangedBy(address common.Address) (cmptypes.AccountDepValue, bool) {
+func (s *StateDB) GetAccountDepValue(address common.Address) (cmptypes.AccountDepValue, bool) {
 	changed, ok := s.AccountDeps[address]
 
 	if !ok {

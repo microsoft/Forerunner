@@ -123,7 +123,7 @@ func InsertRecord(trie *cmptypes.PreplayResTrie, round *cache.PreplayResult, blo
 	return nil
 }
 
-func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, ) (*cmptypes.PreplayResTrieNode, bool, bool) {
+func SearchPreplayRes(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc *core.BlockChain, header *types.Header, abort func() bool, ) (*cmptypes.PreplayResTrieNode, bool, bool) {
 	return SearchTree(trie, db, bc, header, abort, false)
 }
 
@@ -591,7 +591,7 @@ func insertNode(currentNode *cmptypes.PreplayResTrieNode, alv *cmptypes.AddrLocV
 	return child, !ok, nil
 }
 
-func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool, debug bool) (
+func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc *core.BlockChain, header *types.Header, abort func() bool, debug bool) (
 	node *cmptypes.PreplayResTrieNode, isAbort bool, ok bool) {
 
 	currentNode := trie.Root
@@ -619,7 +619,7 @@ func SearchTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainC
 	return currentNode, false, true
 }
 
-func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.ChainContext, header *types.Header, abort func() bool,
+func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc *core.BlockChain, header *types.Header, abort func() bool,
 	debug bool, isBlockProcess bool, isExternalTransfer bool) (round *cache.PreplayResult, mixStatus *cmptypes.MixStatus,
 	missNode *cmptypes.PreplayResTrieNode, missValue interface{}, isAbort bool, ok bool) {
 	currentNode := trie.Root
@@ -681,26 +681,26 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc core.Cha
 					HitDepNodeCount: len(matchedDeps), UnhitDepNodeCount: checkedDepCount - len(matchedDeps), DetailCheckedCount: checkedNodeCount - checkedDepCount,
 					BasicDetailCount: currentNode.RSeqIndex + 1}
 
-				//if currentNode.RSeqIndex < 0 {
-				//	if currentNode == trie.Root {
-				//
-				//	} else if isBlockProcess {
-				//		if !debug {
-				//			cntj, _ := json.Marshal(currentNode.NodeType)
-				//			mm, _ := json.Marshal(mixStatus)
-				//			log.Warn("??", "curNode is root", currentNode == trie.Root, "rindex", currentNode.RSeqIndex, "nodet", string(cntj), "value", currentNode.Value, "mm", string(mm))
-				//			rootJson, _ := json.Marshal(trie.Root)
-				//			log.Warn("print tree", "tree", string(rootJson))
-				//			log.Warn("*******************************************************")
-				//
-				//			SearchMixTree(trie, db, bc, header, abort, true, isBlockProcess, isExternalTransfer)
-				//
-				//		} else {
-				//			panic("BasicDetailCount is at least 1")
-				//
-				//		}
-				//	}
-				//} 
+				if currentNode.RSeqIndex < 0 {
+					if currentNode == trie.Root {
+
+					} else if isBlockProcess {
+						if !debug {
+							cntj, _ := json.Marshal(currentNode.NodeType)
+							mm, _ := json.Marshal(mixStatus)
+							log.Warn("??", "curNode is root", currentNode == trie.Root, "rindex", currentNode.RSeqIndex, "nodet", string(cntj), "value", currentNode.Value, "mm", string(mm))
+							rootJson, _ := json.Marshal(trie.Root)
+							log.Warn("print tree", "tree", string(rootJson))
+							log.Warn("*******************************************************")
+
+							SearchMixTree(trie, db, bc, header, abort, true, isBlockProcess, isExternalTransfer)
+
+						} else {
+							panic("BasicDetailCount is at least 1")
+
+						}
+					}
+				}
 
 				if isBlockProcess {
 					// to reduce the cost of converting interfaces, mute the miss Value
@@ -744,7 +744,7 @@ func copyNode(node *cmptypes.PreplayResTrieNode) *cmptypes.PreplayResTrieNode {
 	return nodeCpy
 }
 
-func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc core.ChainContext,
+func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, bc *core.BlockChain,
 	header *types.Header, debug bool) (*cmptypes.PreplayResTrieNode, bool) {
 
 	addr := currentNode.NodeType.Address
@@ -850,7 +850,7 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 
 		return child, ok
 	case cmptypes.Dependence:
-		return getDepChild(addr, currentNode, statedb)
+		return getDepChild(addr, currentNode, statedb, bc.MSRACache, header.ParentHash)
 	case cmptypes.MinBalance:
 		value := statedb.GetBalance(addr).Cmp(currentNode.NodeType.Loc.(*big.Int)) >= 0
 		child, ok := currentNode.Children.(cmptypes.BoolChildren)[value]
@@ -868,13 +868,40 @@ func getChild(currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, 
 	return nil, false
 }
 
-func getDepChild(address common.Address, currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB) (*cmptypes.PreplayResTrieNode, bool) {
-	value, isSnap := statedb.GetAccountSnapOrChangedBy(address)
-	if isSnap {
-		return getSnapChild(currentNode, *value.Hash())
+func getDepChild(address common.Address, currentNode *cmptypes.PreplayResTrieNode, statedb *state.StateDB, msraCache *cache.GlobalCache, pHash common.Hash) (*cmptypes.PreplayResTrieNode, bool) {
+
+	depValue, ok := statedb.AccountDeps[address]
+	if ok {
+		if depValue == cmptypes.DEFAULT_TXRESID || depValue == nil {
+			return nil, false
+		}
+		valueHash := *depValue.Hash()
+
+		return getTxResIDChild(currentNode, valueHash)
 	} else {
-		return getTxResIDChild(currentNode, *value.Hash())
+		pbhash, snap := msraCache.GetAccountSnapWithParentBlockHash(address)
+		if pbhash == nil || snap != nil || *pbhash != pHash {
+
+			snap = statedb.GetAccountSnap(address)
+		}
+		return getSnapChild(currentNode, *snap.Hash())
+
 	}
+
+	//value, isSnap := statedb.GetAccountDepValue(address)
+	//
+	//if isSnap {
+	//	valueHash := *value.Hash()
+	//
+	//	return getSnapChild(currentNode, valueHash)
+	//} else {
+	//	if value == cmptypes.DEFAULT_TXRESID || value == nil {
+	//		return nil, false
+	//	}
+	//	valueHash := *value.Hash()
+	//
+	//	return getTxResIDChild(currentNode, valueHash)
+	//}
 }
 
 func getSnapChild(currentNode *cmptypes.PreplayResTrieNode, value string) (*cmptypes.PreplayResTrieNode, bool) {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"container/heap"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
@@ -56,15 +55,15 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	preplayResults := &PreplayResults{
 		Rounds: rounds,
 		//ReadDepTree:          cmptypes.NewPreplayResTrie(),
-		MixTree:              cmptypes.NewPreplayResTrie(),
-		MixTreeMu:            cmptypes.NewSimpleTryLock(), // trylock.New(),
-		DeltaTree:            cmptypes.NewPreplayResTrie(),
-		DeltaTreeMu:          cmptypes.NewSimpleTryLock(), // trylock.New(),
-		TraceTrieMu:          cmptypes.NewSimpleTryLock(), // trylock.New(),
-		RWRecordTrie:         cmptypes.NewPreplayResTrie(),
-		RWRecordTrieMu:       cmptypes.NewSimpleTryLock(), // trylock.New(),
-		wobjectHolderMap:     make(state.ObjectHolderMap),
-		wobjectHolderMapMu:   cmptypes.NewSimpleTryLock(), //trylock.New(),
+		MixTree:            cmptypes.NewPreplayResTrie(),
+		MixTreeMu:          cmptypes.NewSimpleTryLock(), // trylock.New(),
+		DeltaTree:          cmptypes.NewPreplayResTrie(),
+		DeltaTreeMu:        cmptypes.NewSimpleTryLock(), // trylock.New(),
+		TraceTrieMu:        cmptypes.NewSimpleTryLock(), // trylock.New(),
+		RWRecordTrie:       cmptypes.NewPreplayResTrie(),
+		RWRecordTrieMu:     cmptypes.NewSimpleTryLock(), // trylock.New(),
+		wobjectHolderMap:   make(state.ObjectHolderMap),
+		wobjectHolderMapMu: cmptypes.NewSimpleTryLock(), //trylock.New(),
 		//objectPointerToObjID: make(map[uintptr]uintptr),
 		//RWrecords:            RWrecords,
 	}
@@ -82,45 +81,66 @@ func NewTxPreplay(tx *types.Transaction) *TxPreplay {
 	return txPreplay
 }
 
-func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue, tx *types.Transaction) bool {
-
-	if tx.To() == nil {
+func IsExternalTransfer(readDetail *cmptypes.ReadDetail, tx *types.Transaction) bool {
+	if tx.To() == nil || len(readDetail.ReadDetailSeq) > 5 || len(readDetail.ReadAddressAndBlockSeq) > 2 {
 		// this check is necessary.
 		return false
 	}
-	// assert seqRecord len
-	switch len(seqRecord) {
-	case 0:
-		fallthrough
-	case 1:
-		fallthrough
-	case 2:
-		ss, _ := json.Marshal(seqRecord)
-		log.Error("zhongxin: unexpected len", "tx", tx.Hash().Hex(), "seq", string(ss))
-		return false
-	case 3:
-		// self transfer
-		return true
-	case 4: // 'to' is a new address
-		return true
-	case 5: //assert 'to' is a common user
-		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
-			return false
-		} else {
-			value := seqRecord[4].Value.(common.Hash)
+
+	for _, alv := range readDetail.ReadDetailSeq {
+		if alv.AddLoc.Field == cmptypes.CodeHash {
+			if alv.AddLoc.Address != *tx.To() {
+				return false
+			}
+			value := alv.Value.(common.Hash)
 			if value != cmptypes.NilCodeHash && value != cmptypes.EmptyCodeHash {
 				return false
 			}
 		}
-		return true
-	default:
-		return false
 	}
+	return true
 
 }
 
+//func IsExternalTransfer(seqRecord []*cmptypes.AddrLocValue, tx *types.Transaction) bool {
+//
+//	if tx.To() == nil {
+//		// this check is necessary.
+//		return false
+//	}
+//	// assert seqRecord len
+//	switch len(seqRecord) {
+//	case 0:
+//		fallthrough
+//	case 1:
+//		fallthrough
+//	case 2:
+//		ss, _ := json.Marshal(seqRecord)
+//		log.Error("zhongxin: unexpected len", "tx", tx.Hash().Hex(), "seq", string(ss))
+//		return false
+//	case 3:
+//		// self transfer
+//		return true
+//	case 4: // 'to' is a new address
+//		return true
+//	case 5: //assert 'to' is a common user
+//		if seqRecord[4].AddLoc.Field != cmptypes.CodeHash {
+//			return false
+//		} else {
+//			value := seqRecord[4].Value.(common.Hash)
+//			if value != cmptypes.NilCodeHash && value != cmptypes.EmptyCodeHash {
+//				return false
+//			}
+//		}
+//		return true
+//	default:
+//		return false
+//	}
+//
+//}
+
 func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transaction) {
-	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail.ReadDetailSeq, tx)
+	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail, tx)
 	if t.PreplayResults.IsExternalTransfer {
 		wDeltas := make(map[common.Address]*WStateDelta)
 		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address
@@ -141,8 +161,6 @@ func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transact
 
 	}
 }
-
-
 
 //func (t *TxPreplay) StoreWObjects(objMap state.ObjectMap, roundId uint64) WObjectWeakRefMap {
 //	result := make(WObjectWeakRefMap)
@@ -245,9 +263,9 @@ type PreplayResults struct {
 	IsExternalTransfer bool
 	DeltaWrites        map[common.Address]*WStateDelta
 
-	wobjectHolderMap     state.ObjectHolderMap
-	wobjectHolderMapMu   *cmptypes.SimpleTryLock //trylock.TryLocker
-	wobjectIDCounter     uintptr
+	wobjectHolderMap   state.ObjectHolderMap
+	wobjectHolderMapMu *cmptypes.SimpleTryLock //trylock.TryLocker
+	wobjectIDCounter   uintptr
 	//objectPointerToObjID map[uintptr]uintptr
 
 	// deprecated
@@ -358,7 +376,7 @@ func (rs *PreplayResults) GetAndDeleteHolder(wref *WObjectWeakReference) (*state
 	}
 }
 
-func (rs *PreplayResults) GetAndDeleteHolderNoLock(ObjectID  uintptr) (*state.ObjectHolder, bool) {
+func (rs *PreplayResults) GetAndDeleteHolderNoLock(ObjectID uintptr) (*state.ObjectHolder, bool) {
 
 	holder, hok := rs.wobjectHolderMap.GetAndDeleteNoLock(ObjectID)
 	//if hok {
@@ -1231,7 +1249,7 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 
 	nowTime := time.Now()
 	//round.WObjects = wobjects
-	round.WObjectWeakRefs = txPreplay.PreplayResults.StoreUniqueWObjects(wobjects, roundID)//txPreplay.StoreWObjects(wobjects, roundID)
+	round.WObjectWeakRefs = txPreplay.PreplayResults.StoreUniqueWObjects(wobjects, roundID) //txPreplay.StoreWObjects(wobjects, roundID)
 	round.WObjectCopy = wobjectCopy
 	round.WObjectNotCopy = wobjectNotCopy
 	round.Timestamp = uint64(nowTime.Unix())
