@@ -233,6 +233,7 @@ var (
 		utils.SingleFutureFlag,
 		utils.NoTraceFlag,
 		utils.NoTraceMemoizationFlag,
+		utils.NoMemoizationFlag,
 		utils.NoWarmuperFlag,
 		utils.NoOverMatchingFlag,
 		utils.NoReuseFlag,

@@ -19,6 +19,7 @@ package optipreplayer
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -64,10 +65,12 @@ type Frame struct {
 
 	canStart    int32 // can start indicates whether we can start the mining operation
 	shouldStart int32 // should start indicates whether we should start after sync
+
+	cfg *vm.MSRAVMConfig
 }
 
 // NewFrame create a new frame
-func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64, singleFuture bool) *Frame {
+func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64, cfg *vm.MSRAVMConfig) *Frame {
 	listener := NewListener(eth)
 	frame := &Frame{
 		eth:         eth,
@@ -76,10 +79,11 @@ func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engin
 		mux:         mux,
 		engine:      engine,
 		exitCh:      make(chan struct{}),
-		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil, listener, singleFuture),
+		preplayers:  NewPreplayers(eth, config, engine, gasFloor, gasCeil, listener, cfg),
 		collector:   NewCollector(eth, config),
 		listener:    listener,
 		canStart:    1,
+		cfg: cfg,
 	}
 	// frame.SetGlobalCache(cache.NewGlobalCache(defaultBlockCacheSize, defaultTxCacheSize, defaultPreplayCacheSize))
 

@@ -256,7 +256,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 
 	if config.MSRAVMSettings.EnablePreplay {
 		eth.frame = optipreplayer.NewFrame(eth, eth.blockchain.Config(), eth.EventMux(),
-			eth.engine, config.Miner.GasFloor, config.Miner.GasCeil, config.MSRAVMSettings.SingleFuture)
+			eth.engine, config.Miner.GasFloor, config.Miner.GasCeil, &config.MSRAVMSettings)
 		eth.frame.SetExtra(makeExtraData(config.Miner.ExtraData))
 		eth.blockchain.ReportReuseMiss = eth.frame.GetMissReporter()
 	}

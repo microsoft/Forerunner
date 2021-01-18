@@ -970,7 +970,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 				cache.LockCount[3] ++
 			}
 		}
-	} else {
+	}
+
+	if !cfg.MSRAVMSettings.NoOverMatching && !cfg.MSRAVMSettings.NoMemoization {
 		if tryHoldLock(txPreplay.PreplayResults.MixTreeMu) {
 			round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
 			txPreplay.PreplayResults.MixTreeMu.Unlock()
@@ -1047,7 +1049,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 		//	1. Reusing delta would reduce variety of dep relations and reduce the hit rate of dep match
 		//	2. Delta reuse will be still helpful for blockprocessing
 		// deprecated the pure delta check
-		if false && !cfg.MSRAVMSettings.NoOverMatching {
+		if cfg.MSRAVMSettings.NoMemoization {//|| (false && !cfg.MSRAVMSettings.NoOverMatching {
 			if status.BaseStatus == cmptypes.Undefined {
 				if tryHoldLock(txPreplay.PreplayResults.DeltaTreeMu) {
 					round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
@@ -1058,6 +1060,15 @@ func (reuse *Cmpreuse) reuseTransaction(bc core.ChainContext, author *common.Add
 						//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.DeltaHit, MixHitStatus: mixStatus}
 						status.BaseStatus = cmptypes.Hit
 						status.HitType = cmptypes.DeltaHit
+
+						checkedNode := 3
+						if len(round.RWrecord.ReadDetail.ReadDetailSeq) == 5 {
+							checkedNode = 4
+						}
+
+						mixStatus = &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: 0, UnhitDepNodeCount: -1,
+							DetailCheckedCount: checkedNode, BasicDetailCount: len(round.RWrecord.ReadDetail.ReadDetailSeq)}
+						status.MixStatus = mixStatus
 						// debug info
 						//rss, _ := json.Marshal(status)
 						//log.Info("reuse delta", "txhash", tx.Hash().Hex(), "status", string(rss))

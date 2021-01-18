@@ -773,7 +773,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 					values = append(values, ReuseResult[index].MissValue)
 					missTxns = append(missTxns, txn)
 				} else {
-					if !cfg.MSRAVMSettings.NoOverMatching { // when over-matching is disabled, mixtree is turned off, the node will be nil
+					if !cfg.MSRAVMSettings.NoOverMatching && !cfg.MSRAVMSettings.NoMemoization { // when over-matching is disabled, mixtree is turned off, the node will be nil
 						log.Error("Detect miss with nil node")
 					}
 				}

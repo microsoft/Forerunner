@@ -36,11 +36,17 @@ func IsNoDep(raddresses []*common.Address, statedb *state.StateDB) bool {
 func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundID uint64, tx *types.Transaction, receipt *types.Receipt,
 	sender common.Address, rwrecord *cache.RWRecord, wobjects state.ObjectMap, wobjectCopy, wobjectNotCopy uint64,
 	accChanges cmptypes.TxResIDMap, readDep []*cmptypes.AddrLocValue, preBlockHash common.Hash, trace *STrace, basicPreplay, enablePause bool,
-	noOverMatching, noMemoization bool, noTrace bool, singleFuture bool) {
+	cfg *vm.MSRAVMConfig) {
 
 	if receipt == nil || rwrecord == nil {
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
+
+	noOverMatching := cfg.NoOverMatching
+	noTraceMemoization := cfg.NoTraceMemoization
+	noTrace := cfg.NoTrace
+	singleFuture := cfg.SingleFuture
+	noMemoization := cfg.NoMemoization
 
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
@@ -76,7 +82,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 		var err error
 
-		if !noOverMatching {
+		if !noOverMatching && !noMemoization {
 			txPreplay.PreplayResults.MixTreeMu.Lock()
 			if singleFuture {
 				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
@@ -98,17 +104,19 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		}
 
 		if reuseStatus.BaseStatus != cmptypes.Hit {
-			txPreplay.PreplayResults.RWRecordTrieMu.Lock()
-			if singleFuture {
-				txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
-			}
-			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
-			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
+			if !noMemoization {
+				txPreplay.PreplayResults.RWRecordTrieMu.Lock()
+				if singleFuture {
+					txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+				}
+				err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+				txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
-			if err != nil {
-				roundjs, _ := json.Marshal(round)
-				log.Error("setRWRecordTrie error", "round", string(roundjs))
-				panic(err.Error())
+				if err != nil {
+					roundjs, _ := json.Marshal(round)
+					log.Error("setRWRecordTrie error", "round", string(roundjs))
+					panic(err.Error())
+				}
 			}
 
 			if !noTrace && !singleFuture {
@@ -134,7 +142,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 			traceTrieStart := time.Now()
 
 			txPreplay.PreplayResults.TraceTrieMu.Lock()
-			reuse.setTraceTrie(tx, txPreplay, round, trace, noOverMatching, noMemoization)
+			reuse.setTraceTrie(tx, txPreplay, round, trace, noOverMatching, noTraceMemoization)
 			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 			cost := time.Since(traceTrieStart)
@@ -439,8 +447,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc core.Ch
 			}
 		}
 		reuse.setAllResult(reuseStatus, roundID, tx, receipt, msg.From(), rwrecord, wobjects, wobjectCopy,
-			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause, cfg.MSRAVMSettings.NoOverMatching,
-			cfg.MSRAVMSettings.NoTraceMemoization, cfg.MSRAVMSettings.NoTrace, cfg.MSRAVMSettings.SingleFuture)
+			wobjectNotCopy, accChanges, readDeps, header.ParentHash, trace, basicPreplay, enablePause, &cfg.MSRAVMSettings)
 
 
 		//if trace != nil && tx.To() != nil && tx.To().Hex() == "0x2a1530C4C41db0B0b2bB646CB5Eb1A67b7158667" {

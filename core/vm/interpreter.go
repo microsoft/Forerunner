@@ -63,6 +63,7 @@ type MSRAVMConfig struct {
 	Selfish             bool
 	NoTrace             bool
 	NoTraceMemoization  bool
+	NoMemoization       bool
 	NoOverMatching      bool
 	SingleFuture        bool
 

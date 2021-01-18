@@ -930,6 +930,10 @@ var (
 		Name:  "no-trace-memoization",
 		Usage: "Turn off the instruction memoization of trace",
 	}
+	NoMemoizationFlag = cli.BoolFlag{
+		Name:  "no-memoization",
+		Usage: "Turn off memoization at all levels",
+	}
 	NoWarmuperFlag = cli.BoolFlag{
 		Name:  "no-warmuper",
 		Usage: "Close warmuper during preplay",
@@ -1803,6 +1807,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		Selfish:              ctx.GlobalBool(SelfishFlag.Name),
 		NoTrace:              ctx.GlobalBool(NoTraceFlag.Name),
 		NoTraceMemoization:   ctx.GlobalBool(NoTraceMemoizationFlag.Name),
+		NoMemoization:        ctx.GlobalBool(NoMemoizationFlag.Name),
 		NoOverMatching:       ctx.GlobalBool(NoOverMatchingFlag.Name),
 		SingleFuture:         ctx.GlobalBool(SingleFutureFlag.Name),
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
@@ -1835,6 +1840,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		if !ctx.GlobalIsSet(ParallelBloomFlag.Name) {
 			cfg.MSRAVMSettings.PipelinedBloom = true
 		}
+	}
+
+	if cfg.MSRAVMSettings.NoMemoization {
+		cfg.MSRAVMSettings.NoTraceMemoization = true
 	}
 }
 
