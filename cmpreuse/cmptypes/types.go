@@ -38,22 +38,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit  // 6
+	GasLimit // 6
 
 	//PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance           //7
-	Nonce             //8
-	CodeHash          //9
-	Exist             // 10
-	Empty             // 11
-	Code              // 12
-	Storage           // 13
-	CommittedStorage  //14
+	Balance          //7
+	Nonce            //8
+	CodeHash         //9
+	Exist            // 10
+	Empty            // 11
+	Code             // 12
+	Storage          // 13
+	CommittedStorage //14
 
 	// Dep info
-	Dependence  //15
+	Dependence //15
 
 	// Write State
 	DirtyStorage
@@ -261,9 +261,9 @@ type MixHitType int
 const (
 	AllDepHit MixHitType = iota
 	AllDetailHit
-	PartialHit  // partial dep and partial detail hit
+	PartialHit // partial dep and partial detail hit
 	AllDeltaHit
-	PartialDeltaHit  // partial dep and partial delta hit
+	PartialDeltaHit // partial dep and partial delta hit
 	NotMixHit
 )
 
@@ -294,7 +294,7 @@ const (
 	NoMatchMiss
 )
 
-func (m MissType) String() string{
+func (m MissType) String() string {
 	switch m {
 	case TraceMiss:
 		return "TraceMiss"
@@ -347,11 +347,11 @@ func (t *TxResID) Hash() *string {
 	return t.hash
 }
 
-func (t *TxResID) Copy() AccountDepValue{
+func (t *TxResID) Copy() AccountDepValue {
 	return &TxResID{Txhash: t.Txhash, RoundID: t.RoundID, hash: t.hash}
 }
 
-type AccountDepValue interface{
+type AccountDepValue interface {
 	Hash() *string
 	Copy() AccountDepValue
 }
@@ -361,7 +361,10 @@ type AccountSnap struct {
 	bytes []byte
 }
 
-func (a *AccountSnap) Copy() AccountDepValue{
+var EmptySnapHash = ""
+var EmptyAccountSnap = &AccountSnap{hash: &EmptySnapHash, bytes: make([]byte, 0)}
+
+func (a *AccountSnap) Copy() AccountDepValue {
 	return &AccountSnap{hash: a.hash, bytes: a.bytes}
 }
 
@@ -381,6 +384,10 @@ func (a AccountSnap) Hash() *string {
 	return a.hash
 }
 
+func (a AccountSnap) Bytes() []byte {
+	return a.bytes
+}
+
 func BytesToAccountSnap(bs []byte) *AccountSnap {
 	//newBytes := make([]byte, len(bs))
 	//copy(newBytes, bs)
@@ -392,6 +399,12 @@ func ImmutableBytesToStringPtr(buf []byte) *string {
 	res := *(*string)(unsafe.Pointer(&buf))
 	return &res
 }
+
+type SnapWithBlockHash struct {
+	ParentBlockhash *common.Hash
+	Snap            *AccountSnap
+}
+
 //
 //type ChangedBy struct {
 //	AccountSnap *AccountSnap `json:"snap"`
@@ -431,7 +444,6 @@ func GetBytes(v interface{}) []byte {
 
 type AccountDepMap map[common.Address]AccountDepValue
 type TxResIDMap map[common.Address]*TxResID
-
 
 type Location struct {
 	Field Field
@@ -737,8 +749,8 @@ type PreplayResTrieRoundNodes struct {
 }
 
 type PreplayResTrieNode struct {
-	Value        interface{} `json:"value"` // this value is the key in its parent
-	Children     IChildren                  //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+	Value        interface{}         `json:"value"` // this value is the key in its parent
+	Children     IChildren           //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
 	NodeType     *AddrLocation       `json:"node_type"`
 	DetailChild  *PreplayResTrieNode `json:"detail_child"`
 	Parent       *PreplayResTrieNode

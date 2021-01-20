@@ -320,6 +320,9 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 			return nil, mixHitStatus, missNode, missValue, isAbort, false
 		}
 		if cmpReuseChecking {
+			if isBlockProcess{
+				log.Info("checking")
+			}
 			if !CheckRChain(res.RWrecord, bc, header, false) {
 				if isBlockProcess { // TODO: debug code
 					log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
@@ -392,7 +395,7 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 	//defer txPreplay.Mu.Unlock()
 
 	trie := txPreplay.PreplayResults.ReadDepTree
-	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
+	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess, false)
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 
@@ -509,7 +512,7 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
 	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (*cache.PreplayResult, bool, bool) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
-	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
+	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess, false)
 
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
@@ -616,9 +619,9 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain
 }
 
 func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
-	blockPre *cache.BlockPre) (res *cache.PreplayResult, isAbort bool, ok bool) {
+	blockPre *cache.BlockPre, isBlockProcess bool) (res *cache.PreplayResult, isAbort bool, ok bool) {
 	trie := txPreplay.PreplayResults.DeltaTree
-	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, false)
+	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess,false)
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
@@ -841,7 +844,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 
 		if isBlockProcess {
 			if status.BaseStatus == cmptypes.Undefined {
-				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status)
+				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
 				if status.BaseStatus == cmptypes.Unknown {
 					return
 				}
@@ -860,7 +863,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 				if status.BaseStatus != cmptypes.Undefined {
 					panic("BaseStatus should be undefined before the first check")
 				}
-				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status)
+				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
 				if status.BaseStatus == cmptypes.Unknown {
 					return
 				}
@@ -1053,7 +1056,7 @@ func (reuse *Cmpreuse) tryTrieCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock)
 				SearchMixTree(txPreplay.PreplayResults.MixTree, statedb, bc, header, func() bool { return false }, true, isBlockProcess, txPreplay.PreplayResults.IsExternalTransfer)
 				txPreplay.PreplayResults.MixTreeMu.Unlock()
 				log.Warn(". . . . . . . . . . . . . . . . . . . . . . . . . ")
-				SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, func() bool { return false }, true)
+				SearchTree(txPreplay.PreplayResults.RWRecordTrie, statedb, bc, header, func() bool { return false }, isBlockProcess, true)
 				formertxsbs, _ := json.Marshal(statedb.ProcessedTxs)
 				log.Warn("former tx", "former txs", string(formertxsbs))
 
@@ -1145,10 +1148,10 @@ func (reuse *Cmpreuse) tryTrieCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock)
 
 func (reuse *Cmpreuse) tryDeltaCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) (hold bool),
 	txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
-	blockPre *cache.BlockPre, t0 time.Time, status *cmptypes.ReuseStatus) (round *cache.PreplayResult, d0 time.Duration) {
+	blockPre *cache.BlockPre, t0 time.Time, status *cmptypes.ReuseStatus, isBlockProcess bool) (round *cache.PreplayResult, d0 time.Duration) {
 	if tryHoldLock(txPreplay.PreplayResults.DeltaTreeMu) {
 		var isAbort, ok bool
-		round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre)
+		round, isAbort, ok = reuse.deltaCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess)
 		txPreplay.PreplayResults.DeltaTreeMu.Unlock()
 
 		if ok {

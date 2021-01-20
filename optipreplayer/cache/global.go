@@ -17,7 +17,10 @@
 package cache
 
 import (
+	"bytes"
 	"encoding/json"
+	"github.com/ethereum/go-ethereum/rlp"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,7 +63,8 @@ type GlobalCache struct {
 	PreplayTimestamp uint64 // Last time stamp
 
 	// Account Snap
-	AccountSnapCache *lru.Cache
+	AccountSnapCache   *lru.Cache
+	AccountSnapGetType []int
 
 	reduplicatedNonceTxnMu sync.RWMutex
 	reduplicatedNonceTxn   map[common.Address]types.TxByNonce
@@ -120,6 +124,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.TimestampField = -2
 
 	g.AccountSnapCache, _ = lru.New(100000)
+	g.AccountSnapGetType = make([]int, 3)
 
 	g.reduplicatedNonceTxn = make(map[common.Address]types.TxByNonce)
 
@@ -147,36 +152,81 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 
 var aBigInt = crypto.Keccak256Hash(common.Hex2Bytes("abignumber")).Big()
 
-type SnapWithBlockHash struct {
-	ParentBlockhash *common.Hash
-	Snap            *cmptypes.AccountSnap
-}
-
 func (r *GlobalCache) GetAccountSnapWithParentBlockHash(address common.Address) (*common.Hash, *cmptypes.AccountSnap) {
-	value, ok := r.AccountSnapCache.Get(address)
+	var value interface{}
+	var ok bool
+	value, ok = r.AccountSnapCache.Get(address)
+
 	if !ok {
 		return nil, nil
 	}
 
-	swb, ok := value.(*SnapWithBlockHash)
-	if !ok {
+	swb, ok2 := value.(*cmptypes.SnapWithBlockHash)
+	if !ok2 {
 		return nil, nil
 	}
 	return swb.ParentBlockhash, swb.Snap
 }
 
+// These objects are stored in the main account trie.
+type Account struct {
+	Nonce    uint64
+	Balance  *big.Int
+	Root     common.Hash // merkle root of the storage trie
+	CodeHash []byte
+}
+
+func getAccount(enc []byte, address common.Address) Account {
+	var data Account
+	if err := rlp.DecodeBytes(enc, &data); err != nil {
+		log.Error("Failed to decode state object", "addr", address, "err", err)
+
+	}
+	return data
+}
+
+func cmpAccounts(a, b Account) bool {
+	res := true
+	if a.Nonce != b.Nonce {
+		res = false
+		log.Warn("nonce diff", "a", a.Nonce, "b", b.Nonce)
+	}
+	if a.Balance != nil && a.Balance.Cmp(b.Balance) != 0 {
+		res = false
+		log.Warn("balance diff", "a", a.Balance, "b", b.Balance)
+	}
+	if a.Root != b.Root {
+		res = false
+		log.Warn("root diff", "a", a.Root, "b", b.Root)
+	}
+	if bytes.Compare(a.CodeHash, b.CodeHash) != 0 {
+		res = false
+		log.Warn("codehash diff", "a", a.CodeHash, "b", b.CodeHash)
+	}
+	return res
+}
+
 func (r *GlobalCache) AddAccountSnapWithParentBlockhash(address common.Address, bhash *common.Hash, snap *cmptypes.AccountSnap) {
 	oldphash, _ := r.GetAccountSnapWithParentBlockHash(address)
+	oldphash, oldsnap := r.GetAccountSnapWithParentBlockHash(address)
 	if oldphash != nil && *oldphash == *bhash {
+		if *snap.Hash() != *oldsnap.Hash() {
+			if cmpAccounts(getAccount(snap.Bytes(), address), getAccount(oldsnap.Bytes(), address)) {
+				log.Error("Different snap!!!!, but same account ! ! ! ! ! ! !", "address", address, "oldsnap", oldsnap.Hex(), "newsnap", snap.Hex(), "prehash", oldphash.Hex(), "p", bhash.Hex())
+			} else {
+				log.Error("Different snap!!!!, Diff account  @@@@@", "address", address, "oldsnap", oldsnap.Hex(), "newsnap", snap.Hex(), "prehash", oldphash.Hex(), "p", bhash.Hex())
+
+			}
+		}
 		return
 	} else {
-		swb := &SnapWithBlockHash{bhash, snap}
+		swb := &cmptypes.SnapWithBlockHash{bhash, snap}
 		r.AccountSnapCache.Add(address, swb)
 	}
 }
 
-func (r *GlobalCache) AddAccountSnapByReadDetail(pbhash common.Hash, detail *cmptypes.ReadDetail) {
-	for _, alv := range detail.ReadAddressAndBlockSeq {
+func (r *GlobalCache) AddAccountSnapByReadDetail(pbhash common.Hash, readDep []*cmptypes.AddrLocValue) {
+	for _, alv := range readDep {
 		if alv.AddLoc.Field == cmptypes.Dependence {
 
 			switch alv.Value.(type) {

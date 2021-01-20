@@ -2,7 +2,6 @@ package emulator
 
 import (
 	"github.com/ethereum/go-ethereum/log"
-	"strings"
 	"time"
 )
 
@@ -69,11 +68,11 @@ func (e *GethReplayer) readLog(reader LogReader) {
 		if !ok {
 			return
 		}
-		if !e.consumer.IsTxPoolLoaded(){
-			if strings.Contains(string(line), "\"type\":97,"){
-				continue
-			}
-		}
+		//if !e.consumer.IsTxPoolLoaded(){
+		//	if strings.Contains(string(line), "\"type\":97,"){
+		//		continue
+		//	}
+		//}
 		e.rawLineChan <- line
 	}
 }

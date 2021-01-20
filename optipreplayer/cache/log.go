@@ -780,6 +780,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			}
 		}
 
+		totalSnapGet := r.AccountSnapGetType[0] +r.AccountSnapGetType[1] +r.AccountSnapGetType[2]
+		log.Info("How to get snap","totalSnapGet", totalSnapGet, "stateObject", r.AccountSnapGetType[0],
+			"lru", r.AccountSnapGetType[1], "Trie", r.AccountSnapGetType[2] )
+
 		if !cfg.MSRAVMSettings.NoReuse {
 			if len(noPreplayTxns) > 0 || len(missTxns) > 0 {
 				reporter.SetBlock(block)

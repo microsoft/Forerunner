@@ -58,7 +58,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 	start := time.Now()
 	round, ok := reuse.MSRACache.SetMainResult(curRoundID, receipt, rwrecord, wobjects, wobjectCopy, wobjectNotCopy, accChanges, readDep, preBlockHash, txPreplay)
-	reuse.MSRACache.AddAccountSnapByReadDetail(preBlockHash, rwrecord.ReadDetail)
+	reuse.MSRACache.AddAccountSnapByReadDetail(preBlockHash, readDep)
 
 	if ok {
 		round.Trace = trace
@@ -408,7 +408,8 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 		if cfg.MSRAVMSettings.NoOverMatching {
 		} else {
 			if reuseStatus.BaseStatus == cmptypes.Hit {
-				if reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit {
+				if reuseStatus.HitType == cmptypes.MixHit &&
+					(reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit || reuseStatus.MixStatus.MixHitType == cmptypes.PartialDeltaHit ){
 					readDeps = updateNewReadDepSeq(statedb, reuseRound.ReadDepSeq)
 					wobjects, wobjectCopy, wobjectNotCopy = statedb.RWRecorder().WObjectDump()
 

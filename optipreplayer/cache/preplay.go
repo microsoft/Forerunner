@@ -526,7 +526,7 @@ type PreplayResult struct {
 	// Filled by the former round. -1 for no former round has the same RWRecord
 	Filled int64
 
-	Trace cmptypes.ISTrace
+	Trace cmptypes.ISTrace  `json:"-"`
 }
 
 func (r *PreplayResult) GetRoundId() uint64 {

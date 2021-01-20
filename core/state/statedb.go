@@ -33,6 +33,8 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+
+	lru "github.com/hashicorp/golang-lru"
 )
 
 type revision struct {
@@ -1328,7 +1330,80 @@ func (s *StateDB) GetAccountSnap(address common.Address) *cmptypes.AccountSnap {
 		panic(fmt.Sprintf("TryGet Error %v at Tx %v and addr %v", err.Error(), s.thash.Hex(), address.Hex()))
 		//return &cmptypes.AccountSnap{}
 	}
-	return cmptypes.BytesToAccountSnap(snap)
+	if len(snap) != 0 {
+		//preTxs, _:= json.Marshal(s.ProcessedTxs)
+		//log.Warn("deleted?", "preTxs", string(preTxs))
+		return cmptypes.BytesToAccountSnap(snap)
+		//panic(fmt.Sprintf("TryGet return unexpected value at Tx %v and addr %v: snap: %v", s.thash.Hex(), address.Hex(), cmptypes.BytesToAccountSnap(snap).Hex()))
+	}
+
+	return cmptypes.EmptyAccountSnap
+}
+
+// return Snap & Source (0 for prepared StateObject; 1 for LRU; 2 for Trie.TryGet)
+func (s *StateDB) GetAccountSnapByCache(addr common.Address, snapCache *lru.Cache, pbhash common.Hash, isBlockProcess bool) (*cmptypes.AccountSnap, int) {
+
+	// Prefer live objects if any is available
+	if obj := s.stateObjects[addr]; obj != nil { //obj != nil && !obj.deleted{
+		if obj.deleted {
+			//log.Warn("stateObject deleted")
+			panic("unexpected deleted stateObject")
+		}
+		if obj.snap == nil {
+			panic("snap should not be nil")
+		}
+		return obj.snap, 0
+	}
+
+	// if the address is in the warmup cache for non-existent accounts,
+	// no need to read the Trie again
+	if _, ok := s.createdObjectsInWarmup[addr]; ok {
+		//enc, _ := s.trie.TryGet(addr[:])
+		//if len(enc) != 0 {
+		//	panic("The enc should be zero!")
+		//}
+		return cmptypes.EmptyAccountSnap, 0
+	}
+
+	//LRU
+	if snapCache != nil {
+		var value interface{}
+		var ok bool
+		if isBlockProcess {
+			value, ok = snapCache.Peek(addr)
+		} else {
+			value, ok = snapCache.Get(addr)
+		}
+		if ok {
+			swb, _ := value.(*cmptypes.SnapWithBlockHash)
+			if swb.ParentBlockhash != nil && *swb.ParentBlockhash == pbhash {
+
+				enc := swb.Snap.Bytes()
+				if len(enc) != 0 {
+
+					var data Account
+					if err := rlp.DecodeBytes(enc, &data); err != nil {
+						log.Error("Failed to decode state object", "addr", addr, "err", err)
+						panic("decode failed")
+					}
+
+					// Insert into the live set
+					obj := newObject(s, addr, data)
+					obj.snap = cmptypes.BytesToAccountSnap(enc)
+					if s.IsShared() {
+						obj.addDelta()
+						s.setDeltaStateObject(obj)
+					} else {
+						s.setStateObject(obj)
+					}
+				}
+
+				return swb.Snap, 1
+			}
+		}
+	}
+
+	return s.GetAccountSnap(addr), 2
 
 }
 
