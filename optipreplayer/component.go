@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
+	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -1013,6 +1014,74 @@ func (l *PreplayLog) disableGroup() {
 	}
 }
 
+func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution, chainDepDistribution string) {
+	orderCounts := make([]int, 7)
+	sizeCounts := make([]int, 7)
+	chainDepCount := 0
+	timeStampDepCount := 0
+	coinbaseDepCount := 0
+	for _, g := range l.groupLog {
+		if !g.orderCount.IsUint64() {
+			orderCounts[6]++
+		} else {
+			orderCount := g.orderCount.Uint64()
+			if orderCount <= 1 {
+				orderCounts[0]++
+			} else if orderCount <= 2 {
+				orderCounts[1]++
+			} else if orderCount <= 6 {
+				orderCounts[2]++
+			} else if orderCount <= 24 {
+				orderCounts[3]++
+			} else if orderCount <= 120 {
+				orderCounts[4]++
+			} else if orderCount <= 720 {
+				orderCounts[5]++
+			} else {
+				orderCounts[6]++
+			}
+		}
+
+		txnCount := g.txnCount
+		cmptypes.MyAssert(txnCount > 0)
+		if txnCount == 1 {
+			sizeCounts[0]++
+		}else if txnCount == 2 {
+			sizeCounts[1]++
+		} else if txnCount <= 4 {
+			sizeCounts[2]++
+		} else if txnCount <= 8 {
+			sizeCounts[3]++
+		} else if txnCount <= 16 {
+			sizeCounts[4]++
+		} else if txnCount <= 32 {
+			sizeCounts[5]++
+		} else {
+			sizeCounts[6]++
+		}
+		if g.isChainDep() {
+			chainDepCount++
+		}
+		if g.isCoinbaseDep(){
+			coinbaseDepCount++
+		}
+		if g.isTimestampDep() {
+			timeStampDepCount++
+		}
+		
+	}
+
+	sizeDistribution = fmt.Sprintf("[1|2|4|8|16|36|>36]-[%d:%d:%d:%d:%d:%d:%d]", sizeCounts[0],
+		sizeCounts[1], sizeCounts[2], sizeCounts[3], sizeCounts[4], sizeCounts[5], sizeCounts[6])
+	
+	orderDistribution = fmt.Sprintf("[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]", orderCounts[0],
+		orderCounts[1], orderCounts[2], orderCounts[3], orderCounts[4], orderCounts[5], orderCounts[6])
+	
+	chainDepDistribution = fmt.Sprintf("%d[cb|ts]-[%d:%d]", chainDepCount, coinbaseDepCount, timeStampDepCount)
+	
+	return
+}
+
 func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1021,12 +1090,14 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	if l.packageCnt > 0 {
 		context = append(context, "avgPackage", common.PrettyDuration(int64(time.Since(l.lastUpdate))/int64(l.packageCnt)))
 	}
+	sizeDistr, orderDistr, chainDistr := l.getGroupDistribution()
 	context = append(
 		context, "build", l.taskBuildCnt, "deadline", len(l.deadlineLog),
 		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), l.groupExecCnt),
 		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt),
 		"object", fmt.Sprintf("%d(%d)-%d", l.wobjectCopyCnt, len(l.wobjectAddr), l.wobjectNotCopyCnt),
 		"remain", remain, "duration", common.PrettyDuration(time.Since(l.lastUpdate)),
+		"gSizeDist", sizeDistr, "gOrderDist", orderDistr, "gChainDistr", chainDistr,
 	)
 	log.Info("In last block", context...)
 

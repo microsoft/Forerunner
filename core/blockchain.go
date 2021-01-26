@@ -2149,14 +2149,20 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
 			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
 		)
-		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount,
-		totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
+		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount, totalTraceRoundCount, totalTracePathCount,
+		totalMixTrieNodeCount, totalSmartContractMixTrieRoundCount, totalSmartContractTxCount, totalSmartContractMixTrieRWRecordCount,
+		totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
 		log.Info("Trie size in tx preplay cache",
 			"cachedTxCount", cachedTxCount,
 			"tracedTxCount", cachedTxWithTraceCount,
 			"maxTraceNodeCount", maxTrieNodeCount,
 			"totalTraceNodeCount", totalTrieNodeCount,
+			"totalTraceRoundCount", totalTraceRoundCount,
+			"totalTracePathCount", totalTracePathCount,
 			"totalMixNodeCount", totalMixTrieNodeCount,
+			"totalSmartContractMixTrieRoundCount", totalSmartContractMixTrieRoundCount,
+			"totalSmartContractTxCount", totalSmartContractTxCount,
+			"totalSmartContractMixTrieRWRecordCount", totalSmartContractMixTrieRWRecordCount,
 			"totalRWNodeCount", totalRWTrieNodeCount,
 			"totalWObjectCount", totalWObjectCount,
 			"totalWObjectStorageSize", totalWObjectStorageSize,

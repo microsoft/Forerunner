@@ -19,6 +19,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 var (
@@ -139,9 +140,9 @@ func IsExternalTransfer(readDetail *cmptypes.ReadDetail, tx *types.Transaction) 
 //
 //}
 
-func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transaction) {
+func (t *TxPreplay) SetExternalTransferInfo(record *RWRecord, tx *types.Transaction, setDelta bool) {
 	t.PreplayResults.IsExternalTransfer = IsExternalTransfer(record.ReadDetail, tx)
-	if t.PreplayResults.IsExternalTransfer {
+	if setDelta && t.PreplayResults.IsExternalTransfer {
 		wDeltas := make(map[common.Address]*WStateDelta)
 		sender := record.ReadDetail.ReadAddressAndBlockSeq[0].AddLoc.Address
 		to := *tx.To()
@@ -330,6 +331,37 @@ func (rs *PreplayResults) TryGetTraceTrieNodeCount() int64 {
 	return 0
 }
 
+func (rs *PreplayResults) TryGetTraceActivePathCount() int64 {
+	if rs.TraceTrieMu.TryLock() {
+		defer rs.TraceTrieMu.Unlock()
+		traceTrie := rs.TraceTrie
+		if traceTrie != nil {
+			return traceTrie.GetActivePathCount()
+		}
+	}
+	return 0
+}
+
+func (rs *PreplayResults) TryGetMixTreeActiveRWRecordCount() int64 {
+	if rs.MixTreeMu.TryLock() {
+		defer rs.MixTreeMu.Unlock()
+		mixTree := rs.MixTree
+		if mixTree != nil {
+			rounds := mixTree.GetActiveIRounds()
+			rwRecordIds := make(map[uintptr]struct{})
+			for _, r := range rounds {
+				rwRecordIds[r.GetRWRecordId()] = struct{}{}
+			}
+			//if len(rounds) > 10 && len(rwRecordIds) != len(rounds) {
+			//	log.Warn(fmt.Sprintf("tx %v len rwRecordIDs %v len rounds %v", rs.txPreplay.TxHash.String(), len(rwRecordIds) ,len(rounds)))
+			//}
+			return int64(len(rwRecordIds))
+		}
+	}
+
+	return 0
+}
+
 func (rs *PreplayResults) TryGetRWRecordTrieNodeCount() int64 {
 	if rs.RWRecordTrieMu.TryLock() {
 		defer rs.RWRecordTrieMu.Unlock()
@@ -490,6 +522,7 @@ func (rs *PreplayResults) StoreUniqueWObjects(objMap state.ObjectMap, roundId ui
 type ITracerTrie interface {
 	GetNodeCount() int64
 	GetActiveRounds() []*PreplayResult
+	GetActivePathCount() int64
 }
 
 // PreplayResult record one round result
@@ -531,6 +564,10 @@ type PreplayResult struct {
 
 func (r *PreplayResult) GetRoundId() uint64 {
 	return r.RoundID
+}
+
+func (r *PreplayResult) GetRWRecordId() uintptr {
+	return uintptr(unsafe.Pointer(r.RWrecord))
 }
 
 type WStateDelta struct {
@@ -1042,7 +1079,7 @@ func (r *GlobalCache) LenOfTxPreplay() int {
 }
 
 func (r *GlobalCache) GetTotalNodeCountAndWObjectSize() (totalNodeCount int64, totalWObjectSize uint64) {
-	_, _, _, totalTrieNodeCount, totalMixTrieNodeCount, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := r.GetTrieAndWObjectSizes()
+	_, _, _, totalTrieNodeCount, _, _, totalMixTrieNodeCount, _, _, _, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := r.GetTrieAndWObjectSizes()
 	totalNodeCount = totalTrieNodeCount + totalMixTrieNodeCount + totalRWTrieNodeCount
 	totalWObjectSize = totalWObjectCount*config.WOBJECT_BASE_SIZE + totalWObjectStorageSize
 	return

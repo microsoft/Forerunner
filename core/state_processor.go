@@ -429,6 +429,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond)
 				}
 			}
+
+			reuseStatus.TxHash = tx.Hash()
+			reuseStatus.BlockHash = blockHash
+			reuseStatus.BlockNumber = block.Number()
+			reuseStatus.GasUsed = receipt.GasUsed
+
 			reuseResult = append(reuseResult, reuseStatus)
 			if reuseStatus.BaseStatus == cmptypes.Unknown {
 				statedb.UnknownTxs = append(statedb.UnknownTxs, tx)

@@ -610,10 +610,11 @@ func (rf *SRefCount) SRemoveRef() uint {
 }
 
 type TrieRoundRefNodes struct {
-	RefNodes []ISRefCountNode
-	RoundID  uint64
-	Round    *cache.PreplayResult
-	Next     *TrieRoundRefNodes
+	RefNodes    []ISRefCountNode
+	RoundID     uint64
+	Round       *cache.PreplayResult
+	RoundPathID uintptr
+	Next        *TrieRoundRefNodes
 }
 
 type AccountNodeJumpDef struct {
@@ -1642,7 +1643,7 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
 		changedBy, _ := env.state.GetAccountDepValue(addr)
-		if  changedBy == cmptypes.DEFAULT_TXRESID {
+		if changedBy == cmptypes.DEFAULT_TXRESID {
 			vid = 0
 		} else {
 			depHash := *changedBy.Hash()
@@ -1846,6 +1847,8 @@ type TraceTrie struct {
 	TotalSpecializationDuration time.Duration
 	TotalMemoizationDuration    time.Duration
 	TotalTraceCount             int64
+
+	LargestDetailReadSetID int64
 }
 
 func NewTraceTrie(tx *types.Transaction) *TraceTrie {
@@ -1993,6 +1996,8 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 		}
 	}
 
+	pathID := uintptr(unsafe.Pointer(n))
+
 	cmptypes.MyAssert(tt.Head == nil || tt.Head == preHead.Next)
 	tt.Head = preHead.Next
 
@@ -2016,12 +2021,13 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 	tt.UpdateTraceSize(trace.RegisterFileSize)
 
 	refNodes = append(refNodes, jiRefNodes...)
-	tt.TrackRoundRefNodes(refNodes, newNodeCount+jiNewNodeCount, round)
+
+	tt.TrackRoundRefNodes(refNodes, newNodeCount+jiNewNodeCount, round, pathID)
 
 	tt.TotalMemoizationDuration += time.Since(memoizationStartTime)
 }
 
-func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round *cache.PreplayResult) {
+func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount uint, round *cache.PreplayResult, roundPathID uintptr) {
 	if newNodeCount > 0 {
 		if tt.DebugOut != nil {
 			tt.DebugOut("NewRound %v: %v New trieNodes created, round node count: %v, total round count: %v, total trie node count:%v\n",
@@ -2033,9 +2039,10 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 		}
 
 		r := &TrieRoundRefNodes{
-			RefNodes: refNodes,
-			RoundID:  round.RoundID,
-			Round:    round,
+			RefNodes:    refNodes,
+			RoundID:     round.RoundID,
+			Round:       round,
+			RoundPathID: roundPathID,
 		}
 
 		tt.RefedRoundCount++
@@ -2062,7 +2069,7 @@ var gcMutex sync.Mutex
 
 func (tt *TraceTrie) GCRoundNodes() {
 	cmptypes.MyAssert(tt.RoundRefNodesHead != nil && tt.RoundRefNodesTail != nil)
-	if tt.RefedRoundCount > uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+	if tt.RefedRoundCount > uint(config.TXN_PREPLAY_ROUND_LIMIT*10+1) {
 		for i := 0; i < 1; i++ {
 			head := tt.RoundRefNodesHead
 			removed := tt.RemoveRoundRef(head)
@@ -2110,6 +2117,16 @@ func (tt *TraceTrie) GetActiveRounds() []*cache.PreplayResult {
 		rr = rr.Next
 	}
 	return rounds
+}
+
+func (tt *TraceTrie) GetActivePathCount() int64 {
+	distinctPaths := make(map[uintptr]struct{})
+	rr := tt.RoundRefNodesHead
+	for rr != nil {
+		distinctPaths[rr.RoundPathID] = struct{}{}
+		rr = rr.Next
+	}
+	return int64(len(distinctPaths))
 }
 
 func (tt *TraceTrie) RemoveRoundRef(rf *TrieRoundRefNodes) uint {
@@ -2162,10 +2179,17 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceSta
 	resMap := r.applyWObjects(txPreplay, noOverMatching)
 
 	traceStatus.AccountWrittenCount = uint64(len(r.accountIndexToAppliedWObject))
-	for n := r.Node; !n.Op.IsVirtual(); n = n.Next {
+	for n := r.Node; n.Next != nil ; n = n.Next {
 		if abort != nil && abort() {
 			return true, nil
 		}
+		if n.Op.IsVirtual() {
+			continue
+		}
+		if n.Next == nil {
+			traceStatus.HitPathId = uintptr(unsafe.Pointer(n))
+		}
+
 		if !n.Op.IsLog() {
 			traceStatus.TotalNodes++ // we do not count Log nodes as writes
 			traceStatus.FieldPotentialWrittenCount++
@@ -2954,10 +2978,11 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Statement, nodeIndex uint, trace *STrace) (*SNode, interface{}) {
 	registerMapping := &(trace.RAlloc)
 	if pNode == nil {
-		if tt.DebugOut != nil {
-			tt.DebugOut("NewHead %v\n", s.SimpleNameStringWithRegisterAnnotation(registerMapping))
-		}
-		return NewSNode(s, nodeIndex, trace, nil, nil), nil
+		panic("pNode should never be nil")
+		//if tt.DebugOut != nil {
+		//	tt.DebugOut("NewHead %v\n", s.SimpleNameStringWithRegisterAnnotation(registerMapping))
+		//}
+		//return NewSNode(s, nodeIndex, trace, nil, nil), nil
 	}
 
 	node := pNode.Next
@@ -2972,13 +2997,14 @@ func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Stat
 		}
 		node = NewSNode(s, nodeIndex, trace, pNode, guardKey)
 		if pNode.Op.IsGuard() {
-			if tt.DebugOut != nil {
-				tt.DebugOut("InsertAfter Guard %v on key %v\n", pNode.Statement.SimpleNameStringWithRegisterAnnotation(registerMapping), guardKey)
-			}
 			if pNode.GuardedNext == nil {
 				pNode.GuardedNext = make(map[interface{}]*SNode)
 			}
 			pNode.GuardedNext[guardKey] = node
+
+			if tt.DebugOut != nil {
+				tt.DebugOut("InsertAfter Guard %v on key %v\n", pNode.Statement.SimpleNameStringWithRegisterAnnotation(registerMapping), guardKey)
+			}
 		} else {
 			if tt.DebugOut != nil {
 				tt.DebugOut("InsertAfter %v\n", pNode.Statement.SimpleNameStringWithRegisterAnnotation(registerMapping))

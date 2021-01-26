@@ -46,7 +46,6 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	noTraceMemoization := cfg.NoTraceMemoization
 	noTrace := cfg.NoTrace
 	singleFuture := cfg.SingleFuture
-	noMemoization := cfg.NoMemoization
 
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
@@ -86,7 +85,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 
 		var err error
 
-		if !noOverMatching && !noMemoization {
+		if !noOverMatching {// && !noMemoization {
 			txPreplay.PreplayResults.MixTreeMu.Lock()
 			if singleFuture {
 				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
@@ -112,7 +111,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		}
 
 		if reuseStatus.BaseStatus != cmptypes.Hit {
-			if !noMemoization {
+			if noOverMatching { // only no overmatching need RWRecordTrie
 				txPreplay.PreplayResults.RWRecordTrieMu.Lock()
 				if singleFuture {
 					txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
@@ -222,9 +221,7 @@ func (reuse *Cmpreuse) commitGround(tx *types.Transaction, receipt *types.Receip
 
 func (reuse *Cmpreuse) addNewTx(tx *types.Transaction, rwrecord *cache.RWRecord, setDelta bool) *cache.TxPreplay {
 	txPreplay := cache.NewTxPreplay(tx)
-	if setDelta {
-		txPreplay.SetExternalTransferInfo(rwrecord, tx)
-	}
+	txPreplay.SetExternalTransferInfo(rwrecord, tx, setDelta)
 	reuse.MSRACache.AddTxPreplay(txPreplay)
 	return txPreplay
 }

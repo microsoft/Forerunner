@@ -473,7 +473,7 @@ func (b *TaskBuilder) chainHeadUpdate(block *types.Block) {
 	b.remainCount = make(map[common.Hash]int)
 	b.lastBaseline = b.txnBaseline
 	if blockPre := b.globalCache.PeekBlockPre(block.Hash()); blockPre != nil {
-		b.txnBaseline = blockPre.ListenTimeNano/1E9
+		b.txnBaseline = blockPre.ListenTimeNano / 1E9
 	} else {
 		b.txnBaseline = block.Time()
 	}
@@ -607,6 +607,7 @@ func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b
 				if group.isTimestampDep() {
 					timestampTryCount = len(timeShift)
 				}
+
 				for i := 0; i < coinbaseTryCount; i++ {
 					for j := 0; j < timestampTryCount; j++ {
 						if group.isValid() {

@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
+	lru "github.com/hashicorp/golang-lru"
 	"math/big"
 	"os"
 	"sort"
@@ -137,6 +138,79 @@ type LogPreplayItem struct {
 // LogBlockGround define blockGround log format
 type LogBlockGround []*LogRWrecord
 
+type TxReuseStatusHistory struct {
+	ProcessedCount uint
+	MixHitRoundIds map[uint64]struct{}
+	MixHitRWRcordIds map[uintptr]struct{}
+	ReuseHitPathIds map[uintptr]struct{}
+}
+
+func NewTxReuseStatusHistory() *TxReuseStatusHistory {
+	return &TxReuseStatusHistory{}
+}
+
+func updateNTimesArray(newCount uint, NTimesArray []int64) {
+	if newCount == 0 {
+		panic("Should never be 0")
+	}
+	if newCount <= uint(len(NTimesArray)) {
+		NTimesArray[newCount-1]++
+		if newCount > 1 {
+			NTimesArray[newCount-2]--
+		}
+	}
+
+}
+
+func (h *TxReuseStatusHistory) AddReuseStatus(status *cmptypes.ReuseStatus) {
+	processedTxCount++
+	h.ProcessedCount++
+	updateNTimesArray(h.ProcessedCount, processedNTimesTxCount)
+
+	// hack: determine whether the transaction is an external transfer
+	if status.GasUsed == 21000 {
+		return
+	}
+
+	if status.HitType == cmptypes.MixHit {
+		if h.MixHitRoundIds == nil {
+			h.MixHitRoundIds = make(map[uint64]struct{})
+			if h.ReuseHitPathIds != nil {
+				bothHitTxCount++
+			}
+		}
+		oldCount := len(h.MixHitRoundIds)
+		h.MixHitRoundIds[status.MixStatus.HitRoundID] = struct{}{}
+		newCount := len(h.MixHitRoundIds)
+		if newCount > oldCount {
+			updateNTimesArray(uint(newCount), mixHitDistinctRoundNTimesTxCount)
+		}
+		if h.MixHitRWRcordIds == nil {
+			h.MixHitRWRcordIds = make(map[uintptr]struct{})
+		}
+		oldCount = len(h.MixHitRWRcordIds)
+		h.MixHitRWRcordIds[status.MixStatus.HitRWRecordID] = struct{}{}
+		newCount = len(h.MixHitRWRcordIds)
+		if newCount > oldCount {
+			updateNTimesArray(uint(newCount), mixHitDistinctRWRecordNTimesTxCount)
+		}
+	}
+	if status.HitType == cmptypes.TraceHit {
+		if h.ReuseHitPathIds == nil {
+			h.ReuseHitPathIds = make(map[uintptr]struct{})
+			if h.MixHitRoundIds != nil {
+				bothHitTxCount++
+			}
+		}
+		oldCount := len(h.ReuseHitPathIds)
+		h.ReuseHitPathIds[status.TraceStatus.HitPathId] = struct{}{}
+		newCount := len(h.ReuseHitPathIds)
+		if newCount > oldCount {
+			updateNTimesArray(uint(newCount), traceHitDistinctPathNTimesTxCount)
+		}
+	}
+}
+
 var (
 	ethermine = common.HexToAddress("0xEA674fdDe714fd979de3EdF0F56AA9716B898ec8")
 	ToScreen  bool
@@ -166,6 +240,19 @@ var (
 	LongExecutionCost         time.Duration
 
 	ReuseResult []*cmptypes.ReuseStatus
+
+	TxReuseResultsCache, _  = lru.New(100000)
+
+	// reuse info
+	processedTxCount int64
+	processedNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, >5
+	mixHitDistinctRoundNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
+	mixHitDistinctRWRecordNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
+	traceHitDistinctPathNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
+	bothHitTxCount int64
+
+
+
 
 	WarmupMissTxnCount   = make(map[string]int)
 	AccountCreate        = make(map[string]int)
@@ -749,6 +836,31 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			}
 		}
 		log.Info("Cumulative block reuse", context...)
+
+		for _, rr := range ReuseResult {
+			// collect cumulative hit info
+			var txHistory *TxReuseStatusHistory
+			th, ok := TxReuseResultsCache.Get(rr.TxHash)
+			if ok {
+				txHistory = th.(*TxReuseStatusHistory)
+			} else {
+				txHistory = NewTxReuseStatusHistory()
+				TxReuseResultsCache.Add(rr.TxHash, txHistory)
+			}
+			txHistory.AddReuseStatus(rr)
+		}
+
+		log.Info("Cumulative reuse hit", "txs", processedTxCount, 
+			"processedDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", processedNTimesTxCount[0], processedNTimesTxCount[1], processedNTimesTxCount[2],
+				processedNTimesTxCount[3], processedNTimesTxCount[4], processedNTimesTxCount[5]),
+			"mixRoundDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", mixHitDistinctRoundNTimesTxCount[0], mixHitDistinctRoundNTimesTxCount[1], mixHitDistinctRoundNTimesTxCount[2],
+				mixHitDistinctRoundNTimesTxCount[3], mixHitDistinctRoundNTimesTxCount[4], mixHitDistinctRoundNTimesTxCount[5]),
+			"mixRWDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", mixHitDistinctRWRecordNTimesTxCount[0], mixHitDistinctRWRecordNTimesTxCount[1], mixHitDistinctRWRecordNTimesTxCount[2],
+				mixHitDistinctRWRecordNTimesTxCount[3], mixHitDistinctRWRecordNTimesTxCount[4], mixHitDistinctRWRecordNTimesTxCount[5]),
+			"tracePathDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", traceHitDistinctPathNTimesTxCount[0], traceHitDistinctPathNTimesTxCount[1], traceHitDistinctPathNTimesTxCount[2],
+				traceHitDistinctPathNTimesTxCount[3], traceHitDistinctPathNTimesTxCount[4], traceHitDistinctPathNTimesTxCount[5]),
+				"bothHitTxCount", bothHitTxCount,
+		)
 
 		log.Info("Tries lock", "count", fmt.Sprintf("%d-%d-%d-%d", LockCount[0], LockCount[1], LockCount[2], LockCount[3]))
 

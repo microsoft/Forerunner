@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"math/big"
 	"time"
+	"unsafe"
 )
 
 // codeHashEquivalent compare two common.Hash
@@ -306,10 +307,13 @@ func MixApplyObjState(statedb *state.StateDB, rw *cache.RWRecord, wobjectRefs ca
 }
 
 func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
-	blockPre *cache.BlockPre, isBlockProcess bool, cmpReuseChecking bool) (*cache.PreplayResult, *cmptypes.MixStatus, *cmptypes.PreplayResTrieNode,
+	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (*cache.PreplayResult, *cmptypes.MixStatus, *cmptypes.PreplayResTrieNode,
 	interface{}, bool, bool) {
 	trie := txPreplay.PreplayResults.MixTree
-	res, mixHitStatus, missNode, missValue, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false, isBlockProcess, txPreplay.PreplayResults.IsExternalTransfer)
+	cmpReuseChecking := cfg.MSRAVMSettings.CmpReuseChecking
+	setDelta := !cfg.MSRAVMSettings.NoTrace && !cfg.MSRAVMSettings.SingleFuture
+	res, mixHitStatus, missNode, missValue, isAbort, ok := SearchMixTree(trie, statedb, bc, header, abort, false,
+		isBlockProcess, txPreplay.PreplayResults.IsExternalTransfer && setDelta)
 	if ok {
 		//res := trieNode.Round.(*cache.PreplayResult)
 
@@ -858,8 +862,8 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 		}
 	} else {
 
-		if cfg.MSRAVMSettings.NoMemoization { // Delta -> Trace
-			if isBlockProcess {
+		if cfg.MSRAVMSettings.NoMemoization {
+			if isBlockProcess { // Delta -> Trace
 				if status.BaseStatus != cmptypes.Undefined {
 					panic("BaseStatus should be undefined before the first check")
 				}
@@ -872,6 +876,14 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 					if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
 						return
 					}
+				}
+			} else { // preplay MixTree
+				if status.BaseStatus != cmptypes.Undefined {
+					panic("BaseStatus should be undefined before the first check")
+				}
+				round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+				if status.BaseStatus == cmptypes.Unknown {
+					return
 				}
 			}
 		} else { // MixTree -> Trace
@@ -1006,7 +1018,8 @@ func (reuse *Cmpreuse) tryMixCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) 
 		var missValue interface{}
 		var isAbort, ok bool
 		var mixStatus *cmptypes.MixStatus
-		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg.MSRAVMSettings.CmpReuseChecking)
+		round, mixStatus, missNode, missValue, isAbort, ok = reuse.mixCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess,
+			cfg)
 		txPreplay.PreplayResults.MixTreeMu.Unlock()
 
 		status.MixStatus = mixStatus
@@ -1018,6 +1031,8 @@ func (reuse *Cmpreuse) tryMixCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) 
 			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.MixHit, MixHitStatus: mixStatus}
 			status.BaseStatus = cmptypes.Hit
 			status.HitType = cmptypes.MixHit
+			status.MixStatus.HitRoundID = round.RoundID
+			status.MixStatus.HitRWRecordID = uintptr(unsafe.Pointer(round.RWrecord))
 		} else if isAbort {
 			d0 = time.Since(t0)
 			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss

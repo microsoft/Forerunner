@@ -242,7 +242,8 @@ func (r *GlobalCache) AddAccountSnapByReadDetail(pbhash common.Hash, readDep []*
 }
 
 func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithTraceCount int,
-	maxTrieNodeCount int64, totalTrieNodeCount int64, totalMixTrieNodeCount int64, totalRWTrieNodeCount int64,
+	maxTrieNodeCount int64, totalTrieNodeCount int64, totalTraceRoundCount, totalTracePathCount int64, totalMixTrieNodeCount int64,
+	totalSmartContractMixTrieRoundCount, totalSmartContractTxCount, totalSmartContractMixTrieRWRecordCount,	totalRWTrieNodeCount int64,
 	wobjectCount uint64, wobjectStorageSize uint64) {
 	txHashes := r.KeysOfTxPreplay()
 	cachedTxCount = len(txHashes)
@@ -256,6 +257,15 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithT
 			wobjectStorageSize += storageItemCount
 			totalMixTrieNodeCount += txPreplay.PreplayResults.TryGetMixTreeNodeCount()
 			traceNodeCount := txPreplay.PreplayResults.TryGetTraceTrieNodeCount()
+			totalTraceRoundCount += int64(len(txPreplay.PreplayResults.GetTraceTrieActiveRounds()))
+			totalTracePathCount += txPreplay.PreplayResults.TryGetTraceActivePathCount()
+
+			if !txPreplay.PreplayResults.IsExternalTransfer {
+				totalSmartContractMixTrieRoundCount += int64(len(txPreplay.PreplayResults.GetMixTreeActiveRounds()))
+				totalSmartContractMixTrieRWRecordCount += txPreplay.PreplayResults.TryGetMixTreeActiveRWRecordCount()
+				totalSmartContractTxCount++
+			}
+
 			if traceNodeCount != 0 {
 				cachedTxWithTraceCount++
 				totalTrieNodeCount += traceNodeCount

@@ -1,7 +1,7 @@
 package config
 
 
-const TXN_PREPLAY_ROUND_LIMIT = 6
+const TXN_PREPLAY_ROUND_LIMIT = 12
 const CACHE_NODE_COUNT_LIMIT = 20 * 1000 * 1000
 const WOBJECT_BASE_SIZE = 4
 

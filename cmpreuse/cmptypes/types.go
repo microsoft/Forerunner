@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/optipreplayer/config"
+	"math/big"
 	"sync/atomic"
 	"unsafe"
 )
@@ -117,6 +118,10 @@ type ReuseStatus struct {
 	MissValue         interface{} // to reduce the cost of converting interfaces, mute the miss Value
 	AbortStage        AbortStage
 	TraceTrieHitAddrs TxResIDMap
+	TxHash            common.Hash
+	BlockHash         common.Hash
+	BlockNumber       *big.Int
+	GasUsed           uint64
 }
 
 type MixStatus struct {
@@ -131,6 +136,9 @@ type MixStatus struct {
 	WriteDepCount      int
 	WriteDetailCount   int
 	WriteDetailTotal   int
+
+	HitRoundID    uint64
+	HitRWRecordID uintptr
 }
 
 func (ms *MixStatus) GetPerfString() string {
@@ -164,6 +172,9 @@ type TraceStatus struct {
 	AvgSpecializationDurationInNanoSeconds int64
 	AvgMemoizationDurationInNanoSeconds    int64
 	TotalTraceCount                        int64
+
+	HitPathId     uintptr
+	HitRWRecordId uintptr
 }
 
 func (th *TraceStatus) GetPerfString() string {
@@ -325,6 +336,7 @@ type RecordHolder interface {
 
 type IRound interface {
 	GetRoundId() uint64
+	GetRWRecordId() uintptr
 }
 
 type TxResID struct {
@@ -891,7 +903,7 @@ func (tt *PreplayResTrie) GetActiveIRounds() []IRound {
 func (rr *PreplayResTrie) GCRoundNodes() int64 {
 	MyAssert(rr.RoundRefNodesHead != nil && rr.RoundRefNodesTail != nil)
 	totalRemoved := int64(0)
-	if rr.RoundRefCount >= uint(config.TXN_PREPLAY_ROUND_LIMIT+1) {
+	if rr.RoundRefCount >= uint(config.TXN_PREPLAY_ROUND_LIMIT*10+1) {
 
 		head := rr.RoundRefNodesHead
 		totalRemoved += rr.RemoveRoundNodes(head)
