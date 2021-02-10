@@ -639,6 +639,8 @@ func (pool *TxPool) loop() {
 		// Handle inactive account transaction eviction
 		case <-evict.C:
 			pool.mu.Lock()
+			log.Warn("handle inactive account")
+			start:= time.Now()
 			pool.config.MSRATxPoolSettings.PoolState = "Evicting"
 
 			tooOldCount := 0
@@ -666,6 +668,7 @@ func (pool *TxPool) loop() {
 			}
 
 			pool.config.MSRATxPoolSettings.PoolState = ""
+			log.Warn("handle inactive account finished", "time", time.Since(start).String())
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
@@ -1546,6 +1549,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	startTime := time.Now()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		pool.reset(reset.oldHead, reset.newHead)
@@ -1588,6 +1592,10 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 	for addr, list := range pool.pending {
 		txs := list.Flatten() // Heavy but will be cached and is needed by the miner anyway
 		pool.pendingNonces.set(addr, txs[len(txs)-1].Nonce()+1)
+	}
+	duration:= time.Since(startTime)
+	if duration > 100*time.Millisecond {
+		log.Warn("Txpool reorg finished too slow", "duration", duration.String())
 	}
 	pool.mu.Unlock()
 

@@ -586,6 +586,7 @@ func divideTransactionPool(txns TransactionPool, txnCount, chainFactor int) (ord
 
 // timeShift denotes 0, -1, 1, -2, 2
 var timeShift = []uint64{0, math.MaxUint64, 1, math.MaxUint64 - 1, 2}
+// TODO: based on statistic: replace 2, -2
 
 func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b *TaskBuilder) {
 	// boundaries of recursion

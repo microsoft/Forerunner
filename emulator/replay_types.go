@@ -8,7 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
-	"math/big"
+	"sync/atomic"
 	"time"
 )
 
@@ -82,12 +82,12 @@ type replayMsgConsumer struct {
 	TxPool          ReplayTxPool
 	LastBlockNumber uint64
 
-	txPoolLoaded    bool
+	txPoolLoaded    int32
 	afterFirstBlock bool
 }
 
-func (c *replayMsgConsumer) IsTxPoolLoaded() bool{
-	return c.txPoolLoaded
+func (c *replayMsgConsumer) IsTxPoolLoaded() bool {
+	return atomic.LoadInt32(&c.txPoolLoaded) == 1
 }
 
 func (c *replayMsgConsumer) Accept(msg interface{}) {
@@ -111,13 +111,12 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 			}
 		}
 
-		if c.txPoolLoaded {
+		if c.IsTxPoolLoaded() {
 			pending, queued := c.TxPool.(*core.TxPool).Stats()
 
-			var avgLag *big.Int
+			var avgLag int64
 			var curLag time.Duration
 			var msgCount int64
-			var publisherCount int
 			if GlobalGethReplayer.IsRealtimeMode() {
 				broker, ok := GlobalGethReplayer.broker.(*RealtimeBroker)
 				if !ok {
@@ -125,11 +124,10 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 				}
 				metrics := broker.Metrics
 				if metrics.count > 0 {
-					avgLag = new(big.Int).Div(metrics.totalLag, big.NewInt(metrics.count))
+					avgLag = metrics.totalLag / metrics.count
 				}
 				curLag = metrics.curLag
 				msgCount = metrics.count
-				publisherCount = broker.GetWaitingBufferSize()
 			}
 
 			blocks := msg.(*insertChainData).Blocks
@@ -140,14 +138,14 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 
 			c.callInsertChain(msg.(*insertChainData))
 			//GlobalGethReplayer.SetRealtimeMode()
-			rb, mb := GlobalGethReplayer.GetChanLen()
+			rlb, txlb, batchb, blb := GlobalGethReplayer.GetChanLen()
 			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued,
 				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "msgCount", msgCount,
-				"rawLineBuffer", rb, "msgBuffer", mb, "publisherCount", publisherCount)
+				"rawLineBuffer", rlb, "txlineBuffer", txlb, "batchBuffer", batchb ,"blockLineBuffer", blb)
 
 			c.LastBlockNumber = lastBlockNumber
 			if lastBlockNumber >= rawdb.GlobalEmulateHook.EmulateFrom()-1 { // might be - 100
-				GlobalGethReplayer.SetRealtimeMode()
+				GlobalGethReplayer.SetRealtimeMode(msg.(*insertChainData).Time)
 			}
 		} else {
 			blocks := msg.(*insertChainData).Blocks
@@ -166,7 +164,7 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 			}
 		}
 	case *addRemotesData:
-		if c.txPoolLoaded {
+		if c.IsTxPoolLoaded() {
 			c.callAddRemotes(msg.(*addRemotesData))
 		}
 	case *txPoolSnapshotData:
@@ -174,10 +172,10 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 		// ref: core/tx_pool.go Line 604
 		recoverBn := rawdb.GlobalEmulateHook.EmulateFrom() / 1000 * 1000
 
-		if c.LastBlockNumber >= recoverBn && !c.txPoolLoaded {
+		if c.LastBlockNumber >= recoverBn && !c.IsTxPoolLoaded() {
 			log.Info("TxPool Loading")
 			c.loadTxPoolSnapshot(msg.(*txPoolSnapshotData))
-			c.txPoolLoaded = true
+			atomic.StoreInt32(&c.txPoolLoaded, 1)
 			log.Info("TxPool Loaded")
 		}
 	default:
@@ -221,6 +219,29 @@ func (c *replayMsgConsumer) callInsertChain(dec *insertChainData) {
 type addRemotesData struct {
 	replayMsg
 	Txs []*types.Transaction `json:"txs"`
+}
+
+type batchRemoteTxs struct {
+	Txs   []*types.Transaction
+	Times []time.Time
+}
+
+func (b *batchRemoteTxs) AppendMsg(msg *addRemotesData) {
+	// TODO
+	b.Txs = append(b.Txs, msg.Txs...)
+	b.Times = append(b.Times, msg.Time)
+}
+
+func (b *batchRemoteTxs) AppendBatch(ab *batchRemoteTxs) {
+	// TODO
+	b.Txs = append(b.Txs, ab.Txs...)
+	b.Times = append(b.Times, ab.Times...)
+}
+
+
+func (b *batchRemoteTxs) Clear() {
+	b.Txs = make([]*types.Transaction, 0, LagBatchSize)
+	b.Times = make([]time.Time, 0, LagBatchSize)
 }
 
 func (r *GethRecorder) RecordAddRemotes(time time.Time, txs []*types.Transaction) {

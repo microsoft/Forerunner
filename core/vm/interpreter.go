@@ -47,6 +47,7 @@ type Config struct {
 type MSRAVMConfig struct {
 	Silent              bool
 	LogRoot             string
+	MemStatus			bool
 	CmpReuse            bool
 	CmpReuseChecking    bool
 	CmpReuseLogging     bool

@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -66,6 +67,7 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 	if !v.bc.HasBlockAndState(block.ParentHash(), block.NumberU64()-1) {
 		if !v.bc.HasBlock(block.ParentHash(), block.NumberU64()-1) {
 
+			log.Warn("there is an unknown ancestor from validateBody")
 			return consensus.ErrUnknownAncestor
 		}
 		return consensus.ErrPrunedAncestor

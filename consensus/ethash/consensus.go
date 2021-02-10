@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"math/big"
 	"runtime"
 	"time"
@@ -177,6 +178,9 @@ func (ethash *Ethash) verifyHeaderWorker(chain consensus.ChainReader, headers []
 		parent = headers[index-1]
 	}
 	if parent == nil {
+		log.Warn("there is an unknown ancestor from ethash.verifyHeaderWorker", "index", index, "currentBn",
+			headers[0].Number.Uint64(), "parentHash", headers[0].ParentHash)
+
 		return consensus.ErrUnknownAncestor
 	}
 	if chain.GetHeader(headers[index].Hash(), headers[index].Number.Uint64()) != nil {

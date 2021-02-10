@@ -1914,10 +1914,15 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		cache.ResetLogVar(len(block.Transactions()))
 		bc.MSRACache.Pause()
 		bc.Warmuper.Pause()
+
 		var memStats runtime.MemStats
-		runtime.ReadMemStats(&memStats)
-		beforeTotalPausedNs := memStats.PauseTotalNs
-		beforeTotalGCNum := memStats.NumGC
+		var beforeTotalPausedNs, afterTotalPausedNs uint64
+		var beforeTotalGCNum,afterTotalGCNum uint32
+		if bc.vmConfig.MSRAVMSettings.MemStatus {
+			runtime.ReadMemStats(&memStats)
+			beforeTotalPausedNs = memStats.PauseTotalNs
+			beforeTotalGCNum = memStats.NumGC
+		}
 		substart := time.Now()
 		if bc.vmConfig.MSRAVMSettings.PipelinedBloom {
 			bp := types.NewParallelBloomProcessor()
@@ -1938,9 +1943,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 		debug.SetGCPercent(prevPercent)
 
-		runtime.ReadMemStats(&memStats)
-		afterTotalPausedNs := memStats.PauseTotalNs
-		afterTotalGCNum := memStats.NumGC
+		if bc.vmConfig.MSRAVMSettings.MemStatus {
+			runtime.ReadMemStats(&memStats)
+			afterTotalPausedNs = memStats.PauseTotalNs
+			afterTotalGCNum = memStats.NumGC
+		}
 
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -2134,21 +2141,24 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				"accountRead median", common.PrettyDuration(time.Duration(accountReadTimer.Percentile(0.5))),
 				"storageRead median", common.PrettyDuration(time.Duration(storageReadTimer.Percentile(0.5))))
 		}
-		m := new(runtime.MemStats)
-		runtime.ReadMemStats(m)
-		log.Info("Read memory statistics",
-			"BlockCount", block.NumberU64()-bc.MSRACache.SyncStart+1,
-			"HeapAlloc", common.StorageSize(m.HeapAlloc),
-			"HeapSys", common.StorageSize(m.HeapSys),
-			"HeapIdle", common.StorageSize(m.HeapIdle),
-			"HeapInuse", common.StorageSize(m.HeapInuse),
-			"NextGC", common.StorageSize(m.NextGC),
-			"PauseTotal", common.PrettyDuration(m.PauseTotalNs),
-			"PauseInProcess", common.PrettyDuration(afterTotalPausedNs-beforeTotalPausedNs),
-			"NumGC", m.NumGC,
-			"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
-			"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
-		)
+
+		if bc.vmConfig.MSRAVMSettings.MemStatus {
+			m := new(runtime.MemStats)
+			runtime.ReadMemStats(m)
+			log.Info("Read memory statistics",
+				"BlockCount", block.NumberU64()-bc.MSRACache.SyncStart+1,
+				"HeapAlloc", common.StorageSize(m.HeapAlloc),
+				"HeapSys", common.StorageSize(m.HeapSys),
+				"HeapIdle", common.StorageSize(m.HeapIdle),
+				"HeapInuse", common.StorageSize(m.HeapInuse),
+				"NextGC", common.StorageSize(m.NextGC),
+				"PauseTotal", common.PrettyDuration(m.PauseTotalNs),
+				"PauseInProcess", common.PrettyDuration(afterTotalPausedNs-beforeTotalPausedNs),
+				"NumGC", m.NumGC,
+				"NumGCInProcess", afterTotalGCNum-beforeTotalGCNum,
+				"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
+			)
+		}
 		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount, totalTraceRoundCount, totalTracePathCount,
 		totalMixTrieNodeCount, totalSmartContractMixTrieRoundCount, totalSmartContractTxCount, totalSmartContractMixTrieRWRecordCount,
 		totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()

@@ -780,6 +780,11 @@ var (
 		Name:  "cmpreuse",
 		Usage: "Enable computation reuse",
 	}
+	MemStatusEnabledFlag = cli.BoolFlag{
+		Name:  "memstatus",
+		Usage: "Enable println memory status",
+	}
+
 	CmpReuseCheckFlag = cli.BoolFlag{
 		Name:  "cmpreuse.check",
 		Usage: "Enable computation reuse dirty write checking",
@@ -1790,6 +1795,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
 		Silent:               ctx.GlobalBool(SilentFlag.Name),
 		LogRoot:              "/datadrive/reuse",
+		MemStatus:			 ctx.GlobalBool(MemStatusEnabledFlag.Name),
 		CmpReuse:             ctx.GlobalBool(CmpReuseEnabledFlag.Name),
 		CmpReuseChecking:     ctx.GlobalBool(CmpReuseCheckFlag.Name),
 		TxApplyPerfLogging:   ctx.GlobalBool(TxApplyPerfLogFlag.Name),
