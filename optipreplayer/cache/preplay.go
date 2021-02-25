@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
 	"math"
@@ -251,15 +250,16 @@ type PreplayResults struct {
 	RoundsMu sync.RWMutex
 
 	// deprecated
-	ReadDepTree    *cmptypes.PreplayResTrie `json:"-"`
-	MixTree        *cmptypes.PreplayResTrie
-	MixTreeMu      *cmptypes.SimpleTryLock //trylock.TryLocker
-	TraceTrie      ITracerTrie
-	TraceTrieMu    *cmptypes.SimpleTryLock //trylock.TryLocker
-	DeltaTree      *cmptypes.PreplayResTrie
-	DeltaTreeMu    *cmptypes.SimpleTryLock //trylock.TryLocker
-	RWRecordTrie   *cmptypes.PreplayResTrie
-	RWRecordTrieMu *cmptypes.SimpleTryLock
+	ReadDepTree               *cmptypes.PreplayResTrie `json:"-"`
+	MixTree                   *cmptypes.PreplayResTrie
+	MixTreeMu                 *cmptypes.SimpleTryLock //trylock.TryLocker
+	TraceTrie                 ITracerTrie
+	TraceTrieMu               *cmptypes.SimpleTryLock //trylock.TryLocker
+	ForcedTraceTrieGeneration bool
+	DeltaTree                 *cmptypes.PreplayResTrie
+	DeltaTreeMu               *cmptypes.SimpleTryLock //trylock.TryLocker
+	RWRecordTrie              *cmptypes.PreplayResTrie
+	RWRecordTrieMu            *cmptypes.SimpleTryLock
 
 	IsExternalTransfer bool
 	DeltaWrites        map[common.Address]*WStateDelta
@@ -366,6 +366,17 @@ func (rs *PreplayResults) TryGetRWRecordTrieNodeCount() int64 {
 	if rs.RWRecordTrieMu.TryLock() {
 		defer rs.RWRecordTrieMu.Unlock()
 		trie := rs.RWRecordTrie
+		if trie != nil {
+			return trie.GetNodeCount()
+		}
+	}
+	return 0
+}
+
+func (rs *PreplayResults) TryGetDeltaTrieNodeCount() int64 {
+	if rs.DeltaTreeMu.TryLock() {
+		defer rs.DeltaTreeMu.Unlock()
+		trie := rs.DeltaTree
 		if trie != nil {
 			return trie.GetNodeCount()
 		}
@@ -491,12 +502,12 @@ func (rs *PreplayResults) GCWObjects() {
 	}
 }
 
-func (rs *PreplayResults) GetWObjectSize() (objectCount uint64, storageItemCount uint64) {
+func (rs *PreplayResults) GetWObjectSize() (objectCount int64, storageItemCount int64) {
 	rs.wobjectHolderMapMu.Lock()
 	defer rs.wobjectHolderMapMu.Unlock()
 	for _, holder := range rs.wobjectHolderMap {
 		objectCount++
-		storageItemCount += uint64(len(holder.Obj.GetOriginStorage()))
+		storageItemCount += int64(len(holder.Obj.GetOriginStorage()))
 	}
 	return
 }
@@ -559,7 +570,7 @@ type PreplayResult struct {
 	// Filled by the former round. -1 for no former round has the same RWRecord
 	Filled int64
 
-	Trace cmptypes.ISTrace  `json:"-"`
+	Trace cmptypes.ISTrace `json:"-"`
 }
 
 func (r *PreplayResult) GetRoundId() uint64 {
@@ -1076,13 +1087,6 @@ func (r *GlobalCache) KeysOfTxPreplay() []interface{} {
 
 func (r *GlobalCache) LenOfTxPreplay() int {
 	return r.PreplayCache.Len()
-}
-
-func (r *GlobalCache) GetTotalNodeCountAndWObjectSize() (totalNodeCount int64, totalWObjectSize uint64) {
-	_, _, _, totalTrieNodeCount, _, _, totalMixTrieNodeCount, _, _, _, totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := r.GetTrieAndWObjectSizes()
-	totalNodeCount = totalTrieNodeCount + totalMixTrieNodeCount + totalRWTrieNodeCount
-	totalWObjectSize = totalWObjectCount*config.WOBJECT_BASE_SIZE + totalWObjectStorageSize
-	return
 }
 
 func (r *GlobalCache) AddReduplicatedNonceTxn(txnMap map[common.Address]types.Transactions) {

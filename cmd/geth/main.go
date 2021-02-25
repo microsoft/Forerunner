@@ -202,6 +202,7 @@ var (
 		utils.PreplayDirChainheadFlag,
 		utils.CmpReuseEnabledFlag,
 		utils.CmpReuseCheckFlag,
+		utils.TaskBuilderCheckFlag,
 		utils.TxApplyPerfLogFlag,
 		utils.PerfLogFlag,
 		utils.CmpReuseLogFlag,

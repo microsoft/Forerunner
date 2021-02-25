@@ -326,7 +326,9 @@ func (v *Variable) StoreCode(codeVar *Variable) *Variable {
 
 func (v *Variable) StoreSuicide() *Variable {
 	//v = v.MarkBigIntAsAddress().NGuard("account_addr")
-	return v.tracer.Trace(OP_StoreSuicide, nil, v)
+	ret := v.tracer.Trace(OP_StoreSuicide, nil, v)
+	v.tracer.world.TWStore(ACCOUNT_BALANCE, v, v.tracer.BigInt_0)
+	return ret
 }
 
 func (v *Variable) StoreLog(topics []*Variable, data *Variable) *Variable {
@@ -694,7 +696,7 @@ func (self *ExecEnv) PreAllocateObjects(size uint) {
 }
 
 func (self *ExecEnv) GetNewBigInt() *big.Int {
-	if self.nextBigIntIndex >= len(self.preAllocatedBigInt) {
+	if !self.isProcess || self.nextBigIntIndex >= len(self.preAllocatedBigInt) {
 		return new(big.Int)
 	}
 	b := self.preAllocatedBigInt[self.nextBigIntIndex]
@@ -703,7 +705,7 @@ func (self *ExecEnv) GetNewBigInt() *big.Int {
 }
 
 func (self *ExecEnv) GetNewValue() *MultiTypedValue {
-	if self.nextMultiValueIndex >= len(self.preAllocatedMultiValues) {
+	if !self.isProcess || self.nextMultiValueIndex >= len(self.preAllocatedMultiValues) {
 		return &MultiTypedValue{}
 	}
 	tf := self.preAllocatedMultiValues[self.nextMultiValueIndex]
@@ -712,7 +714,7 @@ func (self *ExecEnv) GetNewValue() *MultiTypedValue {
 }
 
 func (self *ExecEnv) GetNewResMap() cmptypes.TxResIDMap {
-	if self.nextResMapIndex >= len(self.preAllocatedResMap) {
+	if !self.isProcess || self.nextResMapIndex >= len(self.preAllocatedResMap) {
 		return make(cmptypes.TxResIDMap)
 	}
 	tf := self.preAllocatedResMap[self.nextResMapIndex]
@@ -721,7 +723,7 @@ func (self *ExecEnv) GetNewResMap() cmptypes.TxResIDMap {
 }
 
 func (self *ExecEnv) GetNewAIdToApplied() map[uint]bool {
-	if self.nextAIdToAppliedIndex >= len(self.preAllocatedAIdToApplied) {
+	if !self.isProcess || self.nextAIdToAppliedIndex >= len(self.preAllocatedAIdToApplied) {
 		return make(map[uint]bool)
 	}
 	tf := self.preAllocatedAIdToApplied[self.nextAIdToAppliedIndex]
@@ -730,7 +732,7 @@ func (self *ExecEnv) GetNewAIdToApplied() map[uint]bool {
 }
 
 func (self *ExecEnv) GetNewLog() *types.Log {
-	if self.nextLogIndex >= len(self.preAllocatedLogs) {
+	if !self.isProcess || self.nextLogIndex >= len(self.preAllocatedLogs) {
 		return &types.Log{}
 	}
 	tf := self.preAllocatedLogs[self.nextLogIndex]
@@ -739,7 +741,7 @@ func (self *ExecEnv) GetNewLog() *types.Log {
 }
 
 func (self *ExecEnv) GetNewHashArray() []common.Hash {
-	if self.nextHashArrayIndex >= len(self.preAllocatedHashArrays) {
+	if !self.isProcess || self.nextHashArrayIndex >= len(self.preAllocatedHashArrays) {
 		return make([]common.Hash, 0, 10)
 	}
 	tf := self.preAllocatedHashArrays[self.nextHashArrayIndex]
@@ -1570,6 +1572,19 @@ func (v *MultiTypedValue) GetBytes() []byte {
 		return v.Addr.Bytes()
 	case VTHash:
 		return v.Hash.Bytes()
+	default:
+		panic("")
+	}
+}
+
+func (v *MultiTypedValue) GetVal() interface{} {
+	switch v.TypeId {
+	case VTBigInt:
+		return v.BigInt
+	case VTAddress:
+		return *v.Addr
+	case VTHash:
+		return *v.Hash
 	default:
 		panic("")
 	}

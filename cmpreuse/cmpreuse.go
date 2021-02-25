@@ -48,7 +48,7 @@ func (reuse *Cmpreuse) tryReuseTransaction(bc *core.BlockChain, author *common.A
 		defer c.ReuseDone.Done()
 	}
 
-	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, c.IsAborted, true, cfg)
+	status, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, c.IsAborted, true, false, cfg)
 
 	if status.BaseStatus == cmptypes.Hit && c.TryAbortCounterpart() {
 		c.StopEvm()

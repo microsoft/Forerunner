@@ -47,7 +47,6 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
-	"github.com/ethereum/go-ethereum/optipreplayer/config"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -1884,6 +1883,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			if bc.vmConfig.MSRAVMSettings.WarmupMissDetail {
 				statedb.ProcessedForDb, statedb.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
 				statedb.WarmupMissDetail = true
+				statedb.AccessedAccountAndKeys = make(map[common.Address]map[common.Hash]struct{})
 				if pair := statedb.GetPair(); pair != nil {
 					pair.ProcessedForDb, pair.ProcessedForObj = bc.Warmuper.GetProcessed(parent.Root)
 					pair.WarmupMissDetail = true
@@ -2002,6 +2002,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				bc.blockLogFile.WriteString(blockResult)
 
 				for _, tf := range txPerfs {
+					toStr := "nil"
+					txTo := tf.Tx.To()
+					if txTo != nil {
+						toStr = txTo.String()
+					}
 					if bc.vmConfig.MSRAVMSettings.CmpReuse {
 						reuseStatus := tf.ReuseStatus
 						reuseStr := fmt.Sprintf("baseStatus '%v'", reuseStatus.BaseStatus.String())
@@ -2010,11 +2015,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 						}
 						if reuseStatus.BaseStatus == cmptypes.Hit {
 							reuseStr += fmt.Sprintf(" hitType '%v'", reuseStatus.HitType.String())
-							//if reuseStatus.HitType == cmptypes.MixHit {
-							if reuseStatus.MixStatus != nil && reuseStatus.MixStatus.MixHitType != cmptypes.NotMixHit {
+							if reuseStatus.HitType == cmptypes.MixHit {
+							//if reuseStatus.MixStatus != nil && reuseStatus.MixStatus.MixHitType != cmptypes.NotMixHit {
 								reuseStr += fmt.Sprintf(" mixHitType '%v'", reuseStatus.MixStatus.MixHitType.String())
+							} else if reuseStatus.HitType == cmptypes.TraceHit {
+								reuseStr += fmt.Sprintf(" traceHitType '%v'", reuseStatus.TraceStatus.TraceHitType.String())
 							}
-							//if reuseStatus.HitType == cmptypes.TraceHit {
 						}
 
 						if reuseStatus.BaseStatus == cmptypes.Miss {
@@ -2029,10 +2035,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 							reuseStr += " " + reuseStatus.TraceStatus.GetPerfString()
 						}
 
-						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' reuse %v gas %v delay %v %v\n",
+						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' reuse %v gas %v gasprice %v delay %v %v\n",
 							timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 							tf.Receipt.TxHash.Hex(),
-							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
+							toStr,
+							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr)
 						bc.txLogFile.WriteString(txResult)
 					} else {
 						if bc.vmConfig.MSRAVMSettings.EnablePreplay {
@@ -2040,16 +2047,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 							if tf.Delay < 0 {
 								reuseStr = "baseStatus 'NoListen'"
 							}
-							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v delay %v %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v delay %v %v\n",
 								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
-								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Delay, reuseStr)
+								toStr,
+								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr)
 							bc.txLogFile.WriteString(txResult)
 						} else {
-							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' base %v gas %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v\n",
 								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
-								tf.Time.Nanoseconds(), tf.Receipt.GasUsed)
+								toStr,
+								tf.Time.Nanoseconds(), tf.Receipt.GasUsed,
+								tf.Tx.GasPrice().String())
 							bc.txLogFile.WriteString(txResult)
 						}
 					}
@@ -2159,26 +2169,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				"GCCPUFraction", fmt.Sprintf("%.3f%%", m.GCCPUFraction*100),
 			)
 		}
-		cachedTxCount, cachedTxWithTraceCount, maxTrieNodeCount, totalTrieNodeCount, totalTraceRoundCount, totalTracePathCount,
-		totalMixTrieNodeCount, totalSmartContractMixTrieRoundCount, totalSmartContractTxCount, totalSmartContractMixTrieRWRecordCount,
-		totalRWTrieNodeCount, totalWObjectCount, totalWObjectStorageSize := bc.MSRACache.GetTrieAndWObjectSizes()
-		log.Info("Trie size in tx preplay cache",
-			"cachedTxCount", cachedTxCount,
-			"tracedTxCount", cachedTxWithTraceCount,
-			"maxTraceNodeCount", maxTrieNodeCount,
-			"totalTraceNodeCount", totalTrieNodeCount,
-			"totalTraceRoundCount", totalTraceRoundCount,
-			"totalTracePathCount", totalTracePathCount,
-			"totalMixNodeCount", totalMixTrieNodeCount,
-			"totalSmartContractMixTrieRoundCount", totalSmartContractMixTrieRoundCount,
-			"totalSmartContractTxCount", totalSmartContractTxCount,
-			"totalSmartContractMixTrieRWRecordCount", totalSmartContractMixTrieRWRecordCount,
-			"totalRWNodeCount", totalRWTrieNodeCount,
-			"totalWObjectCount", totalWObjectCount,
-			"totalWObjectStorageSize", totalWObjectStorageSize,
-			"totalNodeCount", totalTrieNodeCount+totalMixTrieNodeCount+totalRWTrieNodeCount,
-			"totalWObjectSize", totalWObjectCount*config.WOBJECT_BASE_SIZE+totalWObjectStorageSize,
-		)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && err == consensus.ErrFutureBlock {

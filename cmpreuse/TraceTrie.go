@@ -122,6 +122,106 @@ func (st *STrace) ComputeDepAndJumpInfo() {
 	st.FindOutJumpStartingPoints()
 }
 
+func (st *STrace) GenerateRWRecord(db *state.StateDB, registers *RegisterFile) *cache.RWRecord {
+	rwHook := state.NewRWHook(db)
+	for _, nIndex := range st.RLNodeIndices {
+		s := st.Stats[nIndex]
+		if s.op.isReadOp {
+			switch s.op.config.variant {
+			case BLOCK_COINBASE:
+				rwHook.UpdateRHeader(cmptypes.Coinbase, GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetAddress())
+			case BLOCK_TIMESTAMP:
+				rwHook.UpdateRHeader(cmptypes.Timestamp, GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetBigInt(nil))
+			case BLOCK_NUMBER:
+				rwHook.UpdateRHeader(cmptypes.Number, GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetBigInt(nil))
+			case BLOCK_DIFFICULTY:
+				rwHook.UpdateRHeader(cmptypes.Difficulty, GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetBigInt(nil))
+			case BLOCK_GASLIMIT:
+				rwHook.UpdateRHeader(cmptypes.GasLimit, GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetBigInt(nil).Uint64())
+			case BLOCK_HASH:
+				bNum := GetStatementInputMultiTypeVal(s, 0, registers, st.RAlloc).GetBigInt(nil).Uint64()
+				bHash := GetStatementOutputMultiTypeVal(s, registers, st.RAlloc).GetHash()
+				rwHook.UpdateRBlockhash(bNum, bHash)
+			default:
+				panic("Unknown fRead variant")
+			}
+		} else if s.op.isLoadOp {
+			addr := GetStatementInputMultiTypeVal(s, 0, registers, st.RAlloc).GetAddress()
+			val := GetStatementOutputVal(s, registers, st.RAlloc)
+			switch s.op.config.variant {
+			case ACCOUNT_NONCE:
+				rwHook.UpdateRAccount(addr, cmptypes.Nonce, val)
+			case ACCOUNT_BALANCE:
+				rwHook.UpdateRAccount(addr, cmptypes.Balance, val.(*MultiTypedValue).GetBigInt(nil))
+			case ACCOUNT_EXIST:
+				rwHook.UpdateRAccount(addr, cmptypes.Exist, val)
+			case ACCOUNT_EMPTY:
+				rwHook.UpdateRAccount(addr, cmptypes.Empty, val)
+			case ACCOUNT_CODEHASH:
+				rwHook.UpdateRAccount(addr, cmptypes.CodeHash, val.(*MultiTypedValue).GetHash())
+			case ACCOUNT_CODESIZE:
+				// code size is replaced by a previous codehash check
+			case ACCOUNT_CODE:
+				// code is replaced by a previous codehash check
+			case ACCOUNT_STATE:
+				key := GetStatementInputMultiTypeVal(s, 1, registers, st.RAlloc).GetHash()
+				rwHook.UpdateRStorage(addr, cmptypes.Storage, key, val.(*MultiTypedValue).GetHash())
+			case ACCOUNT_COMMITTED_STATE:
+				key := GetStatementInputMultiTypeVal(s, 1, registers, st.RAlloc).GetHash()
+				rwHook.UpdateRStorage(addr, cmptypes.CommittedStorage, key, val.(*MultiTypedValue).GetHash())
+			default:
+				panic("Unknown fLoad variant!")
+			}
+		} else {
+			panic("Not RL nodes!")
+		}
+	}
+
+	var failed bool
+
+	for sIndex := st.FirstStoreNodeIndex; sIndex < uint(len(st.Stats)); sIndex++ {
+		s := st.Stats[sIndex]
+		if s.op.IsLog() {
+			continue
+		}
+		if s.op.IsVirtual() {
+			if s.op.config.variant == VIRTUAL_FAILED {
+				failed = GetStatementInputVal(s, 0, registers, st.RAlloc).(bool)
+			}
+			continue
+		}
+		addr := GetStatementInputMultiTypeVal(s, 0, registers, st.RAlloc).GetAddress()
+		switch s.op.config.variant {
+		case ACCOUNT_NONCE:
+			val := GetStatementInputVal(s, 1, registers, st.RAlloc)
+			rwHook.UpdateWField(addr, cmptypes.Nonce, val)
+		case ACCOUNT_BALANCE:
+			val := GetStatementInputMultiTypeVal(s, 1, registers, st.RAlloc).GetBigInt(nil)
+			rwHook.UpdateWField(addr, cmptypes.Balance, val)
+		case ACCOUNT_CODE:
+			val := GetStatementInputVal(s, 1, registers, st.RAlloc)
+			rwHook.UpdateWField(addr, cmptypes.Code, state.Code(val.([]byte)))
+		case ACCOUNT_STATE:
+			key := GetStatementInputMultiTypeVal(s, 1, registers, st.RAlloc).GetHash()
+			val := GetStatementInputMultiTypeVal(s, 2, registers, st.RAlloc).GetHash()
+			rwHook.UpdateWStorage(addr, key, val)
+		case ACCOUNT_SUICIDE:
+			rwHook.UpdateSuicide(addr)
+		case ACCOUNT_LOG:
+			panic("Should not see log")
+		case VIRTUAL_FAILED:
+			panic("Should not see Failed")
+		case VIRTUAL_GASUSED:
+			panic("Should not see GasUsed")
+		default:
+			panic("Unknown fLoad variant!")
+		}
+	}
+
+	RState, RChain, WState, ReadDetail := rwHook.RWDump()
+	return cache.NewRWRecord(RState, RChain, WState, ReadDetail, failed)
+}
+
 func GetNonConstVariablesLastUseInfo(stats []*Statement) (lastUse map[uint32]uint, kills [][]uint32) {
 	lastUse = make(map[uint32]uint)
 	kills = make([][]uint32, len(stats))
@@ -1623,7 +1723,7 @@ func (n *SNode) RegisterValueString(registers *RegisterFile) string {
 	return n.Statement.ValueString(inputs, output)
 }
 
-func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile) (uint, bool) {
+func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile) (uint, bool) {
 	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
 	//cmptypes.MyAssert(n.IsANode)
 	if n.AccountIndex < accountHistory.size {
@@ -1631,8 +1731,9 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 	}
 
 	var vid uint
+	var val interface{}
 	if n.Op.isReadOp {
-		val := n.Execute(env, registers)
+		val = n.Execute(env, registers)
 		k := GetGuardKey(val)
 		vid = n.AccountValueToID[k]
 	} else {
@@ -1643,6 +1744,7 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
 		}
 		changedBy, _ := env.state.GetAccountDepValue(addr)
+		val = changedBy
 		if changedBy == cmptypes.DEFAULT_TXRESID {
 			vid = 0
 		} else {
@@ -1656,6 +1758,15 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 		cmptypes.MyAssert(accountHistory.firstSectionSealed == false)
 	}
 	accountHistory.AppendRegister(n.AccountIndex, vid)
+	if accountValHistory != nil {
+		if n.Op.isLoadOp {
+			a := val.(cmptypes.AccountDepValue)
+			if false {
+				panic(fmt.Sprintf("%v", a))
+			}
+		}
+		accountValHistory.AppendRegister(n.AccountIndex, val)
+	}
 	return vid, true
 }
 
@@ -1777,7 +1888,8 @@ func GetGuardKey(a interface{}) interface{} {
 	case string:
 		return ta
 	default:
-		panic(fmt.Sprintf("Unknown type: %v", reflect.TypeOf(a).Name()))
+		return nil
+		//panic(fmt.Sprintf("Unknown type: %v", reflect.TypeOf(a).Name()))
 	}
 }
 
@@ -1849,14 +1961,16 @@ type TraceTrie struct {
 	TotalTraceCount             int64
 
 	LargestDetailReadSetID int64
+	RoundCountByPathID     map[uintptr]int
 }
 
 func NewTraceTrie(tx *types.Transaction) *TraceTrie {
 	tt := &TraceTrie{
-		Head:         nil,
-		Tx:           tx,
-		PathCount:    0,
-		RegisterSize: 0,
+		Head:               nil,
+		Tx:                 tx,
+		PathCount:          0,
+		RegisterSize:       0,
+		RoundCountByPathID: make(map[uintptr]int),
 	}
 	return tt
 }
@@ -1894,8 +2008,8 @@ func (tt *TraceTrie) GetNodeCount() int64 {
 }
 
 func (tt *TraceTrie) GetNewExecEnv(db *state.StateDB, header *types.Header,
-	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, globalCache *cache.GlobalCache) (env *ExecEnv) {
-	if len(tt.PreAllocatedExecEnvs) > 0 {
+	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, globalCache *cache.GlobalCache, isBlockProcess bool) (env *ExecEnv) {
+	if isBlockProcess && len(tt.PreAllocatedExecEnvs) > 0 {
 		env = tt.PreAllocatedExecEnvs[0]
 		tt.PreAllocatedExecEnvs = tt.PreAllocatedExecEnvs[1:]
 	} else {
@@ -1904,13 +2018,13 @@ func (tt *TraceTrie) GetNewExecEnv(db *state.StateDB, header *types.Header,
 	env.state = db
 	env.header = header
 	env.precompiles = precompiles
-	env.isProcess = true
+	env.isProcess = isBlockProcess
 	env.getHash = getHashFunc
 	return
 }
 
-func (tt *TraceTrie) GetNewHistory() (rf *RegisterFile) {
-	if len(tt.PreAllocatedHistory) > 0 {
+func (tt *TraceTrie) GetNewHistory(isBlockProcess bool) (rf *RegisterFile) {
+	if isBlockProcess && len(tt.PreAllocatedHistory) > 0 {
 		rf = tt.PreAllocatedHistory[0]
 		tt.PreAllocatedHistory = tt.PreAllocatedHistory[1:]
 	} else {
@@ -1919,8 +2033,8 @@ func (tt *TraceTrie) GetNewHistory() (rf *RegisterFile) {
 	return
 }
 
-func (tt *TraceTrie) GetNewRegisters() (rf *RegisterFile) {
-	if len(tt.PreAllocatedRegisters) > 0 {
+func (tt *TraceTrie) GetNewRegisters(isBlockProcess bool) (rf *RegisterFile) {
+	if isBlockProcess && len(tt.PreAllocatedRegisters) > 0 {
 		rf = tt.PreAllocatedRegisters[0]
 		tt.PreAllocatedRegisters = tt.PreAllocatedRegisters[1:]
 	} else {
@@ -1936,37 +2050,64 @@ func (tt *TraceTrie) UpdateTraceSize(size uint) {
 	tt.Preallocate(tt.RegisterSize)
 }
 
-func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLocValue) map[uint]interface{} {
+func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLocValue, result *TraceTrieSearchResult) (map[uint]interface{}, map[uint]string) {
 	ret := make(map[uint]interface{})
-	temp := make(map[string]interface{})
-
-	for _, alv := range readDep {
-		var key string
-		val := alv.Value
-		switch alv.AddLoc.Field {
-		case cmptypes.Dependence:
-			key = alv.AddLoc.Address.Hex()
-			val = *val.(cmptypes.AccountDepValue).Hash()
-			temp[key] = val
-		}
+	var strRet map[uint]string
+	if DEBUG_TRACER {
+		strRet = make(map[uint]string)
 	}
 
-	for _, nodeIndex := range trace.ANodeIndices {
-		s := trace.Stats[nodeIndex]
-		var key string
-		if s.op.isLoadOp {
-			key = s.inputs[0].BAddress().Hex()
-			if DEBUG_TRACER {
-				cmptypes.MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
+
+	if result == nil {
+		temp := make(map[string]interface{})
+		strTemp := make(map[string]string)
+
+		for _, alv := range readDep {
+			var key string
+			val := alv.Value
+			switch alv.AddLoc.Field {
+			case cmptypes.Dependence:
+				key = alv.AddLoc.Address.Hex()
+				if DEBUG_TRACER {
+					strTemp[key] = val.(cmptypes.AccountDepValue).String()
+				}
+				val = *val.(cmptypes.AccountDepValue).Hash()
+				temp[key] = val
 			}
-			ret[nodeIndex] = temp[key]
+		}
+
+		for _, nodeIndex := range trace.ANodeIndices {
+			s := trace.Stats[nodeIndex]
+			var key string
+			if s.op.isLoadOp {
+				key = s.inputs[0].BAddress().Hex()
+				if DEBUG_TRACER {
+					cmptypes.MyAssert(temp[key] != nil, "%v : %v", s.SimpleNameString(), key)
+					strRet[nodeIndex] = strTemp[key]
+				}
+				ret[nodeIndex] = temp[key]
+			}
+		}
+	} else {
+		for _, nodeIndex := range trace.ANodeIndices {
+			s := trace.Stats[nodeIndex]
+			accountIndex := trace.ANodeIndexToAccountIndex[nodeIndex]
+			if s.op.isLoadOp {
+				val := result.accountValHistory.Get(accountIndex).(cmptypes.AccountDepValue)
+				if DEBUG_TRACER {
+					strRet[nodeIndex] = val.String()
+				}
+				ret[nodeIndex] = *val.Hash()
+			}
 		}
 	}
 
-	return ret
+	return ret, strRet
 }
 
-func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOverMatching, noMemoization bool) {
+func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, result *TraceTrieSearchResult, cfg *vm.MSRAVMConfig, reuseStatus *cmptypes.ReuseStatus) {
+	noOverMatching := cfg.NoOverMatching
+	noMemoization := cfg.NoTraceMemoization
 	gcMutex.Lock()
 	defer gcMutex.Unlock()
 	insertStartTime := time.Now()
@@ -1980,13 +2121,22 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 	n := preHead
 	var gk interface{}
 	if tt.DebugOut != nil {
-		tt.DebugOut("InsertTrace\n")
+		rs := reuseStatus.BaseStatus.String()
+		if reuseStatus.BaseStatus == cmptypes.Hit {
+			rs += "-" + reuseStatus.HitType.String()
+			if reuseStatus.HitType == cmptypes.MixHit {
+				rs += "-" + reuseStatus.MixStatus.MixHitType.String()
+			}else if reuseStatus.HitType == cmptypes.TraceHit {
+				rs += "-" + reuseStatus.TraceStatus.TraceHitType.String()
+			}
+		}
+		tt.DebugOut("InsertTrace for round %v after %v\n", round.RoundID, rs)
 	}
 	currentTraceNodes := make([]*SNode, len(stats))
 	refNodes := make([]ISRefCountNode, len(stats))
 	newNodeCount := uint(0)
 	for i, s := range stats {
-		n, gk = tt.insertStatement(n, gk, s, uint(i), trace)
+		n, gk = tt.insertStatement(n, gk, s, uint(i), trace, result)
 		cmptypes.MyAssert(n.Seq == uint(i))
 		//n.Seq = uint(i)
 		currentTraceNodes[i] = n
@@ -2013,7 +2163,7 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, noOv
 	var jiRefNodes []ISRefCountNode
 	var jiNewNodeCount uint = 0
 	if !noMemoization {
-		ji := tt.setupJumps(trace, currentTraceNodes, round, noOverMatching)
+		ji := tt.setupJumps(trace, currentTraceNodes, round, result, noOverMatching)
 		jiRefNodes = ji.refNodes
 		jiNewNodeCount = ji.newNodeCount
 	}
@@ -2045,6 +2195,8 @@ func (tt *TraceTrie) TrackRoundRefNodes(refNodes []ISRefCountNode, newNodeCount 
 			RoundPathID: roundPathID,
 		}
 
+		tt.RoundCountByPathID[roundPathID]++
+
 		tt.RefedRoundCount++
 		atomic.AddInt64(&tt.TrieNodeCount, int64(newNodeCount))
 		if tt.RoundRefNodesHead == nil {
@@ -2073,6 +2225,15 @@ func (tt *TraceTrie) GCRoundNodes() {
 		for i := 0; i < 1; i++ {
 			head := tt.RoundRefNodesHead
 			removed := tt.RemoveRoundRef(head)
+			roundCount := tt.RoundCountByPathID[head.RoundPathID]
+			if roundCount < 1 {
+				panic("roundCount is below 1")
+			}else if roundCount == 1 {
+				delete(tt.RoundCountByPathID, head.RoundPathID)
+			}else {
+				tt.RoundCountByPathID[head.RoundPathID]--
+			}
+
 			if tt.DebugOut != nil {
 				tt.DebugOut("RemovedRound %v: %v trie nodes removed, %v trie nodes remain, %v rounds remain\n",
 					head.RoundID, removed, tt.TrieNodeCount, tt.RefedRoundCount)
@@ -2126,7 +2287,11 @@ func (tt *TraceTrie) GetActivePathCount() int64 {
 		distinctPaths[rr.RoundPathID] = struct{}{}
 		rr = rr.Next
 	}
-	return int64(len(distinctPaths))
+	ret := len(distinctPaths)
+	if ret != len(tt.RoundCountByPathID) {
+		cmptypes.MyAssert(false, "unsynced path count %v %v", ret, len(tt.RoundCountByPathID))
+	}
+	return int64(len(tt.RoundCountByPathID))
 }
 
 func (tt *TraceTrie) RemoveRoundRef(rf *TrieRoundRefNodes) uint {
@@ -2151,6 +2316,7 @@ type TraceTrieSearchResult struct {
 	registers                    *RegisterFile
 	fieldHistory                 *RegisterFile
 	accountHistory               *RegisterFile
+	accountValHistory            *RegisterFile
 	env                          *ExecEnv
 	debugOut                     DebugOutFunc
 	fOut                         *os.File
@@ -2158,6 +2324,7 @@ type TraceTrieSearchResult struct {
 	storeInfo                    *StoreInfo
 	accountIndexToAppliedWObject map[uint]bool
 	TraceStatus                  *cmptypes.TraceStatus
+
 }
 
 func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
@@ -2173,13 +2340,13 @@ func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 }
 
 func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
-	noOverMatching bool) (bool, cmptypes.TxResIDMap) {
+	noOverMatching, isBlockProcess bool) (bool, cmptypes.TxResIDMap) {
 	cmptypes.MyAssert(r.Node.Op.isStoreOp)
 
-	resMap := r.applyWObjects(txPreplay, noOverMatching)
+	resMap := r.applyWObjects(txPreplay, noOverMatching, isBlockProcess)
 
 	traceStatus.AccountWrittenCount = uint64(len(r.accountIndexToAppliedWObject))
-	for n := r.Node; n.Next != nil ; n = n.Next {
+	for n := r.Node; n.Next != nil; n = n.Next {
 		if abort != nil && abort() {
 			return true, nil
 		}
@@ -2204,8 +2371,10 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceSta
 			}
 			traceStatus.ExecutedOutputNodes++
 			traceStatus.FieldActualWrittenCount++
-			traceStatus.ExecutedNodes++
+		}else {
+			traceStatus.ExecutedLogNodes++
 		}
+		traceStatus.ExecutedNodes++
 		if r.debugOut != nil {
 			r.debugOut("ApplyStore: %v", n.SimpleNameString())
 			r.debugOut("    %v", n.RegisterValueString(r.registers))
@@ -2218,7 +2387,7 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceSta
 	return false, resMap
 }
 
-func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay, noOverMatching bool) cmptypes.TxResIDMap {
+func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay, noOverMatching, isBlockProcess bool) cmptypes.TxResIDMap {
 	cmptypes.MyAssert(r.accountIndexToAppliedWObject == nil)
 	r.accountIndexToAppliedWObject = r.env.GetNewAIdToApplied()
 
@@ -2243,7 +2412,7 @@ func (r *TraceTrieSearchResult) applyWObjects(txPreplay *cache.TxPreplay, noOver
 				if rounds == nil {
 					continue
 				}
-				r.applyObjectInRounds(txPreplay, rounds, addr, resMap, si, aVId)
+				r.applyObjectInRounds(txPreplay, rounds, addr, resMap, si, aVId, isBlockProcess)
 			}
 		}
 	}
@@ -2269,7 +2438,8 @@ func (r *TraceTrieSearchResult) getAddress(si uint) common.Address {
 	return addr
 }
 
-func (r *TraceTrieSearchResult) applyObjectInRounds(txPreplay *cache.TxPreplay, rounds []*cache.PreplayResult, addr common.Address, resMap cmptypes.TxResIDMap, si uint, aVId uint) {
+func (r *TraceTrieSearchResult) applyObjectInRounds(txPreplay *cache.TxPreplay, rounds []*cache.PreplayResult,
+	addr common.Address, resMap cmptypes.TxResIDMap, si uint, aVId uint, isBlockProcess bool) {
 	isAccountChangeSet := false
 	roundCount := len(rounds)
 	// early rounds and wobjects might have already been removed
@@ -2284,6 +2454,9 @@ func (r *TraceTrieSearchResult) applyObjectInRounds(txPreplay *cache.TxPreplay, 
 				}
 				resMap[addr] = changed
 				isAccountChangeSet = true
+				if !isBlockProcess { // do not apply wobject for preplay
+					break
+				}
 			}
 			if wref, refOk := round.WObjectWeakRefs.GetMatchedRef(addr, txPreplay); refOk {
 				if objHolder, hok := txPreplay.PreplayResults.GetAndDeleteHolder(wref); hok {
@@ -2332,27 +2505,25 @@ func (r *TraceTrieSearchResult) getMatchedRounds(si uint, rounds []*cache.Prepla
 }
 
 func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
-	precompiles map[common.Address]vm.PrecompiledContract, abort func() bool, debug bool, globalCache *cache.GlobalCache,
-	noOverMatching bool) (result *TraceTrieSearchResult) {
+	precompiles map[common.Address]vm.PrecompiledContract, abort func() bool, cfg *vm.Config, isBlockProcess bool, globalCache *cache.GlobalCache) (result *TraceTrieSearchResult) {
+
+	debug := isBlockProcess && cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking
+	noOverMatching := cfg.MSRAVMSettings.NoOverMatching
 
 	var node *SNode
-	debugOut, fOut, env, registers, fieldHistory, accountHistory := tt.initSearch(db, header, getHashFunc, precompiles, globalCache, debug)
+	debugOut, fOut, env, registers, fieldHistory, accountHistory := tt.initSearch(db, header, getHashFunc, precompiles, globalCache, debug, isBlockProcess)
+
+	var accountValHistory *RegisterFile
+	if !isBlockProcess {
+		accountValHistory = tt.GetNewHistory(false)
+	}
 
 	var accountLaneRounds []*cache.PreplayResult
 	var (
 		traceStatus             = &cmptypes.TraceStatus{}
-		totalJumps              = &traceStatus.TotalJumps
-		failedJumps             = &traceStatus.FailedJumps
-		aJumps                  = &traceStatus.AJumps
-		fJumps                  = &traceStatus.FJumps
-		oJumps                  = &traceStatus.OJumps
-		totalJumpKeys           = &traceStatus.TotalJumpKeys
-		executedNodes           = &traceStatus.ExecutedNodes
-		executedInputNodes      = &traceStatus.ExecutedInputNodes
-		executedChainInputNodes = &traceStatus.ExecutedChainInputNodes
-		accountReadCount        = &traceStatus.AccountReadCount
-		accountReadFailedCount  = &traceStatus.AccountReadFailedCount
-		fieldActualReadCount    = &traceStatus.FieldActualReadCount
+		accountHit              = false
+		fieldHit                = false
+		opHit                   = false
 	)
 
 	var hit, aborted bool
@@ -2376,12 +2547,15 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 		traceStatus.AvgSpecializationDurationInNanoSeconds = tt.TotalSpecializationDuration.Nanoseconds() / tt.TotalTraceCount
 		traceStatus.AvgMemoizationDurationInNanoSeconds = tt.TotalMemoizationDuration.Nanoseconds() / tt.TotalTraceCount
 		traceStatus.TotalTraceCount = tt.TotalTraceCount
+		traceStatus.PathCount = len(tt.RoundCountByPathID)
+		traceStatus.RoundCount = int(tt.RefedRoundCount)
 		result = &TraceTrieSearchResult{
 			Node:              node,
 			hit:               hit,
 			registers:         registers,
 			fieldHistory:      fieldHistory,
 			accountHistory:    accountHistory,
+			accountValHistory: accountValHistory,
 			env:               env,
 			debugOut:          debugOut,
 			fOut:              fOut,
@@ -2389,6 +2563,19 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			accountLaneRounds: accountLaneRounds,
 			aborted:           aborted,
 			TraceStatus:       traceStatus,
+		}
+		result.TraceStatus.SearchResult = result
+		if accountHit {
+			traceStatus.TraceHitType = cmptypes.AllDepHit
+		} else if fieldHit {
+			if (traceStatus.TotalAccountLaneJumps > traceStatus.TotalAccountLaneFailedJumps) ||
+				(traceStatus.TotalFieldLaneAJumps > traceStatus.TotalFieldLaneFailedAJumps){
+				traceStatus.TraceHitType = cmptypes.PartialHit
+			}else {
+				traceStatus.TraceHitType = cmptypes.AllDetailHit
+			}
+		} else if opHit {
+			traceStatus.TraceHitType = cmptypes.OpHit
 		}
 	}()
 
@@ -2404,12 +2591,11 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			cmptypes.MyAssert(false, "Account Head should not exist without over matching!")
 		}
 		node, fNode, accountLaneRounds, aborted, hit = tt.searchAccountLane(tt.AccountHead,
-			env, registers, accountHistory, fieldHistory,
-			totalJumps, totalJumpKeys, failedJumps, aJumps,
-			executedNodes, executedInputNodes, executedChainInputNodes,
-			accountReadCount, accountReadFailedCount, fieldActualReadCount,
-			debug, debugOut,
-			abort)
+			env, registers, accountHistory, accountValHistory, fieldHistory, traceStatus,
+			debug, debugOut, abort)
+		if hit {
+			accountHit = true
+		}
 	} else {
 		fNode = tt.FieldHead
 		if fNode != nil {
@@ -2423,11 +2609,12 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 
 	if fNode != nil {
 		fNode, node, aborted, hit = tt.searchFieldLane(fNode, node,
-			env, registers, accountHistory, fieldHistory,
-			totalJumps, totalJumpKeys, failedJumps, fJumps,
-			executedNodes, executedInputNodes, executedChainInputNodes,
-			accountReadCount, accountReadFailedCount, fieldActualReadCount,
+			env, registers, accountHistory, accountValHistory, fieldHistory,
+			traceStatus,
 			debug, debugOut, abort, noOverMatching)
+		if hit {
+			fieldHit = true
+		}
 	} else {
 		if node != nil {
 			cmptypes.MyAssert(false, "node should be nil when FieldLane is not available")
@@ -2446,19 +2633,18 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 	}
 
 	node, aborted, hit = tt.searchOpLane(node,
-		env, accountHistory, fieldHistory, registers,
-		totalJumps, totalJumpKeys, failedJumps, oJumps,
-		executedNodes, executedInputNodes, executedChainInputNodes,
-		accountReadCount, accountReadFailedCount, fieldActualReadCount,
+		env, accountHistory, accountValHistory, fieldHistory, registers,
+		traceStatus,
 		debug, debugOut, abort, noOverMatching)
+	if hit {
+		opHit = true
+	}
 	return
 }
 
 func (tt *TraceTrie) searchOpLane(nStart *SNode,
-	env *ExecEnv, accountHistory *RegisterFile, fieldHistory *RegisterFile, registers *RegisterFile,
-	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, oJumps *uint64,
-	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
-	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
+	env *ExecEnv, accountHistory *RegisterFile, accountValHistory *RegisterFile, fieldHistory *RegisterFile, registers *RegisterFile,
+	traceStatus *cmptypes.TraceStatus,
 	debug bool, debugOut func(fmtStr string, params ...interface{}), abort func() bool,
 	noOverMatching bool) (node *SNode, aborted, hit bool) {
 
@@ -2477,7 +2663,7 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 			jNode := jHead
 			// try to jump
 			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut,
-				fieldHistory, registers, fCheckCount, beforeJumpNode, totalJumps, totalJumpKeys, failedJumps,
+				fieldHistory, registers, fCheckCount, beforeJumpNode, traceStatus,
 				noOverMatching)
 		}
 
@@ -2497,27 +2683,34 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 			}
 			var fVal interface{}
 			if !noOverMatching && node.IsANode {
-				aVId, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
+				aVId, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
 				if debug {
 					cmptypes.MyAssert(newAccount)
 				}
 				if newAccount {
 					if node.Op.isLoadOp {
-						*accountReadCount++
+						traceStatus.AccountReadCount++
 						if aVId == 0 {
-							*accountReadFailedCount++
+							traceStatus.AccountReadUnknownCount++
 						}
 					}
 				}
 			}
 
-			*executedNodes++
+			traceStatus.ExecutedNodes++
 			if node.IsRLNode {
-				_, fVal = node.LoadFieldValueID(env, registers, fieldHistory)
-				*executedInputNodes++
-				*fieldActualReadCount++
+				var fVId uint
+				fVId, fVal = node.LoadFieldValueID(env, registers, fieldHistory)
+				traceStatus.ExecutedInputNodes++
+				traceStatus.FieldActualReadCount++
+				if fVId == 0 {
+					traceStatus.FieldReadUnknownCount++
+					if node.Op.isReadOp {
+						traceStatus.ChainReadUnknownCount++
+					}
+				}
 				if node.Op.isReadOp {
-					*executedChainInputNodes++
+					traceStatus.ExecutedChainInputNodes++
 				}
 			} else {
 				fVal = node.Execute(env, registers)
@@ -2529,7 +2722,7 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 
 			node = node.GetNextNode(registers)
 		} else {
-			*oJumps++
+			traceStatus.OpLaneSuccessfulJumps++
 		}
 
 		if node == nil {
@@ -2567,15 +2760,15 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 
 func (tt *TraceTrie) initSearch(db *state.StateDB, header *types.Header, getHashFunc vm.GetHashFunc,
 	precompiles map[common.Address]vm.PrecompiledContract, globalCache *cache.GlobalCache,
-	debug bool) (func(fmtStr string, params ...interface{}), *os.File, *ExecEnv, *RegisterFile, *RegisterFile, *RegisterFile) {
+	debug bool, isBlockProcess bool) (func(fmtStr string, params ...interface{}), *os.File, *ExecEnv, *RegisterFile, *RegisterFile, *RegisterFile) {
 
 	var debugOut func(fmtStr string, params ...interface{})
 	var fOut *os.File
 
-	env := tt.GetNewExecEnv(db, header, getHashFunc, precompiles, globalCache)
-	registers := tt.GetNewRegisters() //NewRegisterFile(tt.RegisterSize) // RegisterFile // := make(RegisterFile, tt.RegisterSize)
-	fieldHistory := tt.GetNewHistory()
-	accountHistory := tt.GetNewHistory()
+	env := tt.GetNewExecEnv(db, header, getHashFunc, precompiles, globalCache, isBlockProcess)
+	registers := tt.GetNewRegisters(isBlockProcess) //NewRegisterFile(tt.RegisterSize) // RegisterFile // := make(RegisterFile, tt.RegisterSize)
+	fieldHistory := tt.GetNewHistory(isBlockProcess)
+	accountHistory := tt.GetNewHistory(isBlockProcess)
 
 	if debug {
 		fOut, _ = os.OpenFile("/tmp/SearchTrieLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
@@ -2592,10 +2785,8 @@ func (tt *TraceTrie) initSearch(db *state.StateDB, header *types.Header, getHash
 }
 
 func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
-	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
-	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, fJumps *uint64,
-	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
-	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
+	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile, fieldHistory *RegisterFile,
+	traceStatus *cmptypes.TraceStatus,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
 	abort func() bool, noOverMatching bool) (fNode *FieldSearchTrieNode, node *SNode, aborted, ok bool) {
 
@@ -2618,27 +2809,28 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 
 		beforeNode := node
 
-		//if node != nStart {
-		//	*executedNodes++
-		//	*executedInputNodes++
-		//}
-
 		if !noOverMatching && fNode.LRNode.Op.isLoadOp {
-			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
+			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
 			if !node.IsANode {
 				cmptypes.MyAssert(!newAccount)
 			}
 			if newAccount {
-				*accountReadCount++
-			}
-			jd := fNode.GetAJumpDef(aVId)
-			*totalJumps++
-			*totalJumpKeys++
-			if jd == nil {
-				if newAccount {
-					*accountReadFailedCount++
+				traceStatus.AccountReadCount++
+				if aVId == 0 {
+					traceStatus.AccountReadUnknownCount++
 				}
-				*failedJumps++
+			}
+
+			var jd *FieldNodeJumpDef
+			if aVId != 0 {
+				jd = fNode.GetAJumpDef(aVId)
+				traceStatus.TotalFieldLaneAJumps++
+				traceStatus.TotalFieldLaneAJumpKeys++
+				if jd == nil {
+					traceStatus.TotalFieldLaneFailedAJumps++
+				}
+			}
+			if jd == nil {
 				if debugOut != nil {
 					debugOut("  FieldLane AJump Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 				}
@@ -2659,7 +2851,6 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				fieldHistory.AppendSegment(fNode.LRNode.FieldIndex, jd.FieldHistorySegment)
 				fNode = jd.Dest
 				node = fNode.LRNode
-				*fJumps++
 				if debug {
 					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
@@ -2669,28 +2860,43 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 
 		if beforeNode == node {
 			if !noOverMatching && node.Op.isReadOp {
-				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory)
-				if fNode != fStart {
-					cmptypes.MyAssert(newAccount)
+				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
+				if fNode != fStart && !newAccount {
+					cmptypes.MyAssert(false)
 				}
 			}
+
+
 			var fVId uint
 			var fVal interface{}
 			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
-			jd := fNode.GetFJumpDef(fVId)
+
 			if !(node == nStart && node.Op.isReadOp) { // if nStart is ReadOp, it is already counted in AccountLane
-				*executedNodes++
-				*executedInputNodes++
+				traceStatus.ExecutedNodes++
+				traceStatus.ExecutedInputNodes++
 				if node.Op.isReadOp {
-					*executedChainInputNodes++
+					traceStatus.ExecutedChainInputNodes++
 				}
-				*fieldActualReadCount++
+				traceStatus.FieldActualReadCount++
+				if fVId == 0 {
+					traceStatus.FieldReadUnknownCount++
+					if node.Op.isReadOp {
+						traceStatus.ChainReadUnknownCount++
+					}
+				}
 			}
 
-			*totalJumps++
-			*totalJumpKeys++
+			var jd *FieldNodeJumpDef
+			if fVId != 0 {
+				jd = fNode.GetFJumpDef(fVId)
+				traceStatus.TotalFieldLaneFJumps++
+				traceStatus.TotalFieldLaneFJumpKeys++
+				if jd == nil {
+					traceStatus.TotalFieldLaneFailedFJumps++
+				}
+			}
+
 			if jd == nil {
-				*failedJumps++
 				if debugOut != nil {
 					debugOut("  FieldLane FJump Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.FieldIndex, fVId)
 				}
@@ -2713,7 +2919,6 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				registers.ApplySnapshot(jd.RegisterSnapshot)
 				fNode = jd.Dest
 				node = fNode.LRNode
-				*fJumps++
 				if debug {
 					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
 				}
@@ -2732,10 +2937,8 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 }
 
 func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
-	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, fieldHistory *RegisterFile,
-	totalJumps *uint64, totalJumpKeys *uint64, failedJumps *uint64, aJumps *uint64,
-	executedNodes *uint64, executedInputNodes *uint64, executedChainInputNodes *uint64,
-	accountReadCount *uint64, accountReadFailedCount *uint64, fieldActualReadCount *uint64,
+	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile, fieldHistory *RegisterFile,
+	traceStatus *cmptypes.TraceStatus,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
 	abort func() bool) (node *SNode, fNode *FieldSearchTrieNode, accountLaneRounds []*cache.PreplayResult, aborted bool, ok bool) {
 	node = aNode.LRNode
@@ -2744,28 +2947,38 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 			aborted = true
 			break
 		}
-		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory)
+		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
 		if newAccount {
 			if aNode.LRNode.Op.isReadOp {
-				*executedNodes++
-				*executedInputNodes++
-				*executedChainInputNodes++
-				*fieldActualReadCount++ // for reading chain head fields
+				traceStatus.ExecutedNodes++
+				traceStatus.ExecutedInputNodes++
+				traceStatus.ExecutedChainInputNodes++
+				traceStatus.FieldActualReadCount++ // for reading chain head fields
+				if aVId == 0 {
+					traceStatus.FieldReadUnknownCount++
+					traceStatus.ChainReadUnknownCount++
+				}
 			} else {
-				*accountReadCount++
+				traceStatus.AccountReadCount++
+				if aVId == 0 {
+					traceStatus.AccountReadUnknownCount++
+				}
 			}
 		}
 		if debug {
 			cmptypes.MyAssert(newAccount)
 		}
-		jd := aNode.GetAJumpDef(aVId)
-		*totalJumps++
-		*totalJumpKeys++
-		if jd == nil {
-			*failedJumps++
-			if newAccount && aNode.LRNode.Op.isLoadOp {
-				*accountReadFailedCount++
+
+		var jd *AccountNodeJumpDef
+		if aVId != 0 {
+			jd = aNode.GetAJumpDef(aVId)
+			traceStatus.TotalAccountLaneJumps++
+			traceStatus.TotalAccountLaneJumpKeys++
+			if jd == nil {
+				traceStatus.TotalAccountLaneFailedJumps++
 			}
+		}
+		if jd == nil {
 			if debugOut != nil {
 				debugOut("  AccountLane Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.AccountIndex, aVId)
 			}
@@ -2790,7 +3003,6 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
 			aNode = jd.Dest
 			node = aNode.LRNode
-			*aJumps++
 			if debug {
 				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
 				if !aNode.LRNode.Op.isStoreOp {
@@ -2833,7 +3045,7 @@ func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int,
 	accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}),
 	fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode,
-	pTotalJumps, pTotalJumpKeys, pFailedJumps *uint64,
+	traceStatus *cmptypes.TraceStatus,
 	noOverMatching bool) *SNode {
 	for {
 		if debug {
@@ -2847,14 +3059,17 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 			aCheckCount += len(jNode.VIndices)
 
 			aKey, aOk := GetOpJumKey(accountHistory, jNode.VIndices)
-			*pTotalJumps++
-			*pTotalJumpKeys += uint64(len(jNode.VIndices))
+
 			var jd *OpNodeJumpDef
 			if aOk {
 				jd = jNode.GetMapJumpDef(&aKey)
+				traceStatus.TotalOpLaneAJumps++
+				traceStatus.TotalFieldLaneFJumpKeys += uint64(len(jNode.VIndices))
+				if jd == nil {
+					traceStatus.TotalOpLaneFailedAJumps++
+				}
 			}
 			if jd == nil {
-				*pFailedJumps++
 				if debugOut != nil {
 					debugOut("  OpLane ACheck Failed #%v %v on AIndex %v AVId %v\n", node.Seq, node.Statement.SimpleNameString(),
 						jNode.VIndices, aKey[:len(jNode.VIndices)])
@@ -2907,14 +3122,16 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 		} else {
 			fCheckCount += len(jNode.VIndices)
 			fKey, fOk := GetOpJumKey(fieldHistory, jNode.VIndices)
-			*pTotalJumps++
-			*pTotalJumpKeys += uint64(len(jNode.VIndices))
 			var jd *OpNodeJumpDef
 			if fOk {
 				jd = jNode.GetMapJumpDef(&fKey)
+				traceStatus.TotalOpLaneFJumps++
+				traceStatus.TotalOpLaneFJumpKeys += uint64(len(jNode.VIndices))
+				if jd == nil {
+					traceStatus.TotalOpLaneFailedFJumps++
+				}
 			}
 			if jd == nil {
-				*pFailedJumps++
 				if debugOut != nil {
 					debugOut("  OpLane FCheck Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(),
 						jNode.VIndices, fKey[:len(jNode.VIndices)])
@@ -2975,7 +3192,37 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 	return node
 }
 
-func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Statement, nodeIndex uint, trace *STrace) (*SNode, interface{}) {
+func GetStatementOutputMultiTypeVal(s *Statement, registers *RegisterFile, registerMapping map[uint32]uint) *MultiTypedValue {
+	return GetStatementOutputVal(s, registers, registerMapping).(*MultiTypedValue)
+}
+
+func GetStatementOutputVal(s *Statement, registers *RegisterFile, registerMapping map[uint32]uint) interface{} {
+	var val interface{}
+	if registers != nil && s.output != nil && !s.output.IsConst() {
+		rid := registerMapping[s.output.id]
+		val = registers.Get(rid)
+	} else {
+		val = s.output.val
+	}
+	return val
+}
+
+func GetStatementInputMultiTypeVal(s *Statement, inputIndex int, registers *RegisterFile, registerMapping map[uint32]uint) *MultiTypedValue {
+	return GetStatementInputVal(s, inputIndex, registers, registerMapping).(*MultiTypedValue)
+}
+
+func GetStatementInputVal(s *Statement, inputIndex int, registers *RegisterFile, registerMapping map[uint32]uint) interface{} {
+	var val interface{}
+	if registers != nil && !s.inputs[inputIndex].IsConst() {
+		rid := registerMapping[s.inputs[inputIndex].id]
+		val = registers.Get(rid)
+	} else {
+		val = s.inputs[inputIndex].val
+	}
+	return val
+}
+
+func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Statement, nodeIndex uint, trace *STrace, result *TraceTrieSearchResult) (*SNode, interface{}) {
 	registerMapping := &(trace.RAlloc)
 	if pNode == nil {
 		panic("pNode should never be nil")
@@ -3019,7 +3266,11 @@ func (tt *TraceTrie) insertStatement(pNode *SNode, guardKey interface{}, s *Stat
 	}
 
 	if node.Op.IsGuard() {
-		return node, GetGuardKey(s.output.val)
+		var registers *RegisterFile
+		if result != nil {
+			registers = result.registers
+		}
+		return node, GetGuardKey(GetStatementOutputVal(s, registers, *registerMapping))
 	} else {
 		return node, nil
 	}
@@ -3035,31 +3286,35 @@ func IsJumpStartingPoint(op *OpDef) bool {
 }
 
 type JumpInserter struct {
-	registers               *RegisterFile
-	accountHistory          *RegisterFile
-	fieldHistroy            *RegisterFile
-	nodeIndexToAccountValue map[uint]interface{}
-	snodes                  []*SNode
-	fnodes                  []*FieldSearchTrieNode
-	trace                   *STrace
-	nodeIndexToAVId         map[uint]uint
-	nodeIndexToFVId         map[uint]uint
-	tt                      *TraceTrie
-	aNodeFJds               []*FieldNodeJumpDef
-	round                   *cache.PreplayResult
-	refNodes                []ISRefCountNode
-	newNodeCount            uint
-	noOverMatching          bool
+	registers                     *RegisterFile
+	accountHistory                *RegisterFile
+	fieldHistroy                  *RegisterFile
+	nodeIndexToAccountValue       map[uint]interface{}
+	snodes                        []*SNode
+	fnodes                        []*FieldSearchTrieNode
+	trace                         *STrace
+	nodeIndexToAVId               map[uint]uint
+	nodeIndexToFVId               map[uint]uint
+	tt                            *TraceTrie
+	aNodeFJds                     []*FieldNodeJumpDef
+	round                         *cache.PreplayResult
+	refNodes                      []ISRefCountNode
+	newNodeCount                  uint
+	noOverMatching                bool
+	result                        *TraceTrieSearchResult
+	nodeIndexToAccountValueString map[uint]string
 }
 
-func NewJumpInserter(tt *TraceTrie, trace *STrace, currentNodes []*SNode, round *cache.PreplayResult, noOverMatching bool) *JumpInserter {
+func NewJumpInserter(tt *TraceTrie, trace *STrace, currentNodes []*SNode, round *cache.PreplayResult, result *TraceTrieSearchResult, noOverMatching bool) *JumpInserter {
 
-	nodeIndexToAccountValue := GetNodeIndexToAccountSnapMapping(trace, round.ReadDepSeq)
+	var nodeIndexToAccountValue map[uint]interface{}
+	var nodeIndexToAccountValueString map[uint]string
+	if !noOverMatching {
+		nodeIndexToAccountValue, nodeIndexToAccountValueString = GetNodeIndexToAccountSnapMapping(trace, round.ReadDepSeq, result)
+	}
 	j := &JumpInserter{
-		//registers:               NewRegisterFile(trace.RegisterFileSize),
-		//accountHistory:          NewRegisterFile(uint(len(trace.ANodeSet))),
-		//fieldHistroy:            NewRegisterFile(uint(len(trace.RLNodeSet))),
 		nodeIndexToAccountValue: nodeIndexToAccountValue,
+		nodeIndexToAccountValueString: nodeIndexToAccountValueString,
 		snodes:                  currentNodes,
 		trace:                   trace,
 		nodeIndexToAVId:         make(map[uint]uint),
@@ -3067,6 +3322,7 @@ func NewJumpInserter(tt *TraceTrie, trace *STrace, currentNodes []*SNode, round 
 		tt:                      tt,
 		round:                   round,
 		noOverMatching:          noOverMatching,
+		result:                  result,
 	}
 	j.InitAccountAndFieldValueIDs()
 	return j
@@ -3080,7 +3336,12 @@ func (j *JumpInserter) ExecuteStats(startIndex, endIndex uint) {
 		s := stats[i]
 		if s.output != nil && !s.output.IsConst() {
 			rid := registerMapping[s.output.id]
-			registers.AppendRegister(rid, s.output.val)
+			//registers.AppendRegister(rid, s.output.val)
+			var resultRegisters *RegisterFile
+			if j.result != nil {
+				resultRegisters = j.result.registers
+			}
+			registers.AppendRegister(rid, GetStatementOutputVal(s, resultRegisters, registerMapping))
 		}
 	}
 }
@@ -3106,17 +3367,29 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 		if !j.noOverMatching {
 			if node.IsANode {
 				var aval interface{}
+				var avalStr string
 				var ok bool
 				if node.Op.isLoadOp {
 					aval, ok = j.nodeIndexToAccountValue[node.Seq]
+					if DEBUG_TRACER {
+						avalStr = j.nodeIndexToAccountValueString[node.Seq]
+					}
 					cmptypes.MyAssert(ok)
 				} else {
-					aval = s.output.val
+					var resultRegisters *RegisterFile
+					if j.result != nil {
+						resultRegisters = j.result.registers
+					}
+					aval = GetStatementOutputVal(s, resultRegisters, *rmap)
+					if DEBUG_TRACER {
+						avalStr = fmt.Sprintf("%v", aval)
+					}
+					//aval = s.output.val
 				}
 				aVId = node.GetOrCreateAccountValueID(aval)
 				accountHistory.AppendRegister(node.AccountIndex, aVId)
 				if tt.DebugOut != nil {
-					tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), aval, aVId)
+					tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), avalStr, aVId)
 				}
 			} else {
 				cmptypes.MyAssert(node.Op.isLoadOp)
@@ -3127,7 +3400,12 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 			}
 		}
 
-		fVal := s.output.val
+		//fVal := s.output.val
+		var resultRegisters *RegisterFile
+		if j.result != nil {
+			resultRegisters = j.result.registers
+		}
+		fVal := GetStatementOutputVal(s, resultRegisters, *rmap)
 		fVId = node.GetOrCreateFieldValueID(fVal)
 		fieldHistory.AppendRegister(node.FieldIndex, fVId)
 
@@ -3976,8 +4254,8 @@ func (j *JumpInserter) SetupRoundMapping() {
 	node.roundResults.SetupRoundMapping(j.registers, j.accountHistory, j.fieldHistroy, j.round, j.tt.DebugOut)
 }
 
-func (tt *TraceTrie) setupJumps(trace *STrace, currentNodes []*SNode, round *cache.PreplayResult, noOverMatching bool) *JumpInserter {
-	j := NewJumpInserter(tt, trace, currentNodes, round, noOverMatching)
+func (tt *TraceTrie) setupJumps(trace *STrace, currentNodes []*SNode, round *cache.PreplayResult, result *TraceTrieSearchResult, noOverMatching bool) *JumpInserter {
+	j := NewJumpInserter(tt, trace, currentNodes, round, result, noOverMatching)
 	j.SetupFieldJumpLane()
 	if !j.noOverMatching {
 		j.SetupAccountJumpLane()

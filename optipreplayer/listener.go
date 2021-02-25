@@ -52,15 +52,63 @@ func (l *Listener) cacheEvictionLoop2() {
 	m := new(runtime.MemStats)
 	runtime.ReadMemStats(m)
 	lastNumGC := m.NumGC
-	lastHeapAlloc := m.HeapAlloc
-	var removed, oldSize int
 	for chainHeadEvent := range chainHeadCh {
 		currentBlock := chainHeadEvent.Block
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
-		newSize := l.globalCache.LenOfTxPreplay()
-		startNodeCount, startWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
-		inc := newSize - oldSize
+		sizes := l.globalCache.GetTrieAndWObjectSizes()
+		detail := &sizes.ExternalTransferDetails
+		log.Info("ET trie size in cache",
+			"totalTxCnt", sizes.TotalTxCount,
+			"etTxCnt", sizes.ExternalTransferTxCount,
+			"traceTxCnt", detail.TxWithTraceTrieCount,
+			"mixTxCnt", detail.TxWithMixTrieCount,
+			"rwTxCnt", detail.TxWithRWTrieCount,
+			"deltaTxCnt", detail.TxWithDeltaTrieCount,
+			"rwNodeCnt", detail.TotalRWTrieNodeCount,
+			"deltaNodeCnt", detail.TotalDeltaTrieNodeCount,
+			"mixNodeCnt", detail.TotalMixTrieNodeCount,
+			"mixRoundCnt", detail.TotalMixTrieRoundCount,
+			"mixRWCnt", detail.TotalMixTrieRWRecordCount,
+			"traceNodeCnt", detail.TotalTraceTrieNodeCount,
+			"traceRoundCnt", detail.TotalTraceTrieRoundCount,
+			"tracePathCnt", detail.TotalTraceTriePathCount,
+			"multiPathCnt", detail.TotalPathCountOfMultiPathTx,
+			"multiPathTxCnt", detail.TxWithMultiPathCount,
+			"pathDistr", detail.TraceTriePathCountDistributionStr,
+			"wobjectCnt", detail.TotalWObjectCount,
+			"wobjectItemCnt", detail.TotalWObjectStorageSize,
+			)
+		totalNodeCount := detail.TotalMixTrieNodeCount + detail.TotalTraceTrieNodeCount + detail.TotalRWTrieNodeCount + detail.TotalDeltaTrieNodeCount
+		totalWObjectSize := detail.TotalWObjectCount*config.WOBJECT_BASE_SIZE+ detail.TotalWObjectStorageSize
+
+        detail = &sizes.SmartContractDetails
+		log.Info("SC trie size in cache",
+			"totalTxCnt", sizes.TotalTxCount,
+			"scTxCnt", sizes.TotalTxCount - sizes.ExternalTransferTxCount,
+			"traceTxCnt", detail.TxWithTraceTrieCount,
+			"mixTxCnt", detail.TxWithMixTrieCount,
+			"rwTxCnt", detail.TxWithRWTrieCount,
+			"deltaTxCnt", detail.TxWithDeltaTrieCount,
+			"rwNodeCnt", detail.TotalRWTrieNodeCount,
+			"deltaNodeCnt", detail.TotalDeltaTrieNodeCount,
+			"mixNodeCnt", detail.TotalMixTrieNodeCount,
+			"mixRoundCnt", detail.TotalMixTrieRoundCount,
+			"mixRWCnt", detail.TotalMixTrieRWRecordCount,
+			"traceNodeCnt", detail.TotalTraceTrieNodeCount,
+			"traceRoundCnt", detail.TotalTraceTrieRoundCount,
+			"tracePathCnt", detail.TotalTraceTriePathCount,
+			"multiPathCnt", detail.TotalPathCountOfMultiPathTx,
+			"multiPathTxCnt", detail.TxWithMultiPathCount,
+			"pathDistr", detail.TraceTriePathCountDistributionStr,
+			"wobjectCnt", detail.TotalWObjectCount,
+			"wobjectItemCnt", detail.TotalWObjectStorageSize,
+		)
+        totalNodeCount += detail.TotalMixTrieNodeCount + detail.TotalTraceTrieNodeCount + detail.TotalRWTrieNodeCount + detail.TotalDeltaTrieNodeCount
+		totalWObjectSize += detail.TotalWObjectCount*config.WOBJECT_BASE_SIZE+ detail.TotalWObjectStorageSize
+
+
+		beforeSize := l.globalCache.LenOfTxPreplay()
 
 		removed12 := 0
 		removed6 := 0
@@ -106,71 +154,17 @@ func (l *Listener) cacheEvictionLoop2() {
 
 
 		afterSize := l.globalCache.LenOfTxPreplay()
-		removed = newSize - afterSize
+		removed := beforeSize - afterSize
 
-		endNodeCount, endWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
-
-		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
-			"removed", fmt.Sprintf("%d(12:%d,6:%d,2:%d,half:%d)", removed, removed12, removed6, removed2, removedHalf),
-			"newHeapAlloc", m.HeapAlloc/1024/1024/1024,
-			"newSize", afterSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
-			"oldHeapAlloc", lastHeapAlloc/1024/1024/1024,
-			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
+		log.Info("TxPreplay cache eviction", "number", currentBlock.NumberU64(),
+			"heapAlloc", m.HeapAlloc/1024/1024/1024,
+			"txRemoved", fmt.Sprintf("%d(12:%d,6:%d,2:%d,half:%d)", removed, removed12, removed6, removed2, removedHalf),
+			"txBefore", beforeSize, "txAfter", afterSize,
+			"nodeCntBefore", totalNodeCount, "wobjectSizeBefore", totalWObjectSize,
 			"numGC", m.NumGC, "lastNumGC", lastNumGC,
 		)
 
 		lastNumGC = m.NumGC
-		lastHeapAlloc = m.HeapAlloc
-		oldSize = afterSize
-	}
-}
-
-func (l *Listener) cacheEvictionLoop() {
-	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
-	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
-	defer chainHeadSub.Unsubscribe()
-
-	var removed, oldRemoved, newSize int
-	for chainHeadEvent := range chainHeadCh {
-		currentBlock := chainHeadEvent.Block
-		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
-
-		oldSize := l.globalCache.LenOfTxPreplay()
-		startNodeCount, startWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
-		inc := oldSize - newSize
-
-		l.removeBefore(currentBlock.NumberU64() - 6)
-
-		nodeCountAfterSmallRemove, _ := l.globalCache.GetTotalNodeCountAndWObjectSize()
-		if nodeCountAfterSmallRemove > config.CACHE_NODE_COUNT_LIMIT { // todo: CACHE_NODE_COUNT_LIMIT should be a parameter
-			l.removeBefore(currentBlock.NumberU64() - 2)
-		}
-		l.globalCache.GCWObjects()
-		saveSize := l.globalCache.LenOfTxPreplay()
-
-		nodeCountAfterBigRemove, _ := l.globalCache.GetTotalNodeCountAndWObjectSize()
-
-		nodesCountToEvict := nodeCountAfterBigRemove - config.CACHE_NODE_COUNT_LIMIT
-		for nodesCountToEvict > 0 {
-			removed, ok := l.globalCache.RemoveOldest()
-			if ok {
-				nodesCountToEvict -= removed
-			} else {
-				break
-			}
-		}
-
-		newSize = l.globalCache.LenOfTxPreplay()
-		oldRemoved = saveSize - newSize
-		removed = oldSize - newSize
-
-		endNodeCount, endWObjectSize := l.globalCache.GetTotalNodeCountAndWObjectSize()
-
-		log.Info("TxPreplay cache size", "number", currentBlock.NumberU64(),
-			"removed", fmt.Sprintf("%d(%d)", removed, oldRemoved),
-			"newSize", newSize, "newNodeCount", endNodeCount, "newWObjectSize", endWObjectSize,
-			"oldSize", oldSize, "inc", inc, "startNodeCount", startNodeCount, "startWObjectSize", startWObjectSize,
-		)
 	}
 }
 

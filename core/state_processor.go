@@ -59,7 +59,7 @@ type TransactionApplier interface {
 
 	PreplayTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
-		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, basicPreplay, enablePause bool) (*types.Receipt, error)
+		cfg vm.Config, RoundID uint64, blockPre *cache.BlockPre, groundFlag uint64, fullPreplay, enablePause bool) (*types.Receipt, error)
 }
 
 //
@@ -157,6 +157,9 @@ func CmpStateDB(groundStatedb, statedb *state.StateDB, groundReceipt *types.Rece
 
 		for i, glog := range groundReceipt.Logs {
 			rlog := receipt.Logs[i]
+			if rlog.Topics == nil {
+				rlog.Topics = make([]common.Hash, 0)
+			}
 			gb, _ := json.Marshal(glog)
 			lb, _ := json.Marshal(rlog)
 			gs, ls := string(gb), string(lb)
@@ -426,7 +429,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 						confirmationDelayNano := blockPre.ListenTimeNano - txListen.ListenTimeNano
 						confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
 					}
-					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond)
+					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond, tx)
 				}
 			}
 
@@ -517,7 +520,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 							confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
 						}
 					}
-					statedb.AddTxPerf(receipt, txDuration, nil, confirmationDelaySecond)
+					statedb.AddTxPerf(receipt, txDuration, nil, confirmationDelaySecond, tx)
 				}
 
 			}

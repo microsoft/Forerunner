@@ -2,14 +2,17 @@ package optipreplayer
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"math"
 	"math/big"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -70,10 +73,17 @@ type TaskBuilder struct {
 	// Log groups and transactions
 	preplayLog *PreplayLog
 
+	groupedReplacedTxns map[common.Hash]struct{}
+	groupedReplaceTxnsMutex sync.Mutex
+
 	preplayer *Preplayer
+
+	taskBuilderLogFile    *os.File
+
+	cfg *vm.MSRAVMConfig
 }
 
-func NewTaskBuilder(config *params.ChainConfig, eth Backend, mu *sync.RWMutex, packageType PackageType) *TaskBuilder {
+func NewTaskBuilder(config *params.ChainConfig, eth Backend, mu *sync.RWMutex, packageType PackageType, cfg *vm.MSRAVMConfig) *TaskBuilder {
 	builder := &TaskBuilder{
 		txPool:        eth.TxPool(),
 		chain:         eth.BlockChain(),
@@ -94,7 +104,15 @@ func NewTaskBuilder(config *params.ChainConfig, eth Backend, mu *sync.RWMutex, p
 		trigger:       NewTrigger("TxsBlock1P1", 1),
 		nowGroups:     make(map[common.Hash]*TxnGroup),
 		rwrecord:      make(map[common.Hash]*RWRecord),
+		groupedReplacedTxns: make(map[common.Hash]struct{}),
+		cfg: cfg,
 	}
+
+	if cfg.TaskBuilderChecking {
+		builder.taskBuilderLogFile, _ = os.OpenFile("/tmp/TaskBuilderLog.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
+	}
+
+
 	return builder
 }
 
@@ -108,6 +126,17 @@ func (b *TaskBuilder) setPreplayer(preplayer *Preplayer) {
 	b.preplayLog = preplayer.preplayLog
 }
 
+func (b *TaskBuilder) debugLog(fmtStr string, objects ...interface{}){
+	content := fmt.Sprintf(fmtStr, objects...) + "\n"
+	b.taskBuilderLogFile.WriteString(content)
+}
+
+func (b *TaskBuilder) debugLogWithTimestamp(fmtStr string, objects ...interface{}){
+	now := time.Now()
+	content := "[" + now.Format("01-02|15:04:05.000") + "] " + fmt.Sprintf(fmtStr, objects...) + "\n"
+	b.taskBuilderLogFile.WriteString(content)
+}
+
 func (b *TaskBuilder) mainLoop() {
 	for {
 		select {
@@ -116,6 +145,10 @@ func (b *TaskBuilder) mainLoop() {
 			rawPending, _ := b.txPool.Pending()
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
+				if b.cfg.TaskBuilderChecking {
+					b.debugLogWithTimestamp("mainLoopIter blockNum %v blockHash %v deadline %v currentTime %v",
+						currentBlock.NumberU64(), currentBlock.Hash().String(), b.txnDeadline, time.Now().Unix())
+				}
 				b.resetPackagePool(rawPending)
 				b.resetPreplayPool()
 				if len(b.preplayPool) > 0 {
@@ -134,6 +167,11 @@ func (b *TaskBuilder) mainLoop() {
 func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 	b.originPool, b.packagePool, b.dupTxns = b.packagePool, make(TransactionPool), make(map[common.Hash]types.Transactions)
 
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp(" resetPackagePool lastPackagePoolLen %v cunrretPoolLen %v whiteListLen %v",
+			b.originPool.size(), rawPending.size(), len(b.minerList.whiteList))
+	}
+
 	if b.packageType == TYPE0 {
 		var rawPendingCopy = make(TransactionPool)
 		if len(b.remainCount) < remainTxnTotalLimit && atomic.LoadInt32(b.preplayRemain) == 0 {
@@ -147,11 +185,23 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 				delete(rawPending, from)
 			}
 		}
+
+		if b.cfg.TaskBuilderChecking {
+			b.debugLogWithTimestamp("  after_add_miner_whitelist PackagePoolLen %v curretPoolLen %v",
+				b.packagePool.size(), rawPending.size())
+		}
+
+
 		for _, from := range b.globalCache.GetWhiteList() {
 			if txns, ok := rawPending[from]; ok {
 				b.packagePool[from] = txns
 				delete(rawPending, from)
 			}
+		}
+
+		if b.cfg.TaskBuilderChecking {
+			b.debugLogWithTimestamp("  after_add_global_whitelist PackagePoolLen %v curretPoolLen %v",
+				b.packagePool.size(), rawPending.size())
 		}
 
 		var (
@@ -219,16 +269,33 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 			}
 		}
 
+		txPrice := "NoTxn"
 		if txnWithMinPrice != nil {
 			b.setMinPrice(txnWithMinPrice.GasPrice())
+			txPrice = txnWithMinPrice.GasPrice().String()
 		}
 
+		if b.cfg.TaskBuilderChecking {
+			b.debugLogWithTimestamp("  after_next_block_prediction PackagePoolLen %v curretPoolLen %v txnWithMinPrice %v",
+				b.packagePool.size(), rawPending.size(), txPrice)
+		}
 		if len(b.remainCount) < remainTxnTotalLimit && atomic.CompareAndSwapInt32(b.preplayRemain, 0, 1) {
+			if b.cfg.TaskBuilderChecking {
+				b.debugLogWithTimestamp("  start_handle_remaining rawPendingCopy %v txnRemovedForGasLimit %v",
+					rawPending.size(), len(txnRemovedForGasLimit))
+			}
 			go func() {
 				b.handleRemainPreplayPool(pending, txnRemovedForGasLimit, rawPendingCopy)
 				atomic.StoreInt32(b.preplayRemain, 0)
 			}()
 		}
+	}
+
+	b.packagePool.addPool(b.originPool)
+
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("  after_add_originPool PackagePoolLen %v",
+			b.packagePool.size())
 	}
 
 	b.removedTxn = b.originPool.isTxnsPoolLarge(b.packagePool)
@@ -245,9 +312,11 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 		if reduplicatedNonceTxn, ok := b.globalCache.SearchReduplicatedNonceTxn(sender, minNonce, txns[len(txns)-1].Nonce()); ok {
 			for _, dupTxn := range reduplicatedNonceTxn {
 				replacedTxn := txns[dupTxn.Nonce()-minNonce]
-				if replacedTxn.Hash() != dupTxn.Hash() {
-					b.dupTxns[replacedTxn.Hash()] = append(b.dupTxns[replacedTxn.Hash()], dupTxn)
-					b.globalCache.CommitTxPackage(dupTxn.Hash(), nowTime)
+				if !b.isAlreadyGroupedReplacedTx(dupTxn.Hash()) {
+					if replacedTxn.Hash() != dupTxn.Hash() {
+						b.dupTxns[replacedTxn.Hash()] = append(b.dupTxns[replacedTxn.Hash()], dupTxn)
+						b.globalCache.CommitTxPackage(dupTxn.Hash(), nowTime)
+					}
 				}
 			}
 		}
@@ -262,6 +331,10 @@ func (b *TaskBuilder) resetPreplayPool() {
 			return !b.originPool.isTxnIn(sender, txn)
 		})
 	}
+
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp(" resetPreplayPool preplayPoolLen %v preplayPoolSenderCount %v", b.preplayPool.size(), len(b.preplayPool))
+	}
 }
 
 func (b *TaskBuilder) commitNewWork() {
@@ -271,6 +344,8 @@ func (b *TaskBuilder) commitNewWork() {
 	orderAndHeader.header.coinbase = b.nowHeader.coinbase
 	orderAndHeader.header.time = b.nowHeader.time
 	orderAndHeader.header.gasLimit = b.preplayPool.gas()
+
+	b.debugLogWithTimestamp(" commitNewWork")
 
 	for from, txns := range b.preplayPool {
 		var txnList [][]byte
@@ -304,7 +379,16 @@ func (b *TaskBuilder) commitNewWork() {
 			wg.Done()
 		}(group, txns)
 	}
+
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("  group Dispatched")
+	}
+
 	wg.Wait()
+
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("  wait Done")
+	}
 }
 
 func isSamePriceTooMuch(pool TransactionPool) bool {
@@ -327,11 +411,20 @@ func isSamePriceTooMuch(pool TransactionPool) bool {
 }
 
 func (b *TaskBuilder) updateTxnGroup() {
+
+	totalGroupCount, totalTxnCount := b.preplayLog.getTotalGroupAndTxCount()
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp(" updateTxnGroup removedTxn %v nowGroupCount %v totalGroupCount %v totalTxCount %v", b.removedTxn, len(b.nowGroups), totalGroupCount, totalTxnCount)
+	}
 	if b.removedTxn {
 		b.nowGroups = make(map[common.Hash]*TxnGroup)
 		b.groupTxns(b.packagePool)
 	} else {
 		b.groupTxns(b.preplayPool)
+	}
+
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("   after groupTxns nowGroupCount %v", len(b.nowGroups))
 	}
 
 	var accountDepOnGroup = make(map[common.Address][]*TxnGroup)
@@ -366,9 +459,13 @@ func (b *TaskBuilder) updateTxnGroup() {
 	}
 
 	var replacingTxnsList []types.Transactions
+	var dupTxnCount int
 	for i := 0; ; i++ {
 		var replacingTxns types.Transactions
 		for _, txns := range b.dupTxns {
+			if i == 0 {
+				dupTxnCount += len(txns)
+			}
 			if i < len(txns) {
 				replacingTxns = append(replacingTxns, txns[i])
 			}
@@ -380,11 +477,17 @@ func (b *TaskBuilder) updateTxnGroup() {
 		}
 	}
 
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("   after dupLoop dupTxnLen %v dupTxnCount %v replacingTxnLen %v", len(b.dupTxns), dupTxnCount, len(replacingTxnsList))
+	}
+	var newGroupCount, newExtraGroupCount int
+
 	for groupHash, group := range b.nowGroups {
 		if originGroup, exist := b.preplayLog.reportNewGroup(group); exist {
 			b.nowGroups[groupHash] = originGroup
 			continue
 		}
+		newGroupCount++
 
 		for _, txns := range group.txnPool {
 			sort.Sort(types.TxByNonce(txns))
@@ -402,7 +505,7 @@ func (b *TaskBuilder) updateTxnGroup() {
 			group.chainFactor *= len(timeShift)
 		}
 		group.orderCount, group.startList, group.subpoolList = divideTransactionPool(group.txnPool, group.txnCount, group.chainFactor)
-		group.basicPreplay = true
+		group.fullPreplay = true
 		if addrNotCopy, ok := addrNotCopyMap[group]; ok {
 			group.addrNotCopy = addrNotCopy
 		} else {
@@ -424,9 +527,12 @@ func (b *TaskBuilder) updateTxnGroup() {
 
 		var extraGroups []*TxnGroup
 		for _, replacingTxns := range replacingTxnsList {
-			if newGroup := group.replaceTxn(replacingTxns, b.signer); newGroup != nil {
+			if newGroup, replaceMapping := group.replaceTxn(replacingTxns, b.signer); newGroup != nil {
 				if _, exist := b.preplayLog.reportNewGroup(newGroup); !exist {
 					extraGroups = append(extraGroups, newGroup)
+					newGroupCount++
+					newExtraGroupCount++
+					b.recordGroupedReplacedTx(replaceMapping)
 				}
 			}
 		}
@@ -445,9 +551,6 @@ func (b *TaskBuilder) updateTxnGroup() {
 		}
 
 		b.preplayTaskQueue.pushTask(group)
-		for _, extraGroup := range extraGroups {
-			b.preplayTaskQueue.pushTask(extraGroup)
-		}
 
 		nowTime := uint64(time.Now().UnixNano())
 		for _, txns := range group.txnPool {
@@ -455,13 +558,31 @@ func (b *TaskBuilder) updateTxnGroup() {
 				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
 			}
 		}
-		for _, txns := range b.dupTxns {
-			for _, txn := range txns {
-				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+
+		for _, extraGroup := range extraGroups {
+			nowTime := uint64(time.Now().UnixNano())
+			b.preplayTaskQueue.pushTask(extraGroup)
+			for _, txns := range extraGroup.txnPool {
+				for _, txn := range txns {
+					b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+				}
 			}
 		}
+
+		//for _, txns := range b.dupTxns {
+		//	for _, txn := range txns {
+		//		b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+		//	}
+		//}
 	}
 
+
+
+	totalGroupCount, totalTxnCount = b.preplayLog.getTotalGroupAndTxCount()
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp("   after newGroupLoop newGroupCount %v newExtraGroupCount %v totalGroupCount %v totalTxCount %v", newGroupCount, newExtraGroupCount,
+			totalGroupCount, totalTxnCount)
+	}
 	b.preplayLog.reportNewTaskBuild()
 }
 
@@ -721,9 +842,11 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 		sender, _ := types.Sender(b.signer, txn)
 		if reduplicatedNonceTxn, ok := b.globalCache.SearchReduplicatedNonceTxn(sender, txn.Nonce(), txn.Nonce()); ok {
 			for _, dupTxn := range reduplicatedNonceTxn {
-				if txn.Hash() != dupTxn.Hash() {
-					dupTxns[txn.Hash()] = append(dupTxns[txn.Hash()], dupTxn)
-					b.globalCache.CommitTxPackage(dupTxn.Hash(), nowTime)
+				if !b.isAlreadyGroupedReplacedTx(dupTxn.Hash()) {
+					if txn.Hash() != dupTxn.Hash() {
+						dupTxns[txn.Hash()] = append(dupTxns[txn.Hash()], dupTxn)
+						b.globalCache.CommitTxPackage(dupTxn.Hash(), nowTime)
+					}
 				}
 			}
 		}
@@ -745,7 +868,12 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 		txnList: txnList,
 	}
 
-	if b.preplayLog.isGroupExist(group) {
+
+
+	//if b.preplayLog.isGroupExist(group) {
+	//	return
+	//}
+	if _, existed := b.preplayLog.reportRemainNewGroup(group); existed {
 		return
 	}
 
@@ -767,6 +895,7 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 	group.RWRecord = NewRWRecord(nil)
 	group.defaultInit(b.parent, true)
 	group.isPriorityConst = true
+	group.closeRoundIDChOnInvalid = true
 
 	for _, txns := range group.txnPool {
 		for _, txn := range txns {
@@ -776,10 +905,16 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 
 	var extraGroups []*TxnGroup
 	for _, replacingTxns := range replacingTxnsList {
-		if newGroup := group.replaceTxn(replacingTxns, b.signer); newGroup != nil {
-			if !b.preplayLog.isGroupExist(newGroup) {
+		if newGroup, replaceMapping := group.replaceTxn(replacingTxns, b.signer); newGroup != nil {
+			//if !b.preplayLog.isGroupExist(newGroup) {
+			if _, existed := b.preplayLog.reportRemainNewGroup(newGroup); !existed {
 				newGroup.roundIDCh = make(chan uint64, 1)
+				newGroup.closeRoundIDChOnInvalid = true
 				extraGroups = append(extraGroups, newGroup)
+				b.recordGroupedReplacedTx(replaceMapping)
+				if len(extraGroups) == 2 {
+					break
+				}
 			}
 		}
 	}
@@ -801,26 +936,51 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 	}
 
 	b.preplayTaskQueue.pushTask(group)
-	for _, extraGroup := range extraGroups {
-		b.preplayTaskQueue.pushTask(extraGroup)
-	}
-
 	nowTime = uint64(time.Now().UnixNano())
 	for _, txns := range group.txnPool {
 		for _, txn := range txns {
 			b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
 		}
 	}
-	for _, txns := range dupTxns {
-		for _, txn := range txns {
-			b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
-		}
-	}
 
 	<-group.roundIDCh
+
 	for _, extraGroup := range extraGroups {
-		<-extraGroup.roundIDCh
+		nowTime = uint64(time.Now().UnixNano())
+		b.preplayTaskQueue.pushTask(extraGroup)
+		for _, txns := range extraGroup.txnPool {
+			for _, txn := range txns {
+				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+			}
+		}
+		<- extraGroup.roundIDCh
 	}
+
+	//for _, txns := range dupTxns {
+	//	for _, txn := range txns {
+	//		b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
+	//	}
+	//}
+	//
+	//
+	//for _, extraGroup := range extraGroups {
+	//	<-extraGroup.roundIDCh
+	//}
+}
+
+func (b *TaskBuilder) recordGroupedReplacedTx(replaceMapping map[*types.Transaction]*types.Transaction) {
+	b.groupedReplaceTxnsMutex.Lock()
+	defer b.groupedReplaceTxnsMutex.Unlock()
+	for _, txn := range replaceMapping {
+		b.groupedReplacedTxns[txn.Hash()] = struct{}{}
+	}
+}
+
+func (b *TaskBuilder) isAlreadyGroupedReplacedTx(txHash common.Hash) (exist bool) {
+	b.groupedReplaceTxnsMutex.Lock()
+	defer b.groupedReplaceTxnsMutex.Unlock()
+	_, exist = b.groupedReplacedTxns[txHash]
+	return
 }
 
 func (b *TaskBuilder) nextTxnDeadline(nowValue uint64) uint64 {

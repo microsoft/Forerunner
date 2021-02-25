@@ -62,13 +62,13 @@ type Executor struct {
 	enableAgg   bool
 	enablePause bool
 
-	basicPreplay bool
+	fullPreplay bool
 	addrNotCopy  map[common.Address]struct{}
 }
 
 func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine, chain *core.BlockChain, chainDb ethdb.Database, txnOrder map[common.Hash]int,
 	rawPending map[common.Address]types.Transactions, currentState *cache.CurrentState, trigger *Trigger, resultCh chan *cache.ExtraResult,
-	enableAgg bool, enablePause bool, basicPreplay bool, addrNotCopy map[common.Address]struct{}) *Executor {
+	enableAgg bool, enablePause bool, fullPreplay bool, addrNotCopy map[common.Address]struct{}) *Executor {
 	executor := &Executor{
 		id:             id,
 		config:         config,
@@ -85,7 +85,7 @@ func NewExecutor(id string, config *params.ChainConfig, engine consensus.Engine,
 		resultCh:       resultCh,
 		enableAgg:      enableAgg,
 		enablePause:    enablePause,
-		basicPreplay:   basicPreplay,
+		fullPreplay:   fullPreplay,
 		addrNotCopy:    addrNotCopy,
 	}
 
@@ -125,7 +125,7 @@ func (e *Executor) makeCurrent(parent *types.Block, header *types.Header) error 
 
 	if e.chain.GetVMConfig().MSRAVMSettings.EnablePreplay {
 		statedb = state.NewRWStateDB(statedbInstance)
-		if !e.basicPreplay || e.chain.GetVMConfig().MSRAVMSettings.NoOverMatching {
+		if !e.fullPreplay || e.chain.GetVMConfig().MSRAVMSettings.NoOverMatching {
 			statedb.SetAllowObjCopy(false)
 		}
 		statedb.SetAddrNotCopy(e.addrNotCopy)
@@ -192,7 +192,7 @@ func (e *Executor) commitTransaction(tx *types.Transaction, coinbase common.Addr
 		}
 		receipt, err = e.chain.Cmpreuse.PreplayTransaction(e.config, e.chain, &coinbase, e.current.gasPool,
 			e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vmconfig, e.RoundID, nil,
-			0, e.basicPreplay, e.enablePause)
+			0, e.fullPreplay, e.enablePause)
 	} else {
 		snap := e.current.state.Snapshot()
 		receipt, err = core.ApplyTransaction(e.config, e.chain, &coinbase, e.current.gasPool, e.current.state, e.current.Header, tx, &e.current.Header.GasUsed, vm.Config{})

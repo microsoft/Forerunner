@@ -51,7 +51,7 @@ func (reuse *Cmpreuse) ApplyTransaction(config *params.ChainConfig, bc *core.Blo
 	}
 
 	reuseStart := time.Now()
-	reuseStatus, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, nil, true, cfg)
+	reuseStatus, round, d0, d1 := reuse.reuseTransaction(bc, author, gp, statedb, header, getHashFunc, precompiles, tx, blockPre, nil, true, false, cfg)
 	cache.GetRW = append(cache.GetRW, d0)
 	cache.SetDB = append(cache.SetDB, d1)
 	cache.Reuse = append(cache.Reuse, time.Since(reuseStart))

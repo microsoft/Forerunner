@@ -789,6 +789,10 @@ var (
 		Name:  "cmpreuse.check",
 		Usage: "Enable computation reuse dirty write checking",
 	}
+	TaskBuilderCheckFlag = cli.BoolFlag{
+		Name:  "taskbuilder.check",
+		Usage: "Enable task builder debug log",
+	}
 	TxApplyPerfLogFlag = cli.BoolFlag{
 		Name:  "txapplyperflog",
 		Usage: "Enable tx perf measurement and log",
@@ -1798,6 +1802,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		MemStatus:			 ctx.GlobalBool(MemStatusEnabledFlag.Name),
 		CmpReuse:             ctx.GlobalBool(CmpReuseEnabledFlag.Name),
 		CmpReuseChecking:     ctx.GlobalBool(CmpReuseCheckFlag.Name),
+		TaskBuilderChecking:  ctx.GlobalBool(TaskBuilderCheckFlag.Name),
 		TxApplyPerfLogging:   ctx.GlobalBool(TxApplyPerfLogFlag.Name),
 		PerfLogging:          ctx.GlobalBool(PerfLogFlag.Name),
 		CmpReuseLogging:      ctx.GlobalBool(CmpReuseLogFlag.Name),

@@ -91,6 +91,17 @@ func (p TransactionPool) addTxn(sender common.Address, txn *types.Transaction) b
 	return true
 }
 
+func (p TransactionPool) addPool(other TransactionPool) (added int) {
+	for sender, txns := range other {
+		for _, txn := range txns {
+			if p.addTxn(sender, txn) {
+				added++
+			}
+		}
+	}
+	return
+}
+
 func (p TransactionPool) copy() TransactionPool {
 	newPool := make(TransactionPool, len(p))
 	for addr, txns := range p {
@@ -558,14 +569,14 @@ type TxnGroup struct {
 	valid   bool
 
 	// Constant information during preplay, access without lock
-	parent       *types.Block
-	txnCount     int
-	chainFactor  int
-	orderCount   *big.Int
-	startList    []int
-	subpoolList  []TransactionPool
-	basicPreplay bool
-	addrNotCopy  map[common.Address]struct{}
+	parent      *types.Block
+	txnCount    int
+	chainFactor int
+	orderCount  *big.Int
+	startList   []int
+	subpoolList []TransactionPool
+	fullPreplay bool
+	addrNotCopy map[common.Address]struct{}
 
 	// Update after every preplay, access with lock
 	preplayMu       sync.RWMutex
@@ -582,7 +593,8 @@ type TxnGroup struct {
 	nextOrderAndHeader chan OrderAndHeader // order and header read from this channel is read-only
 
 	// Use for return round ID
-	roundIDCh chan uint64
+	roundIDCh               chan uint64
+	closeRoundIDChOnInvalid bool
 }
 
 func (g *TxnGroup) setInvalid() {
@@ -606,13 +618,13 @@ func (g *TxnGroup) isValid() bool {
 	return g.valid
 }
 
-func (g *TxnGroup) defaultInit(parent *types.Block, basicPreplay bool) {
+func (g *TxnGroup) defaultInit(parent *types.Block, fullPreplay bool) {
 	g.setValid()
 	g.parent = parent
 	g.txnCount = g.txnPool.size()
 	g.chainFactor = 1
 	g.orderCount = new(big.Int).SetInt64(1)
-	g.basicPreplay = basicPreplay
+	g.fullPreplay = fullPreplay
 	g.addrNotCopy = make(map[common.Address]struct{})
 	g.preplayFinish = make(map[common.Hash]int)
 	g.preplayFail = make(map[common.Hash][]string)
@@ -621,7 +633,7 @@ func (g *TxnGroup) defaultInit(parent *types.Block, basicPreplay bool) {
 }
 
 // Assume that this TxnGroup will not be accessed by other routines
-func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Signer) (newGroup *TxnGroup) {
+func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Signer) (newGroup *TxnGroup, replaceMapping map[*types.Transaction]*types.Transaction) {
 	var replace = make(map[*types.Transaction]*types.Transaction)
 	for _, replacingTxn := range replacingTxns {
 		sender, _ := types.Sender(signer, replacingTxn)
@@ -641,7 +653,7 @@ func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Sig
 	}
 
 	if len(replace) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	txnPool := g.txnPool.replaceCopy(replace)
@@ -668,7 +680,7 @@ func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Sig
 		orderCount:         new(big.Int).Set(g.orderCount),
 		startList:          make([]int, len(g.startList)),
 		subpoolList:        make([]TransactionPool, len(g.subpoolList)),
-		basicPreplay:       g.basicPreplay,
+		fullPreplay:        g.fullPreplay,
 		addrNotCopy:        make(map[common.Address]struct{}, len(g.addrNotCopy)),
 		preplayFinish:      make(map[common.Hash]int, g.txnCount),
 		preplayFail:        make(map[common.Hash][]string, g.txnCount),
@@ -689,7 +701,7 @@ func (g *TxnGroup) replaceTxn(replacingTxns types.Transactions, signer types.Sig
 		}
 	}
 
-	return newGroup
+	return newGroup, replace
 }
 
 func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult, orderAndHeader OrderAndHeader) {
@@ -872,27 +884,34 @@ type PreplayLog struct {
 	simplePackageCnt int
 	taskBuildCnt     int
 
-	deadlineLog map[uint64]struct{}
-	groupLog    map[common.Hash]*TxnGroup
-	groupEnd    map[common.Hash]struct{}
-	txnLog      map[common.Hash]struct{}
+	deadlineLog    map[uint64]struct{}
+	groupLog       map[common.Hash]*TxnGroup
+	groupExecCnt   map[common.Hash]int
+	groupEnd       map[common.Hash]struct{}
+	txnLog         map[common.Hash]struct{}
+	remainGroupLog map[common.Hash]*TxnGroup
+	remainTxnLog   map[common.Hash]struct{}
 
 	wobjectCopyCnt    uint64
 	wobjectNotCopyCnt uint64
 	wobjectAddr       map[common.Address]struct{}
 
-	groupExecCnt uint64
-	txnExecCnt   uint64
+	txnExecCnt         uint64
+	remainGroupExecCnt uint64
+	remainTxnExecCnt   uint64
 }
 
 func NewPreplayLog() *PreplayLog {
 	return &PreplayLog{
-		lastUpdate:  time.Now(),
-		deadlineLog: make(map[uint64]struct{}),
-		groupLog:    make(map[common.Hash]*TxnGroup),
-		groupEnd:    make(map[common.Hash]struct{}),
-		txnLog:      make(map[common.Hash]struct{}),
-		wobjectAddr: map[common.Address]struct{}{},
+		lastUpdate:     time.Now(),
+		deadlineLog:    make(map[uint64]struct{}),
+		groupLog:       make(map[common.Hash]*TxnGroup),
+		groupExecCnt:   make(map[common.Hash]int),
+		groupEnd:       make(map[common.Hash]struct{}),
+		txnLog:         make(map[common.Hash]struct{}),
+		remainGroupLog: make(map[common.Hash]*TxnGroup),
+		remainTxnLog:   make(map[common.Hash]struct{}),
+		wobjectAddr:    map[common.Address]struct{}{},
 	}
 }
 
@@ -935,6 +954,27 @@ func (l *PreplayLog) reportNewGroup(group *TxnGroup) (originGroup *TxnGroup, exi
 	return
 }
 
+func (l *PreplayLog) reportRemainNewGroup(group *TxnGroup) (originGroup *TxnGroup, exist bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if originGroup, exist = l.remainGroupLog[group.hash]; !exist {
+		l.remainGroupLog[group.hash] = group
+		for _, txns := range group.txnPool {
+			for _, txn := range txns {
+				l.remainTxnLog[txn.Hash()] = struct{}{}
+			}
+		}
+	}
+	return
+}
+
+func (l *PreplayLog) getTotalGroupAndTxCount() (groupCount int, txCount int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.groupLog), len(l.txnLog)
+}
+
 func (l *PreplayLog) isGroupExist(group *TxnGroup) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -967,8 +1007,16 @@ func (l *PreplayLog) reportGroupPreplay(group *TxnGroup) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.groupExecCnt++
-	l.txnExecCnt += uint64(group.txnCount)
+	if _, existed := l.groupLog[group.hash]; existed {
+		l.groupExecCnt[group.hash]++
+		l.txnExecCnt += uint64(group.txnCount)
+	} else {
+		_, existed := l.remainGroupLog[group.hash]
+		if existed {
+			l.remainGroupExecCnt++
+			l.remainTxnExecCnt += uint64(group.txnCount)
+		}
+	}
 }
 
 func (l *PreplayLog) searchGroupHitGroup(currentTxn *types.Transaction, sender common.Address) map[common.Hash]*TxnGroup {
@@ -1012,11 +1060,16 @@ func (l *PreplayLog) disableGroup() {
 	for _, group := range l.groupLog {
 		group.setInvalid()
 	}
+
+	for _, group := range l.remainGroupLog {
+		group.setInvalid()
+	}
 }
 
-func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution, chainDepDistribution string) {
+func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution, execDistribution, chainDepDistribution string) {
 	orderCounts := make([]int, 7)
 	sizeCounts := make([]int, 7)
+	execCounts := make([]int, 7)
 	chainDepCount := 0
 	timeStampDepCount := 0
 	coinbaseDepCount := 0
@@ -1046,7 +1099,7 @@ func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution
 		cmptypes.MyAssert(txnCount > 0)
 		if txnCount == 1 {
 			sizeCounts[0]++
-		}else if txnCount == 2 {
+		} else if txnCount == 2 {
 			sizeCounts[1]++
 		} else if txnCount <= 4 {
 			sizeCounts[2]++
@@ -1059,26 +1112,47 @@ func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution
 		} else {
 			sizeCounts[6]++
 		}
+
+		execCount := l.groupExecCnt[g.hash]
+		if execCount == 0 {
+			execCounts[0]++
+		} else if execCount == 1 {
+			execCounts[1]++
+		} else if execCount <= 2 {
+			execCounts[2]++
+		} else if execCount <= 4 {
+			execCounts[3]++
+		} else if execCount <= 8 {
+			execCounts[4]++
+		} else if execCount <= 16 {
+			execCounts[5]++
+		} else {
+			execCounts[6]++
+		}
+
 		if g.isChainDep() {
 			chainDepCount++
 		}
-		if g.isCoinbaseDep(){
+		if g.isCoinbaseDep() {
 			coinbaseDepCount++
 		}
 		if g.isTimestampDep() {
 			timeStampDepCount++
 		}
-		
+
 	}
 
 	sizeDistribution = fmt.Sprintf("[1|2|4|8|16|36|>36]-[%d:%d:%d:%d:%d:%d:%d]", sizeCounts[0],
 		sizeCounts[1], sizeCounts[2], sizeCounts[3], sizeCounts[4], sizeCounts[5], sizeCounts[6])
-	
+
 	orderDistribution = fmt.Sprintf("[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]", orderCounts[0],
 		orderCounts[1], orderCounts[2], orderCounts[3], orderCounts[4], orderCounts[5], orderCounts[6])
-	
+
+	execDistribution = fmt.Sprintf("[0|1|2|4|8|16|>16]-[%d:%d:%d:%d:%d:%d:%d]", execCounts[0],
+		execCounts[1], execCounts[2], execCounts[3], execCounts[4], execCounts[5], execCounts[6])
+
 	chainDepDistribution = fmt.Sprintf("%d[cb|ts]-[%d:%d]", chainDepCount, coinbaseDepCount, timeStampDepCount)
-	
+
 	return
 }
 
@@ -1090,14 +1164,20 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	if l.packageCnt > 0 {
 		context = append(context, "avgPackage", common.PrettyDuration(int64(time.Since(l.lastUpdate))/int64(l.packageCnt)))
 	}
-	sizeDistr, orderDistr, chainDistr := l.getGroupDistribution()
+	sizeDistr, orderDistr, execDistr, chainDistr := l.getGroupDistribution()
+	totalGroupExecCnt := 0
+	for _, cnt := range l.groupExecCnt {
+		totalGroupExecCnt += cnt
+	}
 	context = append(
 		context, "build", l.taskBuildCnt, "deadline", len(l.deadlineLog),
-		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), l.groupExecCnt),
+		"group", fmt.Sprintf("%d(%d)-%d", len(l.groupLog), len(l.groupEnd), totalGroupExecCnt),
 		"transaction", fmt.Sprintf("%d-%d", len(l.txnLog), l.txnExecCnt),
 		"object", fmt.Sprintf("%d(%d)-%d", l.wobjectCopyCnt, len(l.wobjectAddr), l.wobjectNotCopyCnt),
-		"remain", remain, "duration", common.PrettyDuration(time.Since(l.lastUpdate)),
-		"gSizeDist", sizeDistr, "gOrderDist", orderDistr, "gChainDistr", chainDistr,
+		"unfinishedGroup", remain, "duration", common.PrettyDuration(time.Since(l.lastUpdate)),
+		"gSizeDist", sizeDistr, "gOrderDist", orderDistr, "gExecDist", execDistr, "gChainDistr", chainDistr,
+		"rGroup", fmt.Sprintf("%d(%d)", len(l.remainGroupLog), l.remainGroupExecCnt),
+		"rTxn", fmt.Sprintf("%d-%d", len(l.remainTxnLog), l.remainTxnExecCnt),
 	)
 	log.Info("In last block", context...)
 
@@ -1107,11 +1187,16 @@ func (l *PreplayLog) printAndClearLog(block uint64, remain int) {
 	l.taskBuildCnt = 0
 	l.deadlineLog = make(map[uint64]struct{})
 	l.groupLog = make(map[common.Hash]*TxnGroup)
+	l.groupExecCnt = make(map[common.Hash]int)
 	l.groupEnd = make(map[common.Hash]struct{})
 	l.txnLog = make(map[common.Hash]struct{})
+	l.remainGroupLog = make(map[common.Hash]*TxnGroup)
+	l.remainTxnLog = make(map[common.Hash]struct{})
 	l.wobjectCopyCnt = 0
 	l.wobjectNotCopyCnt = 0
 	l.wobjectAddr = make(map[common.Address]struct{})
-	l.groupExecCnt = 0
+	l.groupExecCnt = make(map[common.Hash]int)
 	l.txnExecCnt = 0
+	l.remainGroupExecCnt = 0
+	l.remainTxnExecCnt = 0
 }

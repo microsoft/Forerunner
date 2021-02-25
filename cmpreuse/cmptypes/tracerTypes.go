@@ -62,6 +62,9 @@ type IReuseTracer interface {
 type ISTrace interface {
 }
 
+type ITraceTrieSearchResult interface {
+}
+
 type SimpleTryLock struct {
 	// lock state
 	// if state == 0, no lock holds

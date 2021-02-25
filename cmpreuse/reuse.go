@@ -324,8 +324,8 @@ func (reuse *Cmpreuse) mixCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 			return nil, mixHitStatus, missNode, missValue, isAbort, false
 		}
 		if cmpReuseChecking {
-			if isBlockProcess{
-				log.Info("checking")
+			if isBlockProcess {
+				//log.Info("checking")
 			}
 			if !CheckRChain(res.RWrecord, bc, header, false) {
 				if isBlockProcess { // TODO: debug code
@@ -625,7 +625,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain
 func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
 	blockPre *cache.BlockPre, isBlockProcess bool) (res *cache.PreplayResult, isAbort bool, ok bool) {
 	trie := txPreplay.PreplayResults.DeltaTree
-	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess,false)
+	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess, false)
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
@@ -637,14 +637,12 @@ func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc *core.BlockChai
 }
 
 func (reuse *Cmpreuse) traceCheck(txPreplay *cache.TxPreplay, statedb *state.StateDB, header *types.Header, abort func() bool, isBlockProcess bool,
-	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tracerCheck bool, noOverMatching bool) *TraceTrieSearchResult {
-	if !isBlockProcess {
-		return nil
-	} else {
-		if getHashFunc == nil || precompiles == nil {
-			panic("Should not be nil!")
-		}
+	getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, cfg *vm.Config) *TraceTrieSearchResult {
+
+	if getHashFunc == nil || precompiles == nil {
+		panic("Should not be nil!")
 	}
+
 	var trie *TraceTrie
 	t := txPreplay.PreplayResults.TraceTrie
 	if t != nil {
@@ -652,7 +650,7 @@ func (reuse *Cmpreuse) traceCheck(txPreplay *cache.TxPreplay, statedb *state.Sta
 	}
 
 	if trie != nil {
-		return trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, tracerCheck, reuse.MSRACache, noOverMatching)
+		return trie.SearchTraceTrie(statedb, header, getHashFunc, precompiles, abort, cfg, isBlockProcess, reuse.MSRACache)
 	}
 	return nil
 }
@@ -719,7 +717,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching)
+			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching, isBlockProcess)
 			if isAbort {
 				return
 			} else {
@@ -730,8 +728,14 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		}
 
 	} else {
-		cmptypes.MyAssert(status.HitType != cmptypes.TraceHit)
-		if status.HitType == cmptypes.DeltaHit {
+		if status.HitType == cmptypes.TraceHit {
+			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching, isBlockProcess)
+			if isAbort {
+				return
+			} else {
+				status.TraceTrieHitAddrs = txResMap
+			}
+		} else if status.HitType == cmptypes.DeltaHit {
 			ApplyDelta(statedb, round.RWrecord, txPreplay.PreplayResults.DeltaWrites, status.MixStatus, abort)
 		} else {
 			ApplyWStates(statedb, round.RWrecord, status.MixStatus, abort)
@@ -782,7 +786,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 
 func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Address, gp *core.GasPool, statedb *state.StateDB,
 	header *types.Header, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract, tx *types.Transaction,
-	blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, cfg *vm.Config) (
+	blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, fullPreplay bool, cfg *vm.Config) (
 	status *cmptypes.ReuseStatus, round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
 
 	var sr *TraceTrieSearchResult
@@ -814,36 +818,50 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
 		return
 	} else {
-		if !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer {
-			if !txPreplay.PreplayResults.IsExternalTransfer {
-				if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
-					traceNotExist := txPreplay.PreplayResults.TraceTrie == nil
-					txPreplay.PreplayResults.TraceTrieMu.Unlock()
-					if traceNotExist {
-						// force miss to run real apply if there is no trace
-						// otherwise if the result is hit, no trace will be created at all
-						d0 = time.Since(t0)
-						//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
-						status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
-						return
-					}
+		if fullPreplay && !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer && !cfg.MSRAVMSettings.NoTrace {
+			//if !txPreplay.PreplayResults.IsExternalTransfer {
+			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
+				traceNotExist := txPreplay.PreplayResults.TraceTrie == nil
+				if txPreplay.PreplayResults.ForcedTraceTrieGeneration {
+					traceNotExist = false
+				} else {
+					txPreplay.PreplayResults.ForcedTraceTrieGeneration = true
+				}
+				txPreplay.PreplayResults.TraceTrieMu.Unlock()
+				if traceNotExist {
+					// force miss to run real apply if there is no trace
+					// otherwise if the result is hit, no trace will be created at all
+					d0 = time.Since(t0)
+					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
+					status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
+					return
 				}
 			}
+			//}
 		}
 	}
 
 	traceTrieChecked := false
 
-	if cfg.MSRAVMSettings.NoOverMatching { // Trie --> Delta --> Trace
+	if cfg.MSRAVMSettings.NoOverMatching { // Trace --> Trie --> Delta
 		if cfg.MSRAVMSettings.NoMemoization {
 			panic("it does not make sense to set no-overmatching to be true when no-memoization is true")
 		}
 		if status.BaseStatus != cmptypes.Undefined {
 			panic("BaseStatus should be undefined before the first check")
 		}
-		round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
-		if status.BaseStatus == cmptypes.Unknown {
-			return
+
+		if status.BaseStatus == cmptypes.Undefined {
+			traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
+			if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+				return
+			}
+		}
+		if status.BaseStatus == cmptypes.Undefined {
+			round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+			if status.BaseStatus == cmptypes.Unknown {
+				return
+			}
 		}
 
 		if isBlockProcess {
@@ -853,56 +871,66 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 					return
 				}
 			}
+
+		}
+	} else {
+
+		if cfg.MSRAVMSettings.NoMemoization { // Trace -> Delta
+			if status.BaseStatus != cmptypes.Undefined {
+				panic("BaseStatus should be undefined before the first check")
+			}
 			if status.BaseStatus == cmptypes.Undefined {
 				traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
 				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
 					return
 				}
 			}
-		}
-	} else {
-
-		if cfg.MSRAVMSettings.NoMemoization {
-			if isBlockProcess { // Delta -> Trace
-				if status.BaseStatus != cmptypes.Undefined {
-					panic("BaseStatus should be undefined before the first check")
-				}
-				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
-				if status.BaseStatus == cmptypes.Unknown {
-					return
-				}
+			if isBlockProcess {
 				if status.BaseStatus == cmptypes.Undefined {
-					traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
-					if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+					round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
+					if status.BaseStatus == cmptypes.Unknown {
 						return
 					}
 				}
 			} else { // preplay MixTree
-				if status.BaseStatus != cmptypes.Undefined {
-					panic("BaseStatus should be undefined before the first check")
+				if status.BaseStatus == cmptypes.Undefined {
+					round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+					if status.BaseStatus == cmptypes.Unknown {
+						return
+					}
 				}
-				round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+				//if status.BaseStatus == cmptypes.Undefined {
+				//	round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+				//	if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+				//		return
+				//	}
+				//}
+			}
+		} else { // Trace -> Mixtree
+			if status.BaseStatus != cmptypes.Undefined {
+				panic("BaseStatus should be undefined before the first check")
+			}
+
+			if status.BaseStatus == cmptypes.Undefined {
+				traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
+				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+					return
+				}
+			}
+
+			if status.BaseStatus == cmptypes.Undefined {
+				round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
 				if status.BaseStatus == cmptypes.Unknown {
 					return
 				}
 			}
-		} else { // MixTree -> Trace
-			if status.BaseStatus != cmptypes.Undefined {
-				panic("BaseStatus should be undefined before the first check")
-			}
-			round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
-			if status.BaseStatus == cmptypes.Unknown {
-				return
-			}
 
-			if isBlockProcess {
-				if status.BaseStatus == cmptypes.Undefined {
-					traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
-					if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-						return
-					}
-				}
-			}
+			//if status.BaseStatus == cmptypes.Undefined {
+			//	round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+			//	if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+			//		return
+			//	}
+			//}
 		}
 	}
 
@@ -964,9 +992,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 	d1 = time.Since(t1)
 
 	if isBlockProcess && cfg.MSRAVMSettings.CmpReuseChecking {
-		sjs, _ := json.Marshal(status)
+		//sjs, _ := json.Marshal(status)
 		//rjs,_:= json.Marshal(round)
-		log.Info("status", "tx", tx.Hash().Hex(), "status", string(sjs))
+		//log.Info("status", "tx", tx.Hash().Hex(), "status", string(sjs))
 	}
 
 	return
@@ -978,30 +1006,28 @@ func (reuse *Cmpreuse) tryTraceCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock
 	status *cmptypes.ReuseStatus, t0 time.Time) (traceTrieChecked bool, sr *TraceTrieSearchResult, d0 time.Duration, round *cache.PreplayResult) {
 	if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
 		traceTrieChecked = true
-		sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg.MSRAVMSettings.ReuseTracerChecking && cfg.MSRAVMSettings.CmpReuseChecking,
-			cfg.MSRAVMSettings.NoOverMatching)
+		sr = reuse.traceCheck(txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg)
 		txPreplay.PreplayResults.TraceTrieMu.Unlock()
 
 		if sr != nil {
 			status.TraceStatus = sr.TraceStatus
-		}
-
-		if sr != nil && sr.hit {
-			d0 = time.Since(t0)
-			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit, TraceStatus: sr.TraceStatus}
-			status.BaseStatus = cmptypes.Hit
-			status.HitType = cmptypes.TraceHit
-			round = sr.GetAnyRound()
-		} else if sr != nil && sr.aborted {
-			d0 = time.Since(t0)
-			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
-			status.BaseStatus = cmptypes.Unknown
-			status.AbortStage = cmptypes.TraceCheck
-		} else if sr != nil {
-			d0 = time.Since(t0)
-			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.TraceMiss, MissNode: missNode, MissValue: missValue}
-			status.BaseStatus = cmptypes.Miss
-			status.MissType = cmptypes.TraceMiss
+			if sr.hit {
+				d0 = time.Since(t0)
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit, TraceStatus: sr.TraceStatus}
+				status.BaseStatus = cmptypes.Hit
+				status.HitType = cmptypes.TraceHit
+				round = sr.GetAnyRound()
+			} else if sr.aborted {
+				d0 = time.Since(t0)
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
+				status.BaseStatus = cmptypes.Unknown
+				status.AbortStage = cmptypes.TraceCheck
+			} else {
+				d0 = time.Since(t0)
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Miss, MissType: cmptypes.TraceMiss, MissNode: missNode, MissValue: missValue}
+				status.BaseStatus = cmptypes.Miss
+				status.MissType = cmptypes.TraceMiss
+			}
 		}
 	} else {
 		cache.LockCount[1] ++
@@ -1038,6 +1064,9 @@ func (reuse *Cmpreuse) tryMixCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) 
 			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
 			status.BaseStatus = cmptypes.Unknown
 			status.AbortStage = cmptypes.MixCheck
+		} else {
+			status.BaseStatus = cmptypes.Miss
+			status.MissType = cmptypes.MixMiss
 		}
 	} else {
 		cache.LockCount[0] ++

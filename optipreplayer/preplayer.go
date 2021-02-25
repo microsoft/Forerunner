@@ -72,7 +72,7 @@ type Preplayer struct {
 
 func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backend, gasFloor, gasCeil uint64, listener *Listener, cfg *vm.MSRAVMConfig) *Preplayer {
 	mu := new(sync.RWMutex)
-	taskBuilder := NewTaskBuilder(config, eth, mu, TYPE0)
+	taskBuilder := NewTaskBuilder(config, eth, mu, TYPE0, cfg)
 	preplayer := &Preplayer{
 		config:           config,
 		engine:           engine,
@@ -188,6 +188,11 @@ func (p *Preplayer) mainLoop() {
 				}
 			} else {
 				<-task.nextOrderAndHeader
+				if task.closeRoundIDChOnInvalid {
+					if task.roundIDCh != nil {
+						close(task.roundIDCh)
+					}
+				}
 			}
 		}
 	}
@@ -279,19 +284,21 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 	}
 
 	executor := NewExecutor("0", p.config, p.engine, p.chain, p.eth.ChainDb(), orderMap, task.txnPool, currentState,
-		p.trigger, nil, false, true, task.basicPreplay, task.addrNotCopy)
+		p.trigger, nil, false, true, task.fullPreplay, task.addrNotCopy)
 
 	executor.RoundID = p.globalCache.NewRoundID()
 
-	if task.basicPreplay {
-		neededPreplayCount := new(big.Int)
-		neededPreplayCount.Mul(task.orderCount, new(big.Int).SetInt64(int64(task.chainFactor)))
-		if  p.cfg.NoMemoization ||
-		    (task.RWRecord != nil && task.isChainDep()) ||
-			neededPreplayCount.Cmp(new(big.Int).SetInt64(int64(config.TXN_PREPLAY_ROUND_LIMIT))) > 0 ||
-			task.getPreplayCount() == 0 {
-			executor.EnableReuseTracer = true
-		}
+	if task.fullPreplay {
+		//neededPreplayCount := new(big.Int)
+		//neededPreplayCount.Mul(task.orderCount, new(big.Int).SetInt64(int64(task.chainFactor)))
+		//if  p.cfg.NoMemoization ||
+		//    (task.RWRecord != nil && task.isChainDep()) ||
+		//	neededPreplayCount.Cmp(new(big.Int).SetInt64(int64(config.TXN_PREPLAY_ROUND_LIMIT))) > 0 ||
+		//	task.getPreplayCount() == 0 {
+		//	executor.EnableReuseTracer = true
+		//}
+
+		executor.EnableReuseTracer = true
 
 		currentState.StartTimeString = time.Now().Format("2006-01-02 15:04:05")
 	}
@@ -299,7 +306,7 @@ func (p *Preplayer) commitNewWork(task *TxnGroup, txnOrder TxnOrder, forecastHea
 	// Execute, use pending for preplay
 	executor.commit(header.Coinbase, parent, header, task.txnPool)
 
-	if task.basicPreplay {
+	if task.fullPreplay {
 		// Update Cache, need initialize
 		p.globalCache.CommitTxResult(executor.RoundID, currentState, task.txnPool, executor.resultMap)
 

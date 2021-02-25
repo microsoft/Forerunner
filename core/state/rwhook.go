@@ -205,32 +205,32 @@ func (h *rwRecorderImpl) _SubBalance(addr common.Address, so *stateObject) {
 }
 
 func (h *rwRecorderImpl) UpdateSuicide(addr common.Address) {
-	h.updateWField(addr, cmptypes.Suicided, true)
+	h.UpdateWField(addr, cmptypes.Suicided, true)
 }
 
 func (h *rwRecorderImpl) UpdateDirtyStateObject(so *stateObject) {
 	addr := so.address
 	if so.dirtyNonceCount > 0 {
 		so.dirtyNonceCount = 0
-		h.updateWField(addr, cmptypes.Nonce, so.data.Nonce)
+		h.UpdateWField(addr, cmptypes.Nonce, so.data.Nonce)
 	}
 	if so.dirtyBalanceCount > 0 {
 		so.dirtyBalanceCount = 0
-		h.updateWField(addr, cmptypes.Balance, new(big.Int).Set(so.data.Balance))
+		h.UpdateWField(addr, cmptypes.Balance, new(big.Int).Set(so.data.Balance))
 	}
 	if so.dirtyCodeCount > 0 {
 		so.dirtyCodeCount = 0
-		h.updateWField(addr, cmptypes.Code, so.code)
+		h.UpdateWField(addr, cmptypes.Code, so.code)
 	}
 	for k, v := range so.dirtyStorage {
 		if so.dirtyStorageCount[k] > 0 {
-			h.updateWStorage(addr, k, v)
+			h.UpdateWStorage(addr, k, v)
 		}
 		delete(so.dirtyStorageCount, k)
 	}
 }
 
-func newRWHook(db *StateDB) *rwRecorderImpl {
+func NewRWHook(db *StateDB) *rwRecorderImpl {
 	return &rwRecorderImpl{
 		statedb:    db,
 		RState:     make(ReadStates),
@@ -443,7 +443,7 @@ func (h *rwRecorderImpl) UpdateRStorage(addr common.Address, field cmptypes.Fiel
 	}
 }
 
-func (h *rwRecorderImpl) updateWField(addr common.Address, field cmptypes.Field, val interface{}) {
+func (h *rwRecorderImpl) UpdateWField(addr common.Address, field cmptypes.Field, val interface{}) {
 	if _, ok := h.WState[addr]; !ok {
 		h.WState[addr] = new(WriteState)
 	}
@@ -472,7 +472,7 @@ func (h *rwRecorderImpl) updateWField(addr common.Address, field cmptypes.Field,
 	}
 }
 
-func (h *rwRecorderImpl) updateWStorage(addr common.Address, key common.Hash, val common.Hash) {
+func (h *rwRecorderImpl) UpdateWStorage(addr common.Address, key common.Hash, val common.Hash) {
 	if _, ok := h.WState[addr]; !ok {
 		h.WState[addr] = new(WriteState)
 	}

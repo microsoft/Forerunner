@@ -255,7 +255,7 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 	}
 
 	if needRT {
-		rt.MarkCompletedTrace(failed)
+		rt.MarkCompletedTrace(vmerr != nil)
 	}
 
 	return ret, st.gasUsed(), vmerr != nil, err

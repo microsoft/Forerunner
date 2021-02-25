@@ -19,6 +19,7 @@ package cache
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/ethereum/go-ethereum/rlp"
 	"math/big"
 	"os"
@@ -241,58 +242,116 @@ func (r *GlobalCache) AddAccountSnapByReadDetail(pbhash common.Hash, readDep []*
 
 }
 
-func (r *GlobalCache) GetTrieAndWObjectSizes() (cachedTxCount int, cachedTxWithTraceCount int,
-	maxTrieNodeCount int64, totalTrieNodeCount int64, totalTraceRoundCount, totalTracePathCount int64, totalMixTrieNodeCount int64,
-	totalSmartContractMixTrieRoundCount, totalSmartContractTxCount, totalSmartContractMixTrieRWRecordCount,	totalRWTrieNodeCount int64,
-	wobjectCount uint64, wobjectStorageSize uint64) {
+type TrieAndWObjectSizeDetail struct {
+	TxWithTraceTrieCount int64
+	TxWithMixTrieCount   int64
+	TxWithRWTrieCount    int64
+	TxWithDeltaTrieCount int64
+
+	TotalTraceTrieNodeCount           int64
+	TotalTraceTrieRoundCount          int64
+	TotalTraceTriePathCount           int64
+	TraceTriePathCountDistributionStr string
+	TraceTriePathCountDistribution    [7]int64 // 1, 2, 3, 4, 8, 16, > 16
+	TotalPathCountOfMultiPathTx       int64
+	TxWithMultiPathCount              int64
+
+	TotalMixTrieNodeCount     int64
+	TotalMixTrieRoundCount    int64
+	TotalMixTrieRWRecordCount int64
+
+	TotalRWTrieNodeCount int64
+
+	TotalDeltaTrieNodeCount int64
+
+	TotalWObjectCount       int64
+	TotalWObjectStorageSize int64
+}
+
+type TrieAndWObjectSizes struct {
+	TotalTxCount            int64
+	ExternalTransferTxCount int64
+	ExternalTransferDetails TrieAndWObjectSizeDetail
+	SmartContractDetails    TrieAndWObjectSizeDetail
+}
+
+func (r *GlobalCache) GetTrieAndWObjectSizes() (sizes *TrieAndWObjectSizes) {
+	sizes = &TrieAndWObjectSizes{}
 	txHashes := r.KeysOfTxPreplay()
-	cachedTxCount = len(txHashes)
-	cachedTxWithTraceCount = 0
-	maxTrieNodeCount = 0
-	totalTrieNodeCount = 0
 	for _, key := range txHashes {
 		if txPreplay := r.PeekTxPreplay(key); txPreplay != nil {
-			objectSize, storageItemCount := txPreplay.PreplayResults.GetWObjectSize()
-			wobjectCount += objectSize
-			wobjectStorageSize += storageItemCount
-			totalMixTrieNodeCount += txPreplay.PreplayResults.TryGetMixTreeNodeCount()
-			traceNodeCount := txPreplay.PreplayResults.TryGetTraceTrieNodeCount()
-			totalTraceRoundCount += int64(len(txPreplay.PreplayResults.GetTraceTrieActiveRounds()))
-			totalTracePathCount += txPreplay.PreplayResults.TryGetTraceActivePathCount()
-
-			if !txPreplay.PreplayResults.IsExternalTransfer {
-				totalSmartContractMixTrieRoundCount += int64(len(txPreplay.PreplayResults.GetMixTreeActiveRounds()))
-				totalSmartContractMixTrieRWRecordCount += txPreplay.PreplayResults.TryGetMixTreeActiveRWRecordCount()
-				totalSmartContractTxCount++
+			sizes.TotalTxCount++
+			var detail *TrieAndWObjectSizeDetail
+			if txPreplay.PreplayResults.IsExternalTransfer {
+				sizes.ExternalTransferTxCount++
+				detail = &sizes.ExternalTransferDetails
+			}else {
+				detail = &sizes.SmartContractDetails
 			}
 
-			if traceNodeCount != 0 {
-				cachedTxWithTraceCount++
-				totalTrieNodeCount += traceNodeCount
-				if traceNodeCount > maxTrieNodeCount {
-					maxTrieNodeCount = traceNodeCount
+			mixNodeCount := txPreplay.PreplayResults.TryGetMixTreeNodeCount()
+			if mixNodeCount > 0 {
+				detail.TxWithMixTrieCount++
+			}
+			detail.TotalMixTrieNodeCount += mixNodeCount
+			detail.TotalMixTrieRoundCount += int64(len(txPreplay.PreplayResults.GetMixTreeActiveRounds()))
+			detail.TotalMixTrieRWRecordCount += txPreplay.PreplayResults.TryGetMixTreeActiveRWRecordCount()
+
+			traceNodeCount := txPreplay.PreplayResults.TryGetTraceTrieNodeCount()
+			if traceNodeCount > 0 {
+				detail.TxWithTraceTrieCount++
+			}
+			detail.TotalTraceTrieNodeCount += traceNodeCount
+			detail.TotalTraceTrieRoundCount += int64(len(txPreplay.PreplayResults.GetTraceTrieActiveRounds()))
+			pathCount := txPreplay.PreplayResults.TryGetTraceActivePathCount()
+			detail.TotalTraceTriePathCount += pathCount
+			if pathCount > 0 {
+				if pathCount > 1 {
+					detail.TotalPathCountOfMultiPathTx += pathCount
+					detail.TxWithMultiPathCount++
+				}
+
+				if pathCount == 1 {
+					detail.TraceTriePathCountDistribution[0]++
+				} else if pathCount == 2 {
+					detail.TraceTriePathCountDistribution[1]++
+				} else if pathCount == 3 {
+					detail.TraceTriePathCountDistribution[2]++
+				} else if pathCount == 4 {
+					detail.TraceTriePathCountDistribution[3]++
+				} else if pathCount <= 8 {
+					detail.TraceTriePathCountDistribution[4]++
+				} else if pathCount <= 16 {
+					detail.TraceTriePathCountDistribution[5]++
+				} else { // > 16
+					detail.TraceTriePathCountDistribution[6]++
 				}
 			}
-			totalRWTrieNodeCount += txPreplay.PreplayResults.TryGetRWRecordTrieNodeCount()
-			//mixTree := txPreplay.PreplayResults.MixTree
-			//if mixTree != nil {
-			//	totalMixTrieNodeCount += mixTree.GetNodeCount()
-			//}
-			//traceTrie := txPreplay.PreplayResults.TraceTrie
-			//if traceTrie != nil {
-			//	cachedTxWithTraceCount++
-			//	nodeCount := traceTrie.GetNodeCount()
-			//	totalTrieNodeCount += nodeCount
-			//	if nodeCount > maxTrieNodeCount {
-			//		maxTrieNodeCount = nodeCount
-			//	}
-			//}
-			//rwRecordTrie := txPreplay.PreplayResults.RWRecordTrie
-			//if rwRecordTrie != nil {
-			//	totalRWTrieNodeCount += rwRecordTrie.GetNodeCount()
-			//}
+
+			rwTrieNodeCount := txPreplay.PreplayResults.TryGetRWRecordTrieNodeCount()
+			if rwTrieNodeCount > 0 {
+				detail.TxWithRWTrieCount++
+				detail.TotalRWTrieNodeCount += rwTrieNodeCount
+			}
+
+			deltaTrieNodeCount := txPreplay.PreplayResults.TryGetDeltaTrieNodeCount()
+			if deltaTrieNodeCount > 0 {
+				detail.TxWithDeltaTrieCount++
+				detail.TotalDeltaTrieNodeCount += deltaTrieNodeCount
+			}
+
+			objectSize, storageItemCount := txPreplay.PreplayResults.GetWObjectSize()
+			detail.TotalWObjectCount += objectSize
+			detail.TotalWObjectStorageSize += storageItemCount
 		}
 	}
+
+	for _, detail := range []*TrieAndWObjectSizeDetail{&sizes.ExternalTransferDetails, &sizes.SmartContractDetails} {
+		dd := &detail.TraceTriePathCountDistribution
+		detail.TraceTriePathCountDistributionStr = fmt.Sprintf("[1|2|3|4|8|16|>16]-[%v:%v:%v:%v:%v:%v:%v]",
+			dd[0], dd[1], dd[2], dd[3], dd[4], dd[5], dd[6])
+	}
+
 	return
 
 }

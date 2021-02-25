@@ -125,7 +125,7 @@ type ReuseStatus struct {
 }
 
 type MixStatus struct {
-	MixHitType         MixHitType
+	MixHitType         HitSubType
 	DepHitAddr         []common.Address
 	DepHitAddrMap      map[common.Address]interface{}
 	DepUnmatchedInHead int // when partial hit, the count of dep unmatched addresses which are in the front of the first matched addr
@@ -148,26 +148,43 @@ func (ms *MixStatus) GetPerfString() string {
 }
 
 type TraceStatus struct {
+	TraceHitType               HitSubType
 	TotalNodes                 uint64
 	ExecutedNodes              uint64
 	ExecutedInputNodes         uint64
 	ExecutedChainInputNodes    uint64
 	ExecutedOutputNodes        uint64
+	ExecutedLogNodes           uint64
 	TotalOpNodes               uint64 // number of original EVM dynamic op
 	AccountReadCount           uint64
-	AccountReadFailedCount     uint64
+	AccountReadUnknownCount    uint64
+	ChainReadUnknownCount      uint64
+	FieldReadUnknownCount      uint64
 	FieldActualReadCount       uint64
 	FieldPotentialReadCount    uint64
 	AccountWrittenCount        uint64
 	FieldActualWrittenCount    uint64
 	FieldPotentialWrittenCount uint64
 
-	TotalJumps    uint64
-	AJumps        uint64
-	FJumps        uint64
-	OJumps        uint64
-	TotalJumpKeys uint64
-	FailedJumps   uint64
+	TotalAccountLaneJumps       uint64
+	TotalAccountLaneFailedJumps uint64
+	TotalAccountLaneJumpKeys    uint64
+
+	TotalFieldLaneAJumps       uint64
+	TotalFieldLaneFJumps       uint64
+	TotalFieldLaneFailedAJumps uint64
+	TotalFieldLaneFailedFJumps uint64
+	TotalFieldLaneAJumpKeys    uint64
+	TotalFieldLaneFJumpKeys    uint64
+
+	TotalOpLaneAJumps       uint64
+	TotalOpLaneFailedAJumps uint64
+	TotalOpLaneFJumps       uint64
+	TotalOpLaneFailedFJumps uint64
+	TotalOpLaneAJumpKeys    uint64
+	TotalOpLaneFJumpKeys    uint64
+
+	OpLaneSuccessfulJumps uint64
 
 	AvgSpecializationDurationInNanoSeconds int64
 	AvgMemoizationDurationInNanoSeconds    int64
@@ -175,16 +192,27 @@ type TraceStatus struct {
 
 	HitPathId     uintptr
 	HitRWRecordId uintptr
+
+	PathCount  int
+	RoundCount int
+
+	SearchResult ITraceTrieSearchResult
 }
 
 func (th *TraceStatus) GetPerfString() string {
-	return fmt.Sprintf("eN %v tN %v pN %v iN %v oN %v cN %v fAR %v fPR %v aR %v aRF %v fAW %v fPW %v aW %v faJ %v tJ %v tK %v aJ %v fiJ %v OJ %v sD %v mD %v tC %v",
-		th.ExecutedNodes, th.TotalNodes, th.TotalOpNodes, th.ExecutedInputNodes, th.ExecutedOutputNodes, th.ExecutedChainInputNodes,
-		th.FieldActualReadCount, th.FieldPotentialReadCount, th.AccountReadCount, th.AccountReadFailedCount,
+	totalJumps := th.TotalAccountLaneJumps + th.TotalFieldLaneAJumps + th.TotalFieldLaneFJumps + th.TotalOpLaneAJumps + th.TotalOpLaneFJumps
+	totalJumpKeys := th.TotalAccountLaneJumpKeys + th.TotalFieldLaneAJumpKeys + th.TotalFieldLaneFJumpKeys + th.TotalOpLaneAJumpKeys + th.TotalOpLaneFJumpKeys
+	totalFailedJumps := th.TotalAccountLaneFailedJumps + th.TotalFieldLaneFailedAJumps + th.TotalFieldLaneFailedFJumps + th.TotalOpLaneFailedAJumps + th.TotalOpLaneFailedFJumps
+	accountLaneSuccessfulJumps := th.TotalAccountLaneJumps - th.TotalAccountLaneFailedJumps
+	fieldLaneSucessfulJumps := th.TotalFieldLaneAJumps + th.TotalFieldLaneFJumps - th.TotalFieldLaneFailedAJumps - th.TotalFieldLaneFailedFJumps
+	return fmt.Sprintf("eN %v tN %v pN %v iN %v cN %v oN %v lN %v cRU %v fAR %v fPR %v fARU %v aR %v aRU %v fAW %v fPW %v aW %v faJ %v tJ %v tK %v aJ %v fiJ %v OJ %v sD %v mD %v tC %v PaC %v RnC %v",
+		th.ExecutedNodes, th.TotalNodes, th.TotalOpNodes, th.ExecutedInputNodes, th.ExecutedChainInputNodes, th.ExecutedOutputNodes, th.ExecutedLogNodes,
+		th.ChainReadUnknownCount, th.FieldActualReadCount, th.FieldPotentialReadCount, th.FieldReadUnknownCount, th.AccountReadCount, th.AccountReadUnknownCount,
 		th.FieldActualWrittenCount, th.FieldPotentialWrittenCount, th.AccountWrittenCount,
-		th.FailedJumps, th.TotalJumps, th.TotalJumpKeys,
-		th.AJumps, th.FJumps, th.OJumps,
-		th.AvgSpecializationDurationInNanoSeconds, th.AvgMemoizationDurationInNanoSeconds, th.TotalTraceCount)
+		totalFailedJumps, totalJumps, totalJumpKeys,
+		accountLaneSuccessfulJumps, fieldLaneSucessfulJumps, th.OpLaneSuccessfulJumps,
+		th.AvgSpecializationDurationInNanoSeconds, th.AvgMemoizationDurationInNanoSeconds, th.TotalTraceCount,
+		th.PathCount, th.RoundCount)
 }
 
 func (s ReuseStatus) String() string {
@@ -267,18 +295,19 @@ func (s HitType) String() string {
 	return ""
 }
 
-type MixHitType int
+type HitSubType int
 
 const (
-	AllDepHit MixHitType = iota
+	AllDepHit HitSubType = iota
 	AllDetailHit
 	PartialHit // partial dep and partial detail hit
 	AllDeltaHit
 	PartialDeltaHit // partial dep and partial delta hit
 	NotMixHit
+	OpHit
 )
 
-func (m MixHitType) String() string {
+func (m HitSubType) String() string {
 	switch m {
 	case AllDepHit:
 		return "AllDep"
@@ -292,8 +321,10 @@ func (m MixHitType) String() string {
 		return "PartialDelta"
 	case NotMixHit:
 		return "NotMix"
+	case OpHit:
+		return "OpHit"
 	default:
-		panic(fmt.Sprintf("Unknown MixHitType %v", m))
+		panic(fmt.Sprintf("Unknown HitSubType %v", m))
 	}
 	return ""
 }
@@ -302,6 +333,7 @@ type MissType int
 
 const (
 	TraceMiss MissType = iota
+	MixMiss
 	NoMatchMiss
 )
 
@@ -309,6 +341,8 @@ func (m MissType) String() string {
 	switch m {
 	case TraceMiss:
 		return "TraceMiss"
+	case MixMiss:
+		return "MixMiss"
 	case NoMatchMiss:
 		return "NoMatchMiss"
 	default:
@@ -363,9 +397,14 @@ func (t *TxResID) Copy() AccountDepValue {
 	return &TxResID{Txhash: t.Txhash, RoundID: t.RoundID, hash: t.hash}
 }
 
+func (t *TxResID) String() string {
+	return fmt.Sprintf("%v_%v", t.Txhash.Hex(), t.RoundID)
+}
+
 type AccountDepValue interface {
 	Hash() *string
 	Copy() AccountDepValue
+	String() string
 }
 
 type AccountSnap struct {

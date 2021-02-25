@@ -43,18 +43,23 @@ type LogBlockInfo struct {
 	Miss                   int `json:"M"`
 	Unknown                int `json:"U"`
 
-	MixHit              int     `json:"MH"`
-	AllDepMixHit        int     `json:"DMH"`
-	AllDetailMixHit     int     `json:"TMH"`
-	PartialDetailMixHit int     `json:"PMH"`
-	AllDeltaMixHit      int     `json:"AMH"`
-	PartialDeltaMixHit  int     `json:"MMH"`
-	UnhitHeadCount      [10]int `json:"UHC"`
-	TraceHit            int     `json:"RH"`
-	DeltaHit            int     `json:"EH"`
-	TrieHit             int     `json:"TH"`
+	MixHit                int     `json:"MH"`
+	AllDepMixHit          int     `json:"DMH"`
+	AllDetailMixHit       int     `json:"TMH"`
+	PartialDetailMixHit   int     `json:"PMH"`
+	AllDeltaMixHit        int     `json:"AMH"`
+	PartialDeltaMixHit    int     `json:"MMH"`
+	UnhitHeadCount        [10]int `json:"UHC"`
+	TraceHit              int     `json:"RH"`
+	DeltaHit              int     `json:"EH"`
+	TrieHit               int     `json:"TH"`
+	AllDepTraceHit        int     `json:"DTH"`
+	AllDetailTraceHit     int     `json:"TTH"`
+	PartialDetailTraceHit int     `json:"PTH"`
+	OpTraceHit            int     `json:"OTH"`
 
 	TraceMiss   int `json:"TM"`
+	MixMiss     int `json:"MM"`
 	NoMatchMiss int `json:"NMM"`
 
 	TxPreplayLock int `json:"tL"`
@@ -139,10 +144,10 @@ type LogPreplayItem struct {
 type LogBlockGround []*LogRWrecord
 
 type TxReuseStatusHistory struct {
-	ProcessedCount uint
-	MixHitRoundIds map[uint64]struct{}
+	ProcessedCount   uint
+	MixHitRoundIds   map[uint64]struct{}
 	MixHitRWRcordIds map[uintptr]struct{}
-	ReuseHitPathIds map[uintptr]struct{}
+	ReuseHitPathIds  map[uintptr]struct{}
 }
 
 func NewTxReuseStatusHistory() *TxReuseStatusHistory {
@@ -241,18 +246,15 @@ var (
 
 	ReuseResult []*cmptypes.ReuseStatus
 
-	TxReuseResultsCache, _  = lru.New(100000)
+	TxReuseResultsCache, _ = lru.New(100000)
 
 	// reuse info
-	processedTxCount int64
-	processedNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, >5
-	mixHitDistinctRoundNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
+	processedTxCount                    int64
+	processedNTimesTxCount              = make([]int64, 6) // 1, 2, 3, 4, 5, >5
+	mixHitDistinctRoundNTimesTxCount    = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
 	mixHitDistinctRWRecordNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
-	traceHitDistinctPathNTimesTxCount = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
-	bothHitTxCount int64
-
-
-
+	traceHitDistinctPathNTimesTxCount   = make([]int64, 6) // 1, 2, 3, 4, 5, > 5
+	bothHitTxCount                      int64
 
 	WarmupMissTxnCount   = make(map[string]int)
 	AccountCreate        = make(map[string]int)
@@ -301,15 +303,19 @@ var (
 	unknown           uint64
 	miss              uint64
 
-	mixHit              uint64
-	allDepMixHit        uint64
-	allDetailMixHit     uint64
-	partialDetailMixHit uint64
-	allDeltaMixHit      uint64
-	partialDeltaMixHit  uint64
-	traceHit            uint64
-	deltaHit            uint64
-	trieHit             uint64
+	mixHit                uint64
+	allDepMixHit          uint64
+	allDetailMixHit       uint64
+	partialDetailMixHit   uint64
+	allDeltaMixHit        uint64
+	partialDeltaMixHit    uint64
+	traceHit              uint64
+	deltaHit              uint64
+	trieHit               uint64
+	allDepTraceHit        uint64
+	allDetailTraceHit     uint64
+	partialDetailTraceHit uint64
+	opTraceHit            uint64
 
 	txPreplayLock uint64
 	abortedTrace  uint64
@@ -318,6 +324,7 @@ var (
 	abortedTrie   uint64
 
 	traceMiss   uint64
+	mixMiss     uint64
 	noMatchMiss uint64
 
 	LockCount [4]uint64
@@ -501,6 +508,18 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 					infoResult.DeltaHit++
 				case cmptypes.TraceHit:
 					infoResult.TraceHit++
+					switch ReuseResult[index].TraceStatus.TraceHitType {
+					case cmptypes.AllDepHit:
+						infoResult.AllDepTraceHit++
+					case cmptypes.AllDetailHit:
+						infoResult.AllDetailTraceHit++
+					case cmptypes.PartialHit:
+						infoResult.PartialDetailTraceHit++
+					case cmptypes.OpHit:
+						infoResult.OpTraceHit++
+					default:
+						panic(fmt.Sprintf("Unknown TraceHitType %v", ReuseResult[index].TraceStatus.TraceHitType))
+					}
 				}
 			case cmptypes.Miss:
 				infoResult.Miss++
@@ -509,6 +528,10 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 					infoResult.TraceMiss++
 				case cmptypes.NoMatchMiss:
 					infoResult.NoMatchMiss++
+				case cmptypes.MixMiss:
+					infoResult.MixMiss++
+				default:
+					panic(fmt.Sprintf("Known miss type %v", ReuseResult[index].MissType))
 				}
 			case cmptypes.Unknown:
 				infoResult.Unknown++
@@ -749,16 +772,23 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				"Enqueue", fmt.Sprintf("%03d(%.2f)", enqueueCnt, enqueueRate),
 				"Preplay", fmt.Sprintf("%03d(%.2f)", preplayCnt, preplayRate),
 				"Hit", fmt.Sprintf("%03d(%.2f)", infoResult.Hit, hitRate),
-				"MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|PartialDetail:%03d|AllDelta:%03d|PartialDelta:%03d]", infoResult.MixHit, mixHitRate,
+			)
+			if infoResult.MixHit > 0 {
+				context = append(context, "MixHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|PartialDetail:%03d|AllDelta:%03d|PartialDelta:%03d]", infoResult.MixHit, mixHitRate,
 					infoResult.AllDepMixHit, infoResult.AllDetailMixHit, infoResult.PartialDetailMixHit, infoResult.AllDeltaMixHit, infoResult.PartialDeltaMixHit),
-				"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount))
-			if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 || infoResult.TraceHit > 0 {
-				context = append(context, "RH-DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)-%03d(%.2f)",
-					infoResult.TraceHit, traceHitRate, infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate))
+					"MixUnhitHead", fmt.Sprint(infoResult.UnhitHeadCount))
+			}
+			if infoResult.TraceHit > 0 {
+				context = append(context, "TraceHit", fmt.Sprintf("%03d(%.2f)-[AllDep:%03d|AllDetail:%03d|PartialDetail:%03d|Op:%03d]",
+					infoResult.TraceHit, traceHitRate, infoResult.AllDepTraceHit, infoResult.AllDetailTraceHit, infoResult.PartialDetailTraceHit, infoResult.OpTraceHit))
+			}
+			if infoResult.TrieHit > 0 || infoResult.DeltaHit > 0 {
+				context = append(context, "DH-TH", fmt.Sprintf("%03d(%.2f)-%03d(%.2f)",
+					infoResult.DeltaHit, deltaHitRate, infoResult.TrieHit, trieHitRate))
 			}
 			if infoResult.Miss > 0 {
-				context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)-[TraceMiss:%03d|NoMatchMiss:%03d]",
-					infoResult.Miss, missRate, infoResult.TraceMiss, infoResult.NoMatchMiss))
+				context = append(context, "Miss", fmt.Sprintf("%03d(%.2f)-[TraceMiss:%03d|MixMiss:%03d|NoMatchMiss:%03d]",
+					infoResult.Miss, missRate, infoResult.TraceMiss, infoResult.MixMiss, infoResult.NoMatchMiss))
 			}
 			if infoResult.Unknown > 0 {
 				context = append(context, "Unknown", fmt.Sprintf("%03d(%.2f)", infoResult.Unknown, unknownRate),
@@ -794,10 +824,15 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		allDeltaMixHit += uint64(infoResult.AllDeltaMixHit)
 		partialDeltaMixHit += uint64(infoResult.PartialDeltaMixHit)
 		traceHit += uint64(infoResult.TraceHit)
+		allDepTraceHit += uint64(infoResult.AllDepTraceHit)
+		allDetailTraceHit += uint64(infoResult.AllDetailTraceHit)
+		partialDetailTraceHit += uint64(infoResult.PartialDetailTraceHit)
+		opTraceHit += uint64(infoResult.OpTraceHit)
 		deltaHit += uint64(infoResult.DeltaHit)
 		trieHit += uint64(infoResult.TrieHit)
 
 		traceMiss += uint64(infoResult.TraceMiss)
+		mixMiss += uint64(infoResult.MixMiss)
 		noMatchMiss += uint64(infoResult.NoMatchMiss)
 
 		txPreplayLock += uint64(infoResult.TxPreplayLock)
@@ -818,15 +853,23 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			"enqueue", fmt.Sprintf("%d(%.3f)", enqueue, float64(enqueue)/float64(txnCount)),
 			"preplay", fmt.Sprintf("%d(%.3f)", preplay, float64(preplay)/float64(txnCount)),
 			"hit", fmt.Sprintf("%d(%.3f)", hit, float64(hit)/float64(txnCount)),
-			"MixHit", fmt.Sprintf("%d(%.3f)-[AllDep:%d|AllDetail:%d|PartialDetail:%d|AllDelta:%d|PartialDelta:%d]",
-				mixHit, float64(mixHit)/float64(txnCount), allDepMixHit, allDetailMixHit,
-				partialDetailMixHit, allDeltaMixHit, partialDeltaMixHit),
-			"RH-DH-TH", fmt.Sprintf("%d(%.3f)-%d(%.3f)-%d(%.3f)", traceHit, float64(traceHit)/float64(txnCount),
-				deltaHit, float64(deltaHit)/float64(txnCount), trieHit, float64(trieHit)/float64(txnCount)),
-			"miss", fmt.Sprintf("%d(%.3f)-[TraceMiss:%03d|NoMatchMiss:%03d]", miss, float64(miss)/float64(txnCount),
-				traceMiss, noMatchMiss),
-			"gasUsed", fmt.Sprintf("%d(%.3f)", reuseGasUsed, float64(reuseGasUsed)/float64(totalGasUsed)),
 		}
+		if mixHit > 0 {
+			context = append(context, "MixHit", fmt.Sprintf("%d(%.3f)-[AllDep:%d|AllDetail:%d|PartialDetail:%d|AllDelta:%d|PartialDelta:%d]",
+				mixHit, float64(mixHit)/float64(txnCount), allDepMixHit, allDetailMixHit,
+				partialDetailMixHit, allDeltaMixHit, partialDeltaMixHit))
+		}
+		if traceHit > 0 {
+			context = append(context, "TraceHit", fmt.Sprintf("%03d(%.3f)-[AllDep:%03d|AllDetail:%03d|PartialDetail:%03d|Op:%03d(%.3f)]",
+				traceHit, float64(traceHit)/float64(txnCount), allDepTraceHit, allDetailTraceHit, partialDetailTraceHit, opTraceHit, float64(opTraceHit)/float64(txnCount)))
+		}
+
+		context = append(context, "DH-TH", fmt.Sprintf("%d(%.3f)-%d(%.3f)",
+			deltaHit, float64(deltaHit)/float64(txnCount), trieHit, float64(trieHit)/float64(txnCount)),
+			"miss", fmt.Sprintf("%d(%.3f)-[TraceMiss:%03d|MixMiss:%03d|NoMatchMiss:%03d]", miss, float64(miss)/float64(txnCount),
+				traceMiss, mixMiss, noMatchMiss),
+			"gasUsed", fmt.Sprintf("%d(%.3f)", reuseGasUsed, float64(reuseGasUsed)/float64(totalGasUsed)))
+
 		if unknown > 0 {
 			context = append(context, "unknown", fmt.Sprintf("%d(%.3f)", unknown, float64(unknown)/float64(txnCount)),
 				"txPreplayLock", txPreplayLock)
@@ -850,7 +893,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			txHistory.AddReuseStatus(rr)
 		}
 
-		log.Info("Cumulative reuse hit", "txs", processedTxCount, 
+		log.Info("Cumulative reuse hit", "txs", processedTxCount,
 			"processedDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", processedNTimesTxCount[0], processedNTimesTxCount[1], processedNTimesTxCount[2],
 				processedNTimesTxCount[3], processedNTimesTxCount[4], processedNTimesTxCount[5]),
 			"mixRoundDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", mixHitDistinctRoundNTimesTxCount[0], mixHitDistinctRoundNTimesTxCount[1], mixHitDistinctRoundNTimesTxCount[2],
@@ -859,7 +902,7 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 				mixHitDistinctRWRecordNTimesTxCount[3], mixHitDistinctRWRecordNTimesTxCount[4], mixHitDistinctRWRecordNTimesTxCount[5]),
 			"tracePathDist", fmt.Sprintf("[1|2|3|4|5|>5]=[%v,%v,%v,%v,%v,%v]", traceHitDistinctPathNTimesTxCount[0], traceHitDistinctPathNTimesTxCount[1], traceHitDistinctPathNTimesTxCount[2],
 				traceHitDistinctPathNTimesTxCount[3], traceHitDistinctPathNTimesTxCount[4], traceHitDistinctPathNTimesTxCount[5]),
-				"bothHitTxCount", bothHitTxCount,
+			"bothHitTxCount", bothHitTxCount,
 		)
 
 		log.Info("Tries lock", "count", fmt.Sprintf("%d-%d-%d-%d", LockCount[0], LockCount[1], LockCount[2], LockCount[3]))
@@ -886,15 +929,15 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 					missTxns = append(missTxns, txn)
 				} else {
 					if !cfg.MSRAVMSettings.NoOverMatching && !cfg.MSRAVMSettings.NoMemoization { // when over-matching is disabled, mixtree is turned off, the node will be nil
-						log.Error("Detect miss with nil node")
+						//log.Error("Detect miss with nil node")
 					}
 				}
 			}
 		}
 
-		totalSnapGet := r.AccountSnapGetType[0] +r.AccountSnapGetType[1] +r.AccountSnapGetType[2]
-		log.Info("How to get snap","totalSnapGet", totalSnapGet, "stateObject", r.AccountSnapGetType[0],
-			"lru", r.AccountSnapGetType[1], "Trie", r.AccountSnapGetType[2] )
+		totalSnapGet := r.AccountSnapGetType[0] + r.AccountSnapGetType[1] + r.AccountSnapGetType[2]
+		log.Info("How to get snap", "totalSnapGet", totalSnapGet, "stateObject", r.AccountSnapGetType[0],
+			"lru", r.AccountSnapGetType[1], "Trie", r.AccountSnapGetType[2])
 
 		if !cfg.MSRAVMSettings.NoReuse {
 			if len(noPreplayTxns) > 0 || len(missTxns) > 0 {

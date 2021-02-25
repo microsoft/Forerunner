@@ -52,6 +52,7 @@ type MSRAVMConfig struct {
 	CmpReuseChecking    bool
 	CmpReuseLogging     bool
 	CmpReuseLoggingDir  string
+	TaskBuilderChecking bool
 	EnablePreplay       bool
 	CacheRecord         bool
 	GroundRecord        bool
@@ -75,14 +76,14 @@ type MSRAVMConfig struct {
 	EmulateFromBlock     uint64
 	EmulateFile          string
 
-	EnableReuseTracer    bool
-	TxApplyPerfLogging   bool
-	PerfLogging          bool
-	ParallelizeReuse     bool
-	WarmupMissDetail     bool
-	NoWarmuper           bool
-	NoReuse              bool
-	ReportMissDetail     bool
+	EnableReuseTracer  bool
+	TxApplyPerfLogging bool
+	PerfLogging        bool
+	ParallelizeReuse   bool
+	WarmupMissDetail   bool
+	NoWarmuper         bool
+	NoReuse            bool
+	ReportMissDetail   bool
 }
 
 func (p *MSRAVMConfig) IsPrintRecord() bool {

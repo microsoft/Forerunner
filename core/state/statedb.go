@@ -81,6 +81,7 @@ type TxPerfAndStatus struct {
 	Receipt     *types.Receipt
 	Time        time.Duration
 	ReuseStatus *cmptypes.ReuseStatus
+	Tx          *types.Transaction
 	Delay       float64
 }
 
@@ -183,6 +184,7 @@ type StateDB struct {
 	KeyWarmupMiss        int
 	KeyNoWarmup          int
 	KeyCreateWarmupMiss  int
+	AccessedAccountAndKeys map[common.Address]map[common.Hash]struct{}
 
 	UnknownTxs        []*types.Transaction
 	UnknownTxReceipts []*types.Receipt
@@ -197,12 +199,13 @@ type StateDB struct {
 	InWarmupMode       bool
 }
 
-func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64) {
+func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64, tx *types.Transaction) {
 	tf := self.GetNewTxPerf()
 	tf.ReuseStatus = status
 	tf.Receipt = receipt
 	tf.Time = time
 	tf.Delay = delayInSecond
+	tf.Tx = tx
 	self.TxPerfs = append(self.TxPerfs, tf)
 }
 
@@ -400,7 +403,7 @@ func (self *StateDB) SetCopyForShare(copyForShare bool) {
 
 func (self *StateDB) SetRWMode(enabled bool) {
 	if enabled {
-		self.rwRecorder = newRWHook(self)
+		self.rwRecorder = NewRWHook(self)
 		self.rwRecorderEnabled = true
 	} else {
 		self.rwRecorder = emptyRWRecorder{}
@@ -691,6 +694,9 @@ func (s *StateDB) GetState(addr common.Address, hash common.Hash) (ret common.Ha
 	stateObject := s.getStateObject(addr)
 	defer func() { s.rwRecorder._GetState(addr, hash, stateObject, ret) }()
 	if stateObject != nil {
+		if s.WarmupMissDetail {
+			s.RecordKeyAccessed(addr, hash)
+		}
 		return stateObject.GetState(s.db, hash)
 	}
 	return common.Hash{}
@@ -719,6 +725,9 @@ func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) (ret 
 	stateObject := s.getStateObject(addr)
 	defer func() { s.rwRecorder._GetCommittedState(addr, hash, stateObject, ret) }()
 	if stateObject != nil {
+		if s.WarmupMissDetail {
+			s.RecordKeyAccessed(addr, hash)
+		}
 		return stateObject.GetCommittedState(s.db, hash)
 	}
 	return common.Hash{}
@@ -1002,6 +1011,11 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// Prefer live objects if any is available
+
+	if s.WarmupMissDetail {
+		s.RecordAccountAccessed(addr)
+	}
+
 	if s.IsShared() {
 		if obj := s.delta.stateObjects[addr]; obj != nil {
 			return obj
@@ -1832,6 +1846,20 @@ func (s *StateDB) IsKeyWarmup(addr common.Address, key common.Hash) bool {
 
 func (s *StateDB) HaveMiss() bool {
 	return s.AddrWarmupMiss > 0 || s.KeyWarmupMiss > 0
+}
+
+func (s *StateDB) RecordAccountAccessed(addr common.Address) {
+	if _, ok := s.AccessedAccountAndKeys[addr]; !ok {
+		s.AccessedAccountAndKeys[addr] = make(map[common.Hash]struct{})
+	}
+}
+
+func (s *StateDB) RecordKeyAccessed(addr common.Address, key common.Hash) {
+	aMap, ok := s.AccessedAccountAndKeys[addr]
+	if !ok {
+		panic("Account Should always be accessed before keys")
+	}
+	aMap[key] = struct{}{}
 }
 
 func (s *StateDB) ClearMiss() {
