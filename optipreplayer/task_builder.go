@@ -141,23 +141,32 @@ func (b *TaskBuilder) mainLoop() {
 	for {
 		select {
 		case <-b.startCh:
+			startTime := time.Now()
 			b.mu.RLock()
-			rawPending, _ := b.txPool.Pending()
+			checkDuration(startTime, 1, "taskBulder mainLoop TOO SLOW")
+
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
+				rawPending, _ := b.txPool.Pending()
+				checkDuration(startTime, 2, "taskBulder mainLoop TOO SLOW")
 				if b.cfg.TaskBuilderChecking {
 					b.debugLogWithTimestamp("mainLoopIter blockNum %v blockHash %v deadline %v currentTime %v",
 						currentBlock.NumberU64(), currentBlock.Hash().String(), b.txnDeadline, time.Now().Unix())
 				}
 				b.resetPackagePool(rawPending)
+				checkDuration(startTime, 3, "taskBulder mainLoop TOO SLOW")
 				b.resetPreplayPool()
+				checkDuration(startTime, 4, "taskBulder mainLoop TOO SLOW")
 				if len(b.preplayPool) > 0 {
 					b.commitNewWork()
 					b.updateTxnGroup()
 				}
+				checkDuration(startTime, 5, "taskBulder mainLoop TOO SLOW")
 			}
 			b.mu.RUnlock()
+			checkDuration(startTime, 6, "taskBulder mainLoop TOO SLOW")
 			b.finishOnceCh <- struct{}{}
+			checkDuration(startTime, 7, "taskBulder mainLoop TOO SLOW")
 		case <-b.exitCh:
 			return
 		}

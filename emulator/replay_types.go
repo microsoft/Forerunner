@@ -137,11 +137,13 @@ func (c *replayMsgConsumer) Accept(msg interface{}) {
 			lastBlockNumber := blocks[len(blocks)-1].NumberU64()
 
 			c.callInsertChain(msg.(*insertChainData))
+
+			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued,
+				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "msgCount", msgCount)
 			//GlobalGethReplayer.SetRealtimeMode()
 			rlb, txlb, batchb, blb := GlobalGethReplayer.GetChanLen()
-			log.Info("Blocks load", "lastBlock", lastBlockNumber, "executable", pending, "queued", queued,
-				"curLag(milli)", curLag.Milliseconds(), "avgLag(milli)", avgLag, "msgCount", msgCount,
-				"rawLineBuffer", rlb, "txlineBuffer", txlb, "batchBuffer", batchb ,"blockLineBuffer", blb)
+			log.Info("Blocks load", "lastBlock", lastBlockNumber,
+				"rawLineBuffer", rlb, "txlineBuffer", txlb, "batchBuffer", batchb, "blockLineBuffer", blb)
 
 			c.LastBlockNumber = lastBlockNumber
 			if lastBlockNumber >= rawdb.GlobalEmulateHook.EmulateFrom()-1 { // might be - 100
@@ -227,17 +229,14 @@ type batchRemoteTxs struct {
 }
 
 func (b *batchRemoteTxs) AppendMsg(msg *addRemotesData) {
-	// TODO
 	b.Txs = append(b.Txs, msg.Txs...)
 	b.Times = append(b.Times, msg.Time)
 }
 
 func (b *batchRemoteTxs) AppendBatch(ab *batchRemoteTxs) {
-	// TODO
 	b.Txs = append(b.Txs, ab.Txs...)
 	b.Times = append(b.Times, ab.Times...)
 }
-
 
 func (b *batchRemoteTxs) Clear() {
 	b.Txs = make([]*types.Transaction, 0, LagBatchSize)

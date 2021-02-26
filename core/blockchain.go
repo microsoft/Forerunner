@@ -1733,7 +1733,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 	// Fire a single chain head event if we've progressed the chain
 	defer func() {
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
+			st := time.Now()
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
+			if time.Since(st) > 200 *time.Millisecond{
+				log.Warn("SEND CHAINHEADEVENT TOO SLOW", "bn", lastCanon.NumberU64())
+			}
 		}
 	}()
 	// Start the parallel header verifier

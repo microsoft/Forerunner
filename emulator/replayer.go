@@ -3,6 +3,7 @@ package emulator
 import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,9 +12,10 @@ import (
 
 const RawLineChanCount = 50000
 const PublisherCount = 50
-const LagBatchSize = 4000
+const LagBatchSize = 500
 const EarlyBatchSize = 100
 const EarlyBatchGap = 2 * time.Millisecond
+const LagBatchCount = 5
 
 type GethReplayer struct {
 	consumer *replayMsgConsumer
@@ -30,6 +32,7 @@ type GethReplayer struct {
 
 	lagBatch      *batchRemoteTxs
 	lagBatchMutex sync.Mutex
+	lagPublishers chan struct{}
 
 	realtime int32
 }
@@ -56,11 +59,35 @@ func NewGethReplayer(blockchain ReplayBlockChain, txPool ReplayTxPool) *GethRepl
 		txLineChan:    make(chan []byte, RawLineChanCount),
 		msgBatchChan:  make(chan *batchRemoteTxs, 10000),
 		lagBatch:      &batchRemoteTxs{Txs: make([]*types.Transaction, 0, LagBatchSize), Times: make([]time.Time, 0, LagBatchSize)},
+		lagPublishers: make(chan struct{}, LagBatchCount),
 	}
 }
 
+var skipCount int
+
 func (e *GethReplayer) GetChanLen() (int, int, int, int) {
-	return len(e.rawLineChan), len(e.txLineChan), len(e.msgBatchChan), len(e.blockLineChan)
+
+	if skipCount > 0 {
+		skipCount--
+		return -1, -1, -1, -1
+	}
+	start := time.Now()
+
+	rll := reflect.ValueOf(e.rawLineChan).Len()
+	t1 := time.Since(start)
+	tll := reflect.ValueOf(e.txLineChan).Len()
+	t2 := time.Since(start)
+	mbl := reflect.ValueOf(e.msgBatchChan).Len()
+	t3 := time.Since(start)
+	bll := reflect.ValueOf(e.blockLineChan).Len()
+	defer func() {
+		dur := time.Since(start)
+		if dur >= 100*time.Millisecond {
+			log.Warn("GET CHAN LEN TOO SLOW", "total", dur.String(), "t1", t1.String(), "t2", t2.String(), "t3", t3.String())
+			skipCount = 50
+		}
+	}()
+	return rll, tll, mbl, bll
 }
 
 func (e *GethReplayer) SetRealtimeMode(firstLogTime time.Time) {
@@ -196,13 +223,12 @@ func preBatchMsg2(msgs []*addRemotesData) []*batchRemoteTxs {
 	return res
 }
 
-
 func preBatchMsg(msgs []*addRemotesData) []*batchRemoteTxs {
 	if len(msgs) == 0 {
 		panic("empty msgs")
 	}
 	res := make([]*batchRemoteTxs, 0, EarlyBatchSize)
-	for _, msg:= range msgs{
+	for _, msg := range msgs {
 		curBatch := &batchRemoteTxs{Times: make([]time.Time, 1, 1)}
 		curBatch.Times[0] = msg.GetTime()
 		curBatch.Txs = msg.Txs
@@ -241,12 +267,15 @@ func (e *GethReplayer) handleTxBatch() {
 func (e *GethReplayer) handleLagBatch(b *batchRemoteTxs) {
 	e.lagBatchMutex.Lock()
 	e.lagBatch.AppendBatch(b)
-	if len(e.lagBatch.Txs) >= 1000 {
+	if len(e.lagBatch.Txs) >= LagBatchSize {
 		nb := &batchRemoteTxs{Txs: e.lagBatch.Txs, Times: e.lagBatch.Times}
 		e.lagBatch.Clear()
 		e.lagBatchMutex.Unlock()
 
+		e.lagPublishers <- struct{}{}
 		e.broker.(*RealtimeBroker).batchPublish(nb, true)
+		<- e.lagPublishers
+
 		return
 	} else {
 		e.lagBatchMutex.Unlock()
