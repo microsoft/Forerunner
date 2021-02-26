@@ -1998,7 +1998,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			verifyInMicroSeconds := verifyTime.Microseconds()
 			txPerfs := statedb.TxPerfs
 
-			go func() {
+			go func(block *types.Block) {
 				timeStr := time.Now().Format("01-02|15:04:05.000")
 				blockResult := fmt.Sprintf("t '[%s]' block '%v_%v'  process %v process+verify %v gas %v\n",
 					timeStr, block.Number().String(), block.Hash().Hex(),
@@ -2069,7 +2069,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 					}
 				}
 
-			}()
+			}(block)
 		}
 
 		// Update the metrics touched during block validation
