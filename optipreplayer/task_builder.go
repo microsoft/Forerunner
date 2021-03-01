@@ -145,30 +145,30 @@ func (b *TaskBuilder) TaskBuilderLoop() {
 		case <-b.startCh:
 			startTime := time.Now()
 			b.mu.RLock()
-			checkDuration(startTime, 1, "taskBulder GroupSchedulerLoop TOO SLOW")
-
+			checkDuration(&startTime, 1, "taskBuilder GroupSchedulerLoop TOO SLOW")
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
 				rawPending, _ := b.txPool.Pending()
-				checkDuration(startTime, 2, "taskBulder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 2, "taskBuilder GroupSchedulerLoop TOO SLOW")
 				if b.cfg.TaskBuilderChecking {
 					b.debugLogWithTimestamp("mainLoopIter blockNum %v blockHash %v deadline %v currentTime %v",
 						currentBlock.NumberU64(), currentBlock.Hash().String(), b.txnDeadline, time.Now().Unix())
 				}
 				b.resetPackagePool(rawPending)
-				checkDuration(startTime, 3, "taskBulder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 3, "taskBuilder GroupSchedulerLoop TOO SLOW")
 				b.resetPreplayPool()
-				checkDuration(startTime, 4, "taskBulder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 4, "taskBuilder GroupSchedulerLoop TOO SLOW")
 				if len(b.preplayPool) > 0 {
 					b.commitNewWork()
+					checkDuration(&startTime, 5, "taskBuilder GroupSchedulerLoop TOO SLOW")
 					b.updateTxnGroup()
+					checkDuration(&startTime, 6, "taskBuilder GroupSchedulerLoop TOO SLOW")
 				}
-				checkDuration(startTime, 5, "taskBulder GroupSchedulerLoop TOO SLOW")
 			}
 			b.mu.RUnlock()
-			checkDuration(startTime, 6, "taskBulder GroupSchedulerLoop TOO SLOW")
+			checkDuration(&startTime, 7, "taskBuilder GroupSchedulerLoop TOO SLOW")
 			b.finishOnceCh <- struct{}{}
-			checkDuration(startTime, 7, "taskBulder GroupSchedulerLoop TOO SLOW")
+			checkDuration(&startTime, 8, "taskBuilder GroupSchedulerLoop TOO SLOW")
 		case <-b.exitCh:
 			return
 		}
@@ -355,7 +355,9 @@ func (b *TaskBuilder) commitNewWork() {
 	orderAndHeader.header.time = b.nowHeader.time
 	orderAndHeader.header.gasLimit = b.preplayPool.gas()
 
-	b.debugLogWithTimestamp(" commitNewWork")
+	if b.cfg.TaskBuilderChecking {
+		b.debugLogWithTimestamp(" commitNewWork")
+	}
 
 	for from, txns := range b.preplayPool {
 		var txnList [][]byte
@@ -716,6 +718,7 @@ func divideTransactionPool(txns TransactionPool, txnCount, chainFactor int) (ord
 
 // timeShift denotes 0, -1, 1, -2, 2
 var timeShift = []uint64{0, math.MaxUint64, 1, math.MaxUint64 - 1, 2}
+
 // TODO: based on statistic: replace 2, -2
 
 const MaxRetryCount = 10
@@ -778,7 +781,7 @@ func walkTxnsPool_2(group *TxnGroup, b *TaskBuilder) {
 
 		for ; allWalkedHeaderCount < len(walkheaders); headerIndex++ {
 
-			if !group.isValid(){
+			if !group.isValid() {
 				break
 			}
 
@@ -790,7 +793,6 @@ func walkTxnsPool_2(group *TxnGroup, b *TaskBuilder) {
 
 			var shuffleIndex []int
 			var isRepeated bool
-
 
 			shuffleIndex = rand.Perm(group.txnCount)
 
@@ -858,7 +860,7 @@ func walkTxnsPool_2(group *TxnGroup, b *TaskBuilder) {
 		}
 	} else {
 		for hi := 0; hi < len(walkheaders); hi++ {
-			if !group.isValid(){
+			if !group.isValid() {
 				break
 			}
 			orderAndHeader := OrderAndHeader{header: walkheaders[hi], order: make(TxnOrder, 0)}

@@ -47,7 +47,7 @@ type Config struct {
 type MSRAVMConfig struct {
 	Silent              bool
 	LogRoot             string
-	MemStatus			bool
+	MemStatus           bool
 	CmpReuse            bool
 	CmpReuseChecking    bool
 	CmpReuseLogging     bool
@@ -64,10 +64,12 @@ type MSRAVMConfig struct {
 	ReuseTracerChecking bool
 	Selfish             bool
 	NoTrace             bool
-	NoTraceMemoization  bool
 	NoMemoization       bool
 	NoOverMatching      bool
 	SingleFuture        bool
+	NoWarmuper          bool
+	NoReuse             bool
+	AddFastPath         bool
 
 	// emulator
 	EmulatorDir          string
@@ -81,8 +83,6 @@ type MSRAVMConfig struct {
 	PerfLogging        bool
 	ParallelizeReuse   bool
 	WarmupMissDetail   bool
-	NoWarmuper         bool
-	NoReuse            bool
 	ReportMissDetail   bool
 }
 

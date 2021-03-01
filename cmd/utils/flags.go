@@ -935,13 +935,9 @@ var (
 		Name:  "no-trace",
 		Usage: "Turn off trace",
 	}
-	NoTraceMemoizationFlag = cli.BoolFlag{
-		Name:  "no-trace-memoization",
-		Usage: "Turn off the instruction memoization of trace",
-	}
 	NoMemoizationFlag = cli.BoolFlag{
 		Name:  "no-memoization",
-		Usage: "Turn off memoization at all levels",
+		Usage: "Turn off memoization",
 	}
 	NoWarmuperFlag = cli.BoolFlag{
 		Name:  "no-warmuper",
@@ -953,7 +949,11 @@ var (
 	}
 	NoReuseFlag = cli.BoolFlag{
 		Name:  "no-reuse",
-		Usage: "Disable computation reuse",
+		Usage: "Disable computation reuse in process",
+	}
+	AddFastPathFlag = cli.BoolFlag{
+		Name: "add-fastpath",
+		Usage: "add mix/rw-tree before trace",
 	}
 )
 
@@ -1817,18 +1817,19 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		ReuseTracerChecking:  ctx.GlobalBool(ReuseTracerCheckFlag.Name),
 		Selfish:              ctx.GlobalBool(SelfishFlag.Name),
 		NoTrace:              ctx.GlobalBool(NoTraceFlag.Name),
-		NoTraceMemoization:   ctx.GlobalBool(NoTraceMemoizationFlag.Name),
 		NoMemoization:        ctx.GlobalBool(NoMemoizationFlag.Name),
 		NoOverMatching:       ctx.GlobalBool(NoOverMatchingFlag.Name),
 		SingleFuture:         ctx.GlobalBool(SingleFutureFlag.Name),
+		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
+		NoReuse:          ctx.GlobalBool(NoReuseFlag.Name),
+		AddFastPath:      ctx.GlobalBool(AddFastPathFlag.Name),
+
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",
 
 		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
 		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
-		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
-		NoReuse:          ctx.GlobalBool(NoReuseFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
 	}
 	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
@@ -1853,9 +1854,18 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		}
 	}
 
-	if cfg.MSRAVMSettings.NoMemoization {
-		cfg.MSRAVMSettings.NoTraceMemoization = true
+	if cfg.MSRAVMSettings.NoTrace && cfg.MSRAVMSettings.SingleFuture {
+		panic("NoTrace and SingleFuture cannot be both true")
 	}
+
+	if cfg.MSRAVMSettings.NoMemoization && cfg.MSRAVMSettings.SingleFuture {
+		panic("NoMemoization and SingleFuture cannot be both true")
+	}
+
+	if cfg.MSRAVMSettings.NoTrace && cfg.MSRAVMSettings.NoMemoization {
+		panic("NoTrace and NoMemoization cannot be both true")
+	}
+
 }
 
 // RegisterEthService adds an Ethereum client to the stack.

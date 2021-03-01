@@ -729,7 +729,9 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 
 	} else {
 		if status.HitType == cmptypes.TraceHit {
+			txPreplay.PreplayResults.TraceTrieMu.Lock()
 			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching, isBlockProcess)
+			txPreplay.PreplayResults.TraceTrieMu.Unlock()
 			if isAbort {
 				return
 			} else {
@@ -812,7 +814,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 	} else {
 		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
 	}
-	if cfg.MSRAVMSettings.NoReuse || txPreplay == nil {
+	if (isBlockProcess && cfg.MSRAVMSettings.NoReuse) || txPreplay == nil {
 		d0 = time.Since(t0)
 		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
 		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
@@ -842,97 +844,45 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 	}
 
 	traceTrieChecked := false
+	traceIsOff := cfg.MSRAVMSettings.SingleFuture || cfg.MSRAVMSettings.NoTrace
 
-	if cfg.MSRAVMSettings.NoOverMatching { // Trace --> Trie --> Delta
-		if cfg.MSRAVMSettings.NoMemoization {
-			panic("it does not make sense to set no-overmatching to be true when no-memoization is true")
-		}
+	if traceIsOff || cfg.MSRAVMSettings.AddFastPath {
 		if status.BaseStatus != cmptypes.Undefined {
 			panic("BaseStatus should be undefined before the first check")
 		}
+		if cfg.MSRAVMSettings.NoOverMatching {
+				round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+				if status.BaseStatus == cmptypes.Unknown {
+					return
+				}
+		} else {
+				round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+					return
+				}
+		}
+	}
 
+	if !traceIsOff {
 		if status.BaseStatus == cmptypes.Undefined {
 			traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
 			if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
 				return
 			}
 		}
-		if status.BaseStatus == cmptypes.Undefined {
-			round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
-			if status.BaseStatus == cmptypes.Unknown {
-				return
-			}
-		}
 
-		if isBlockProcess {
-			if status.BaseStatus == cmptypes.Undefined {
-				round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
-				if status.BaseStatus == cmptypes.Unknown {
-					return
-				}
-			}
-
-		}
-	} else {
-
-		if cfg.MSRAVMSettings.NoMemoization { // Trace -> Delta
-			if status.BaseStatus != cmptypes.Undefined {
-				panic("BaseStatus should be undefined before the first check")
-			}
-			if status.BaseStatus == cmptypes.Undefined {
-				traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
-				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-					return
-				}
-			}
-			if isBlockProcess {
-				if status.BaseStatus == cmptypes.Undefined {
-					round, d0 = reuse.tryDeltaCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, t0, status, isBlockProcess)
-					if status.BaseStatus == cmptypes.Unknown {
-						return
-					}
-				}
-			} else { // preplay MixTree
+		if !cfg.MSRAVMSettings.AddFastPath {
+			if !cfg.MSRAVMSettings.NoMemoization || !isBlockProcess {
 				if status.BaseStatus == cmptypes.Undefined {
 					round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
 					if status.BaseStatus == cmptypes.Unknown {
 						return
 					}
 				}
-				//if status.BaseStatus == cmptypes.Undefined {
-				//	round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
-				//	if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-				//		return
-				//	}
-				//}
 			}
-		} else { // Trace -> Mixtree
-			if status.BaseStatus != cmptypes.Undefined {
-				panic("BaseStatus should be undefined before the first check")
-			}
-
-			if status.BaseStatus == cmptypes.Undefined {
-				traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
-				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-					return
-				}
-			}
-
-			if status.BaseStatus == cmptypes.Undefined {
-				round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
-				if status.BaseStatus == cmptypes.Unknown {
-					return
-				}
-			}
-
-			//if status.BaseStatus == cmptypes.Undefined {
-			//	round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
-			//	if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-			//		return
-			//	}
-			//}
 		}
 	}
+
 
 	if status.BaseStatus == cmptypes.Undefined {
 		if isBlockProcess && lockCount == 4 {
@@ -1016,7 +966,7 @@ func (reuse *Cmpreuse) tryTraceCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock
 				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Hit, HitType: cmptypes.TraceHit, TraceStatus: sr.TraceStatus}
 				status.BaseStatus = cmptypes.Hit
 				status.HitType = cmptypes.TraceHit
-				round = sr.GetAnyRound()
+				round = sr.round // sr.GetAnyRound()
 			} else if sr.aborted {
 				d0 = time.Since(t0)
 				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.TraceCheck}
@@ -1064,10 +1014,11 @@ func (reuse *Cmpreuse) tryMixCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) 
 			//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Unknown, AbortStage: cmptypes.MixCheck} // abort before hit or miss
 			status.BaseStatus = cmptypes.Unknown
 			status.AbortStage = cmptypes.MixCheck
-		} else {
-			status.BaseStatus = cmptypes.Miss
-			status.MissType = cmptypes.MixMiss
 		}
+		//else {
+		//	status.BaseStatus = cmptypes.Miss
+		//	status.MissType = cmptypes.MixMiss
+		//}
 	} else {
 		cache.LockCount[0] ++
 	}

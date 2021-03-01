@@ -822,6 +822,7 @@ type FieldSearchTrieNode struct {
 	AJumpTable []*FieldNodeJumpDef
 	FJumpTable []*FieldNodeJumpDef
 	Exit       *SNode
+	Rounds     []*cache.PreplayResult
 	SRefCount
 	BigSize
 }
@@ -835,6 +836,9 @@ func NewFieldSearchTrieNode(node *SNode) *FieldSearchTrieNode {
 
 func (n *FieldSearchTrieNode) RemoveRef(roundID uint64) {
 	n.SRemoveRef()
+	if n.Rounds != nil {
+		_removeRound(n.Rounds, roundID)
+	}
 }
 
 func (f *FieldSearchTrieNode) GetOrCreateFJumpDef(fvid uint) (ret *FieldNodeJumpDef) {
@@ -2057,7 +2061,6 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 		strRet = make(map[uint]string)
 	}
 
-
 	if result == nil {
 		temp := make(map[string]interface{})
 		strTemp := make(map[string]string)
@@ -2107,7 +2110,7 @@ func GetNodeIndexToAccountSnapMapping(trace *STrace, readDep []*cmptypes.AddrLoc
 
 func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, result *TraceTrieSearchResult, cfg *vm.MSRAVMConfig, reuseStatus *cmptypes.ReuseStatus) {
 	noOverMatching := cfg.NoOverMatching
-	noMemoization := cfg.NoTraceMemoization
+	noMemoization := cfg.NoMemoization
 	gcMutex.Lock()
 	defer gcMutex.Unlock()
 	insertStartTime := time.Now()
@@ -2126,7 +2129,7 @@ func (tt *TraceTrie) InsertTrace(trace *STrace, round *cache.PreplayResult, resu
 			rs += "-" + reuseStatus.HitType.String()
 			if reuseStatus.HitType == cmptypes.MixHit {
 				rs += "-" + reuseStatus.MixStatus.MixHitType.String()
-			}else if reuseStatus.HitType == cmptypes.TraceHit {
+			} else if reuseStatus.HitType == cmptypes.TraceHit {
 				rs += "-" + reuseStatus.TraceStatus.TraceHitType.String()
 			}
 		}
@@ -2228,9 +2231,9 @@ func (tt *TraceTrie) GCRoundNodes() {
 			roundCount := tt.RoundCountByPathID[head.RoundPathID]
 			if roundCount < 1 {
 				panic("roundCount is below 1")
-			}else if roundCount == 1 {
+			} else if roundCount == 1 {
 				delete(tt.RoundCountByPathID, head.RoundPathID)
-			}else {
+			} else {
 				tt.RoundCountByPathID[head.RoundPathID]--
 			}
 
@@ -2321,16 +2324,30 @@ type TraceTrieSearchResult struct {
 	debugOut                     DebugOutFunc
 	fOut                         *os.File
 	accountLaneRounds            []*cache.PreplayResult
+	fieldLaneRounds              []*cache.PreplayResult
+	round                        *cache.PreplayResult
 	storeInfo                    *StoreInfo
 	accountIndexToAppliedWObject map[uint]bool
 	TraceStatus                  *cmptypes.TraceStatus
-
 }
 
 func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	cmptypes.MyAssert(r.hit)
 	cmptypes.MyAssert(r.Node.Op.isStoreOp)
 	for _, round := range r.Node.roundResults.rounds {
+		if round != nil {
+			return round
+		}
+	}
+	cmptypes.MyAssert(false) // should never reach here
+	return nil
+}
+
+func GetFirstNonEmptyRound(rounds [] *cache.PreplayResult) *cache.PreplayResult {
+	if rounds == nil {
+		panic("rounds should never be nil")
+	}
+	for _, round := range rounds {
 		if round != nil {
 			return round
 		}
@@ -2371,7 +2388,7 @@ func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceSta
 			}
 			traceStatus.ExecutedOutputNodes++
 			traceStatus.FieldActualWrittenCount++
-		}else {
+		} else {
 			traceStatus.ExecutedLogNodes++
 		}
 		traceStatus.ExecutedNodes++
@@ -2519,11 +2536,12 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 	}
 
 	var accountLaneRounds []*cache.PreplayResult
+	var fieldLaneRounds []*cache.PreplayResult
 	var (
-		traceStatus             = &cmptypes.TraceStatus{}
-		accountHit              = false
-		fieldHit                = false
-		opHit                   = false
+		traceStatus = &cmptypes.TraceStatus{}
+		accountHit  = false
+		fieldHit    = false
+		opHit       = false
 	)
 
 	var hit, aborted bool
@@ -2561,21 +2579,25 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 			fOut:              fOut,
 			storeInfo:         node.roundResults,
 			accountLaneRounds: accountLaneRounds,
+			fieldLaneRounds:   fieldLaneRounds,
 			aborted:           aborted,
 			TraceStatus:       traceStatus,
 		}
 		result.TraceStatus.SearchResult = result
 		if accountHit {
 			traceStatus.TraceHitType = cmptypes.AllDepHit
+			result.round = GetFirstNonEmptyRound(accountLaneRounds)
 		} else if fieldHit {
 			if (traceStatus.TotalAccountLaneJumps > traceStatus.TotalAccountLaneFailedJumps) ||
-				(traceStatus.TotalFieldLaneAJumps > traceStatus.TotalFieldLaneFailedAJumps){
+				(traceStatus.TotalFieldLaneAJumps > traceStatus.TotalFieldLaneFailedAJumps) {
 				traceStatus.TraceHitType = cmptypes.PartialHit
-			}else {
+			} else {
 				traceStatus.TraceHitType = cmptypes.AllDetailHit
 			}
+			result.round = GetFirstNonEmptyRound(fieldLaneRounds)
 		} else if opHit {
 			traceStatus.TraceHitType = cmptypes.OpHit
+			result.round = GetFirstNonEmptyRound(node.roundResults.rounds)
 		}
 	}()
 
@@ -2608,7 +2630,7 @@ func (tt *TraceTrie) SearchTraceTrie(db *state.StateDB, header *types.Header, ge
 	}
 
 	if fNode != nil {
-		fNode, node, aborted, hit = tt.searchFieldLane(fNode, node,
+		fNode, node, fieldLaneRounds, aborted, hit = tt.searchFieldLane(fNode, node,
 			env, registers, accountHistory, accountValHistory, fieldHistory,
 			traceStatus,
 			debug, debugOut, abort, noOverMatching)
@@ -2788,7 +2810,7 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile, fieldHistory *RegisterFile,
 	traceStatus *cmptypes.TraceStatus,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
-	abort func() bool, noOverMatching bool) (fNode *FieldSearchTrieNode, node *SNode, aborted, ok bool) {
+	abort func() bool, noOverMatching bool) (fNode *FieldSearchTrieNode, node *SNode, fieldLaneRounds [] *cache.PreplayResult, aborted, ok bool) {
 
 	if debug {
 		cmptypes.MyAssert(fStart != nil)
@@ -2866,7 +2888,6 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				}
 			}
 
-
 			var fVId uint
 			var fVal interface{}
 			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
@@ -2929,6 +2950,7 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 			if debugOut != nil {
 				debugOut("FieldLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
 			}
+			fieldLaneRounds = fNode.Rounds
 			ok = true
 			break
 		}
@@ -3313,16 +3335,16 @@ func NewJumpInserter(tt *TraceTrie, trace *STrace, currentNodes []*SNode, round 
 		nodeIndexToAccountValue, nodeIndexToAccountValueString = GetNodeIndexToAccountSnapMapping(trace, round.ReadDepSeq, result)
 	}
 	j := &JumpInserter{
-		nodeIndexToAccountValue: nodeIndexToAccountValue,
+		nodeIndexToAccountValue:       nodeIndexToAccountValue,
 		nodeIndexToAccountValueString: nodeIndexToAccountValueString,
-		snodes:                  currentNodes,
-		trace:                   trace,
-		nodeIndexToAVId:         make(map[uint]uint),
-		nodeIndexToFVId:         make(map[uint]uint),
-		tt:                      tt,
-		round:                   round,
-		noOverMatching:          noOverMatching,
-		result:                  result,
+		snodes:                        currentNodes,
+		trace:                         trace,
+		nodeIndexToAVId:               make(map[uint]uint),
+		nodeIndexToFVId:               make(map[uint]uint),
+		tt:                            tt,
+		round:                         round,
+		noOverMatching:                noOverMatching,
+		result:                        result,
 	}
 	j.InitAccountAndFieldValueIDs()
 	return j
@@ -3420,12 +3442,14 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 	j.fieldHistroy = fieldHistory
 }
 
-func (j *JumpInserter) SetupFieldJumpLane() {
+func (j *JumpInserter) SetupFieldJumpLane() (lastFDes *FieldSearchTrieNode) {
 	tt := j.tt
 	snodes := j.snodes
 	if tt.DebugOut != nil {
 		tt.DebugOut("SetupJumps\n")
 	}
+
+	//beforeNewNodeCount := j.newNodeCount
 
 	j.registers = NewRegisterFile(j.trace.RegisterFileSize)
 	registerMapping := &(j.trace.RAlloc)
@@ -3554,9 +3578,17 @@ func (j *JumpInserter) SetupFieldJumpLane() {
 		}
 	}
 	j.fnodes = fNodes
+
+	//if j.newNodeCount > beforeNewNodeCount {
+	storeFNode := fNodes[len(fNodes)-1]
+	cmptypes.MyAssert(storeFNode.LRNode.Op.isStoreOp)
+	lastFDes = storeFNode
+	//storeFNode.Rounds = append(storeFNode.Rounds, j.round)
+	//}
+	return
 }
 
-func (j *JumpInserter) SetupAccountJumpLane() {
+func (j *JumpInserter) SetupAccountJumpLane() (lastADes *AccountSearchTrieNode) {
 	if j.noOverMatching {
 		cmptypes.MyAssert(false, "Should not setup Account Lane without overmatching!")
 	}
@@ -3565,7 +3597,7 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 	snodes := j.snodes
 	fnodes := j.fnodes
 
-	beforeNewNodeCount := j.newNodeCount
+	//beforeNewNodeCount := j.newNodeCount
 
 	registerMapping := &(j.trace.RAlloc)
 	//accountHistory := NewRegisterFile(uint(len(j.trace.ANodeSet)))
@@ -3646,11 +3678,13 @@ func (j *JumpInserter) SetupAccountJumpLane() {
 		if i == len(targetNodes)-1 {
 			cmptypes.MyAssert(aDes.LRNode.Op.isStoreOp)
 			cmptypes.MyAssert(aDes.LRNode.Seq == j.trace.FirstStoreNodeIndex)
-			if j.newNodeCount > beforeNewNodeCount {
-				aDes.Rounds = append(aDes.Rounds, j.round)
-			}
+			lastADes = aDes
+			//if j.newNodeCount > beforeNewNodeCount {
+			//	aDes.Rounds = append(aDes.Rounds, j.round)
+			//}
 		}
 	}
+	return
 }
 
 func CopyUArray(a []uint) []uint {
@@ -4256,13 +4290,18 @@ func (j *JumpInserter) SetupRoundMapping() {
 
 func (tt *TraceTrie) setupJumps(trace *STrace, currentNodes []*SNode, round *cache.PreplayResult, result *TraceTrieSearchResult, noOverMatching bool) *JumpInserter {
 	j := NewJumpInserter(tt, trace, currentNodes, round, result, noOverMatching)
-	j.SetupFieldJumpLane()
+	fDes := j.SetupFieldJumpLane()
+	var aDes *AccountSearchTrieNode
 	if !j.noOverMatching {
-		j.SetupAccountJumpLane()
+		aDes = j.SetupAccountJumpLane()
 	}
 	j.SetupOpJumpLane()
 	if j.newNodeCount > 0 {
 		// do not store repeated round
+		fDes.Rounds = append(fDes.Rounds, round)
+		if aDes != nil {
+			aDes.Rounds = append(aDes.Rounds, round)
+		}
 		j.SetupRoundMapping()
 	}
 	return j

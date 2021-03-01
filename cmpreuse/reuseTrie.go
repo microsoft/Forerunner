@@ -711,14 +711,15 @@ func SearchMixTree(trie *cmptypes.PreplayResTrie, db *state.StateDB, bc *core.Bl
 	if allDepMatched {
 		mixHitType = cmptypes.AllDepHit
 	} else if allDetailMatched {
-		if isExternalTransfer {
-			mixHitType = cmptypes.AllDeltaHit
-		} else {
+		//if isExternalTransfer {
+		//	mixHitType = cmptypes.AllDeltaHit
+		//} else {
 			mixHitType = cmptypes.AllDetailHit
-		}
-	} else if isExternalTransfer {
-		mixHitType = cmptypes.PartialDeltaHit
+		//}
 	}
+	//else if isExternalTransfer {
+	//	mixHitType = cmptypes.PartialDeltaHit
+	//}
 	reuseRound := currentNode.Round.(*cache.PreplayResult)
 
 	mixStatus = &cmptypes.MixStatus{MixHitType: mixHitType, DepHitAddr: matchedDeps, DepHitAddrMap: depMatchedMap,

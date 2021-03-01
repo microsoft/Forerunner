@@ -42,14 +42,12 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		panic("cmpreuse: receipt or rwrecord should not be nil")
 	}
 
-	noOverMatching := cfg.NoOverMatching
-	noTrace := cfg.NoTrace
-	singleFuture := cfg.SingleFuture
-
 	txHash := tx.Hash()
 	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
 
-	setDelta := !noTrace && !singleFuture
+	//setDelta := !cfg.NoTrace && !cfg.SingleFuture
+	setDelta := false
+
 	if txPreplay == nil {
 		txPreplay = reuse.addNewTx(tx, rwrecord, setDelta)
 	}
@@ -62,115 +60,128 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 		round.Trace = trace
 	}
 
-	if enablePause {
-		reuse.MSRACache.PauseForProcess()
-	}
-
 	notHit := reuseStatus.BaseStatus != cmptypes.Hit
-	notMixAllDepHit := notHit || !(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit)
-	notTraceAllDepHit := notHit || !(reuseStatus.HitType == cmptypes.TraceHit && reuseStatus.TraceStatus.TraceHitType == cmptypes.AllDepHit)
-
-	// Generally, there are three scenarios :  1. NoHit  2. DepHit  3. DetailHit (Hit but not DepHit)
-	// To set results more effectively, we should
-	// Generate new round for all scenarios //* Generate new round for scenario 1 and 3 (which have new read deps, that means this preplay result does not exist before )
-	// * Insert to readDep tree for scenario 1 and 3
-	// * Insert rwrecord tree for scenario 1
-	// * update the blocknumber of rwrecord for scenario 2 and 3 (Hit)
-	//if reuseStatus.BaseStatus != cmptypes.Hit ||
-	//	(!(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit) &&
-	//		!(reuseStatus.HitType == cmptypes.TraceHit && reuseStatus.TraceStatus.TraceHitType == cmptypes.AllDepHit)){
-	if notHit || (notMixAllDepHit && notTraceAllDepHit) {
-
-		curBlockNumber := receipt.BlockNumber.Uint64()
-
+	if notHit {
 		reuse.MSRACache.SetGasUsedCache(tx, receipt, sender)
 		if !ok {
 			return
 		}
+	}
 
-		var err error
-		notHitOrNotTraceHit := (notHit || reuseStatus.HitType != cmptypes.TraceHit)
+	if enablePause {
+		reuse.MSRACache.PauseForProcess()
+	}
 
-		if !noOverMatching && notHitOrNotTraceHit { // && !noMemoization {
-			txPreplay.PreplayResults.MixTreeMu.Lock()
-			if singleFuture {
+	traceNeeded := !(cfg.NoTrace || cfg.SingleFuture)
+
+	var err error
+	isTraceHit := reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit
+	mixTreeNeeded := (!traceNeeded || cfg.AddFastPath) && !cfg.NoOverMatching
+	newMixRecord := notHit || (!isTraceHit && !(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit))
+	if mixTreeNeeded && newMixRecord {
+		txPreplay.PreplayResults.MixTreeMu.Lock()
+		if cfg.SingleFuture {
+			txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+		}
+		if setDelta {
+			curIsExternalTransfer := cache.IsExternalTransfer(rwrecord.ReadDetail, tx)
+			if curIsExternalTransfer != txPreplay.PreplayResults.IsExternalTransfer {
+				log.Warn("IsExternalTransfer changes", "tx", txPreplay.TxHash.Hex(),
+					"old", txPreplay.PreplayResults.IsExternalTransfer, "newValue", curIsExternalTransfer)
 				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
 			}
-			if setDelta {
-				curIsExternalTransfer := cache.IsExternalTransfer(rwrecord.ReadDetail, tx)
-				if curIsExternalTransfer != txPreplay.PreplayResults.IsExternalTransfer {
-					log.Warn("IsExternalTransfer changes", "tx", txPreplay.TxHash.Hex(),
-						"old", txPreplay.PreplayResults.IsExternalTransfer, "newValue", curIsExternalTransfer)
-					txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
-				}
-				txPreplay.PreplayResults.IsExternalTransfer = curIsExternalTransfer
-			}
-
-			//err = reuse.setMixTree(tx, txPreplay, round, setDelta)
-			err = nil
-
-			if err != nil {
-				roundjs, _ := json.Marshal(round)
-				log.Error("setMixTree error", "round", string(roundjs))
-				panic(err.Error())
-			}
-
-			txPreplay.PreplayResults.MixTreeMu.Unlock()
+			txPreplay.PreplayResults.IsExternalTransfer = curIsExternalTransfer
 		}
 
-		if reuseStatus.BaseStatus != cmptypes.Hit {
-			//if noOverMatching { // only no overmatching need RWRecordTrie
-			txPreplay.PreplayResults.RWRecordTrieMu.Lock()
-			if singleFuture {
-				txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
-			}
-			err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
-			txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
+		err = reuse.setMixTree(tx, txPreplay, round, setDelta)
 
-			if err != nil {
-				roundjs, _ := json.Marshal(round)
-				log.Error("setRWRecordTrie error", "round", string(roundjs))
-				panic(err.Error())
-			}
-			//}
-
-			if !noTrace && !singleFuture && notHitOrNotTraceHit {
-				if txPreplay.PreplayResults.IsExternalTransfer {
-					txPreplay.PreplayResults.DeltaTreeMu.Lock()
-					err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
-					txPreplay.PreplayResults.DeltaTreeMu.Unlock()
-
-					if err != nil {
-						roundjs, _ := json.Marshal(round)
-						log.Error("setDeltaTree error", "round", string(roundjs))
-						panic(err.Error())
-					}
-				}
-			}
+		if err != nil {
+			roundjs, _ := json.Marshal(round)
+			log.Error("setMixTree error", "round", string(roundjs))
+			panic(err.Error())
 		}
 
-		if enablePause {
-			reuse.MSRACache.PauseForProcess()
+		txPreplay.PreplayResults.MixTreeMu.Unlock()
+	}
+
+	rwTreeNeededBeforeTrace := (!traceNeeded || cfg.AddFastPath) && cfg.NoOverMatching
+	rwTreeNeededAfterTrace := traceNeeded && !cfg.AddFastPath
+	rwTreeNeeded := rwTreeNeededBeforeTrace || rwTreeNeededAfterTrace
+	newRWRecord := notHit || (!isTraceHit && rwTreeNeededBeforeTrace && (reuseStatus.HitType != cmptypes.TrieHit))
+
+	if rwTreeNeeded && newRWRecord {
+
+		curBlockNumber := receipt.BlockNumber.Uint64()
+
+		txPreplay.PreplayResults.RWRecordTrieMu.Lock()
+		if cfg.SingleFuture {
+			txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
 		}
+		err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+		txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
-		if !singleFuture && trace != nil {
-			traceTrieStart := time.Now()
-
-			txPreplay.PreplayResults.TraceTrieMu.Lock()
-			reuse.setTraceTrie(tx, txPreplay, round, trace, reuseStatus, cfg)
-			txPreplay.PreplayResults.TraceTrieMu.Unlock()
-
-			cost := time.Since(traceTrieStart)
-			if cost > 14*time.Second {
-				log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
-					"traceLen", len(trace.Stats), "traceRLCount", len(trace.RLNodeSet), "traceJSPCount", len(trace.JSPSet))
-			}
-		}
-
-		if time.Since(start) > 30*time.Second {
-			log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
+		if err != nil {
+			roundjs, _ := json.Marshal(round)
+			log.Error("setRWRecordTrie error", "round", string(roundjs))
+			panic(err.Error())
 		}
 	}
+
+	if enablePause {
+		reuse.MSRACache.PauseForProcess()
+	}
+
+	newTraceRecord := false
+	if notHit {
+		newTraceRecord = true
+	} else {
+		if reuseStatus.HitType == cmptypes.TraceHit {
+			if cfg.NoOverMatching {
+				if reuseStatus.TraceStatus.TraceHitType == cmptypes.OpHit {
+					newTraceRecord = true
+				}
+			} else {
+				if !(reuseStatus.TraceStatus.TraceHitType == cmptypes.AllDepHit) {
+					newTraceRecord = true
+				}
+			}
+		}
+	}
+
+	if traceNeeded && newTraceRecord && trace != nil {
+		traceTrieStart := time.Now()
+
+		txPreplay.PreplayResults.TraceTrieMu.Lock()
+		reuse.setTraceTrie(tx, txPreplay, round, trace, reuseStatus, cfg)
+		txPreplay.PreplayResults.TraceTrieMu.Unlock()
+
+		cost := time.Since(traceTrieStart)
+		if cost > 14*time.Second {
+			log.Warn("Slow setTraceTrie", "txHash", txHash.Hex(), "Seconds", cost,
+				"traceLen", len(trace.Stats), "traceRLCount", len(trace.RLNodeSet), "traceJSPCount", len(trace.JSPSet))
+		}
+	}
+
+	if time.Since(start) > 30*time.Second {
+		log.Warn("Slow setMainResult", "txHash", txHash.Hex(), "readSize", len(round.RWrecord.ReadDetail.ReadDetailSeq), "writeSize", len(round.RWrecord.WState))
+	}
+
+	//}
+
+	//if !cfg.NoTrace && !cfg.SingleFuture && notHitOrNotTraceHit {
+	//	if txPreplay.PreplayResults.IsExternalTransfer {
+	//		txPreplay.PreplayResults.DeltaTreeMu.Lock()
+	//		err = reuse.setDeltaTree(tx, txPreplay, round, curBlockNumber)
+	//		txPreplay.PreplayResults.DeltaTreeMu.Unlock()
+	//
+	//		if err != nil {
+	//			roundjs, _ := json.Marshal(round)
+	//			log.Error("setDeltaTree error", "round", string(roundjs))
+	//			panic(err.Error())
+	//		}
+	//	}
+	//}
+
 }
 
 func (reuse *Cmpreuse) setRWRecordTrie(txPreplay *cache.TxPreplay, round *cache.PreplayResult, curBlockNumber uint64) error {
@@ -184,6 +195,7 @@ func (reuse *Cmpreuse) setMixTreeWithOnlyDependence(txPreplay *cache.TxPreplay, 
 
 func (reuse *Cmpreuse) setMixTree(tx *types.Transaction, txPreplay *cache.TxPreplay, round *cache.PreplayResult, setDelta bool) error {
 	if setDelta {
+		panic("Delta should be disabled")
 		setDelta = txPreplay.PreplayResults.IsExternalTransfer
 	}
 	return InsertMixTree(tx, txPreplay.PreplayResults.MixTree, round, setDelta)
@@ -323,14 +335,27 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 		if isAllDepHit {
 			statedb.SetAllowObjCopy(saveFlag)
 		}
-		rwrecord = reuseRound.RWrecord
+
+		if reuseStatus.HitType == cmptypes.TraceHit && reuseStatus.TraceStatus.TraceHitType == cmptypes.OpHit {
+			hitTrace := reuseRound.Trace.(*STrace)
+			registers := reuseStatus.TraceStatus.SearchResult.(*TraceTrieSearchResult).registers
+			rwrecord = hitTrace.GenerateRWRecord(statedb, registers)
+		} else {
+			rwrecord = reuseRound.RWrecord
+		}
 		trace = reuseRound.Trace.(*STrace)
 		if trace != nil && trace.DebugBuffer != nil {
 			trace = trace.ShallowCopyAndExtendTrace()
+			statusStr := reuseStatus.HitType.String()
+			if reuseStatus.HitType == cmptypes.MixHit {
+				statusStr += "-" + reuseStatus.MixStatus.MixHitType.String()
+			}else if reuseStatus.HitType == cmptypes.TraceHit {
+				statusStr += "-" + reuseStatus.TraceStatus.TraceHitType.String()
+			}
 			defer func() {
 				if e := recover(); e != nil {
 					txHex := tx.Hash().Hex()
-					fmt.Printf("Tx %s Tracer Error\n  %s :%s", txHex, e, debug.Stack())
+					fmt.Printf("Tx %s Reuse %v Tracer Error\n  %s :%s", txHex, statusStr, e, debug.Stack())
 					trace.DebugBuffer.DumpBufferToFile(fmt.Sprintf("/tmp/errTxTrace%v.txt", txHex))
 					panic(e)
 				}
@@ -416,8 +441,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 		curTxRes := cmptypes.NewTxResID(tx.Hash(), roundID)
 		var accChanges cmptypes.TxResIDMap
 
-		if cfg.MSRAVMSettings.NoOverMatching {
-		} else {
+		if !cfg.MSRAVMSettings.NoOverMatching {
 			if reuseStatus.BaseStatus == cmptypes.Hit {
 				if reuseStatus.HitType == cmptypes.MixHit &&
 					(reuseStatus.MixStatus.MixHitType == cmptypes.PartialHit || reuseStatus.MixStatus.MixHitType == cmptypes.PartialDeltaHit) {
@@ -444,11 +468,25 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 					wobjects = nil //GetWObjectsFromWObjectWeakRefs(reuse.MSRACache, reuseRound.WObjectWeakRefs)
 					accChanges = reuseRound.AccountChanges
 					statedb.ApplyAccountChanged(accChanges)
-				} else if reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit {
-					hitTrace := reuseRound.Trace.(*STrace)
-					registers := reuseStatus.TraceStatus.SearchResult.(*TraceTrieSearchResult).registers
-					rwrecord = hitTrace.GenerateRWRecord(statedb, registers)
-					readDeps = rwrecord.ReadDetail.ReadAddressAndBlockSeq
+				} else if reuseStatus.HitType == cmptypes.TraceHit {
+					traceHitType := reuseStatus.TraceStatus.TraceHitType
+					if traceHitType == cmptypes.AllDepHit {
+						readDeps = reuseRound.ReadDepSeq
+						wobjects = nil
+						checkReadDepSeq(statedb, readDeps)
+						//accChanges = reuseRound.AccountChanges
+						//statedb.ApplyAccountChanged(accChanges)
+					} else {
+						if traceHitType == cmptypes.PartialHit || traceHitType == cmptypes.AllDetailHit {
+							readDeps = updateNewReadDepSeq(statedb, reuseRound.ReadDepSeq)
+						} else {
+							if traceHitType != cmptypes.OpHit {
+								panic("Should be OpHit")
+							}
+							readDeps = rwrecord.ReadDetail.ReadAddressAndBlockSeq
+						}
+						wobjects, wobjectCopy, wobjectNotCopy = statedb.RWRecorder().WObjectDump()
+					}
 					accChanges = make(cmptypes.TxResIDMap, len(reuseRound.AccountChanges))
 					if reuseStatus.TraceTrieHitAddrs != nil {
 						for addr, reusedChange := range reuseStatus.TraceTrieHitAddrs {
@@ -516,4 +554,16 @@ func updateNewReadDepSeq(db *state.StateDB, oldReadDepSeq []*cmptypes.AddrLocVal
 		}
 	}
 	return newReadDepSeq
+}
+
+func checkReadDepSeq(db *state.StateDB, oldReadDepSeq []*cmptypes.AddrLocValue) {
+	for _, rd := range oldReadDepSeq {
+		if rd.AddLoc.Field == cmptypes.Dependence {
+			newChangedBy := db.GetTxDepByAccount(rd.AddLoc.Address)
+			changedBy := rd.Value.(cmptypes.AccountDepValue)
+			if *changedBy.Hash() != *newChangedBy.Hash() {
+				panic(fmt.Sprintf("Different dep at %v old %v new %v", rd.AddLoc.String(), changedBy.String(), newChangedBy.String()))
+			}
+		}
+	}
 }
