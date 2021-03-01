@@ -145,7 +145,7 @@ package optipreplayer
 //	if preplayer.trigger.IsTxsInDetector {
 //		preplayer.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(preplayer.chainHeadCh)
 //	}
-//	go preplayer.mainLoop()
+//	go preplayer.GroupSchedulerLoop()
 //	go preplayer.newWorkLoop()
 //
 //	// Submit preplaying work to initialize pending state.
@@ -254,8 +254,8 @@ package optipreplayer
 //	//execute()
 //}
 //
-//// mainLoop is a standalone goroutine to regenerate the sealing task based on the received event.
-//func (p *Preplayer) mainLoop() {
+//// GroupSchedulerLoop is a standalone goroutine to regenerate the sealing task based on the received event.
+//func (p *Preplayer) GroupSchedulerLoop() {
 //	if p.trigger.IsTxsInDetector {
 //		defer p.chainHeadSub.Unsubscribe()
 //	}

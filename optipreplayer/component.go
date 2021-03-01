@@ -3,6 +3,7 @@ package optipreplayer
 import (
 	"bytes"
 	"container/heap"
+	"crypto/sha256"
 	"fmt"
 	"github.com/ethereum/go-ethereum/cmpreuse/cmptypes"
 	"github.com/ethereum/go-ethereum/common"
@@ -552,9 +553,18 @@ func (o TxnOrder) String() string {
 	return retStr
 }
 
+func (o TxnOrder) Hash() common.Hash {
+	allBytes := make([]byte, 0, common.HashLength*len(o))
+	for _, txHash := range o {
+		allBytes = append(allBytes, txHash.Bytes()...)
+	}
+	return sha256.Sum256(allBytes)
+}
+
 type OrderAndHeader struct {
-	order  TxnOrder
-	header Header
+	order      TxnOrder
+	header     Header
+	isRepeated bool
 }
 
 type TxnGroup struct {
@@ -573,8 +583,12 @@ type TxnGroup struct {
 	txnCount    int
 	chainFactor int
 	orderCount  *big.Int
-	startList   []int
-	subpoolList []TransactionPool
+
+	//Deprecated
+	startList []int // startIndex of the first tx in each subpool
+	//Deprecated
+	subpoolList []TransactionPool // divided pool by gasPrice from high to low
+
 	fullPreplay bool
 	addrNotCopy map[common.Address]struct{}
 
@@ -709,21 +723,24 @@ func (g *TxnGroup) updateByPreplay(resultMap map[common.Hash]*cache.ExtraResult,
 	defer g.preplayMu.Unlock()
 
 	g.preplayCount++
-	for _, txns := range g.txnPool {
-		for _, txn := range txns {
-			if result, ok := resultMap[txn.Hash()]; ok {
-				if result.Status == "will in" {
-					g.preplayFinish[txn.Hash()]++
+	if resultMap != nil {
+		for _, txns := range g.txnPool {
+			for _, txn := range txns {
+				if result, ok := resultMap[txn.Hash()]; ok {
+					if result.Status == "will in" {
+						g.preplayFinish[txn.Hash()]++
+					} else {
+						g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], fmt.Sprintf("%s:%s", result.Status, result.Reason))
+					}
 				} else {
-					g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], fmt.Sprintf("%s:%s", result.Status, result.Reason))
+					g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], "Nil result map in executor")
 				}
-			} else {
-				g.preplayFail[txn.Hash()] = append(g.preplayFail[txn.Hash()], "Nil result map in executor")
 			}
 		}
+		g.preplayOrderLog = append(g.preplayOrderLog, orderAndHeader.order)
+		g.preplayTimeLog = append(g.preplayTimeLog, orderAndHeader.header.time)
 	}
-	g.preplayOrderLog = append(g.preplayOrderLog, orderAndHeader.order)
-	g.preplayTimeLog = append(g.preplayTimeLog, orderAndHeader.header.time)
+
 	if !g.isPriorityConst {
 		g.priority = g.preplayCount * g.txnCount
 	}
@@ -1147,10 +1164,8 @@ func (l *PreplayLog) getGroupDistribution() (sizeDistribution, orderDistribution
 
 	orderDistribution = fmt.Sprintf("[1|2|6|24|120|720|>720]-[%d:%d:%d:%d:%d:%d:%d]", orderCounts[0],
 		orderCounts[1], orderCounts[2], orderCounts[3], orderCounts[4], orderCounts[5], orderCounts[6])
-
 	execDistribution = fmt.Sprintf("[0|1|2|4|8|16|>16]-[%d:%d:%d:%d:%d:%d:%d]", execCounts[0],
 		execCounts[1], execCounts[2], execCounts[3], execCounts[4], execCounts[5], execCounts[6])
-
 	chainDepDistribution = fmt.Sprintf("%d[cb|ts]-[%d:%d]", chainDepCount, coinbaseDepCount, timeStampDepCount)
 
 	return

@@ -98,7 +98,7 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 	preplayer.taskBuilder.setPreplayer(preplayer)
 	preplayer.missReporter.preplayer = preplayer
 
-	go taskBuilder.mainLoop()
+	go taskBuilder.TaskBuilderLoop()
 
 	go preplayer.listenLoop()
 	for i := 0; i < executorNum; i++ {
@@ -108,7 +108,7 @@ func NewPreplayer(config *params.ChainConfig, engine consensus.Engine, eth Backe
 	}
 	for i := 0; i < executorNum; i++ {
 		preplayer.routinePool.JobQueue <- func() {
-			preplayer.mainLoop()
+			preplayer.GroupSchedulerLoop()
 		}
 	}
 
@@ -176,19 +176,26 @@ func (p *Preplayer) groupLoop() {
 	}
 }
 
-func (p *Preplayer) mainLoop() {
+func (p *Preplayer) GroupSchedulerLoop() {
 	for {
 		if task := p.preplayTaskQueue.popTask(); task == nil {
 			time.Sleep(1 * time.Millisecond)
 		} else {
 			if task.isValid() {
 				if orderAndHeader, ok := <-task.nextOrderAndHeader; ok {
-					resultMap, roundID := p.commitNewWork(task, orderAndHeader.order, orderAndHeader.header)
-					if task.roundIDCh != nil {
-						task.roundIDCh <- roundID
+					if !orderAndHeader.isRepeated {
+						resultMap, roundID := p.commitNewWork(task, orderAndHeader.order, orderAndHeader.header)
+						if task.roundIDCh != nil {
+							task.roundIDCh <- roundID
+						}
+						task.updateByPreplay(resultMap, orderAndHeader)
+					}else{
+						task.updateByPreplay(nil, orderAndHeader)
 					}
+
+
 					p.preplayLog.reportGroupPreplay(task)
-					task.updateByPreplay(resultMap, orderAndHeader)
+
 					roundLimit := config.TXN_PREPLAY_ROUND_LIMIT
 					if p.cfg.SingleFuture {
 						roundLimit = 1

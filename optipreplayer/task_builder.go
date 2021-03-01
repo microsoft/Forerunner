@@ -2,16 +2,19 @@ package optipreplayer
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/optipreplayer/cache"
 	"github.com/ethereum/go-ethereum/params"
 	"math"
 	"math/big"
+	"math/rand"
 	"os"
 	"sort"
 	"sync"
@@ -73,45 +76,44 @@ type TaskBuilder struct {
 	// Log groups and transactions
 	preplayLog *PreplayLog
 
-	groupedReplacedTxns map[common.Hash]struct{}
+	groupedReplacedTxns     map[common.Hash]struct{}
 	groupedReplaceTxnsMutex sync.Mutex
 
 	preplayer *Preplayer
 
-	taskBuilderLogFile    *os.File
+	taskBuilderLogFile *os.File
 
 	cfg *vm.MSRAVMConfig
 }
 
 func NewTaskBuilder(config *params.ChainConfig, eth Backend, mu *sync.RWMutex, packageType PackageType, cfg *vm.MSRAVMConfig) *TaskBuilder {
 	builder := &TaskBuilder{
-		txPool:        eth.TxPool(),
-		chain:         eth.BlockChain(),
-		startCh:       make(chan struct{}, 1),
-		finishOnceCh:  make(chan struct{}),
-		exitCh:        make(chan struct{}),
-		mu:            mu,
-		packageType:   packageType,
-		originPool:    make(TransactionPool),
-		packagePool:   make(TransactionPool),
-		dupTxns:       make(map[common.Hash]types.Transactions),
-		preplayPool:   make(TransactionPool),
-		preplayRemain: new(int32),
-		remainCount:   make(map[common.Hash]int),
-		signer:        types.NewEIP155Signer(config.ChainID),
-		lastBaseline:  uint64(time.Now().Unix()),
-		setMinPrice:   func(price *big.Int) {},
-		trigger:       NewTrigger("TxsBlock1P1", 1),
-		nowGroups:     make(map[common.Hash]*TxnGroup),
-		rwrecord:      make(map[common.Hash]*RWRecord),
+		txPool:              eth.TxPool(),
+		chain:               eth.BlockChain(),
+		startCh:             make(chan struct{}, 1),
+		finishOnceCh:        make(chan struct{}),
+		exitCh:              make(chan struct{}),
+		mu:                  mu,
+		packageType:         packageType,
+		originPool:          make(TransactionPool),
+		packagePool:         make(TransactionPool),
+		dupTxns:             make(map[common.Hash]types.Transactions),
+		preplayPool:         make(TransactionPool),
+		preplayRemain:       new(int32),
+		remainCount:         make(map[common.Hash]int),
+		signer:              types.NewEIP155Signer(config.ChainID),
+		lastBaseline:        uint64(time.Now().Unix()),
+		setMinPrice:         func(price *big.Int) {},
+		trigger:             NewTrigger("TxsBlock1P1", 1),
+		nowGroups:           make(map[common.Hash]*TxnGroup),
+		rwrecord:            make(map[common.Hash]*RWRecord),
 		groupedReplacedTxns: make(map[common.Hash]struct{}),
-		cfg: cfg,
+		cfg:                 cfg,
 	}
 
 	if cfg.TaskBuilderChecking {
 		builder.taskBuilderLogFile, _ = os.OpenFile("/tmp/TaskBuilderLog.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, os.ModePerm)
 	}
-
 
 	return builder
 }
@@ -126,47 +128,47 @@ func (b *TaskBuilder) setPreplayer(preplayer *Preplayer) {
 	b.preplayLog = preplayer.preplayLog
 }
 
-func (b *TaskBuilder) debugLog(fmtStr string, objects ...interface{}){
+func (b *TaskBuilder) debugLog(fmtStr string, objects ...interface{}) {
 	content := fmt.Sprintf(fmtStr, objects...) + "\n"
 	b.taskBuilderLogFile.WriteString(content)
 }
 
-func (b *TaskBuilder) debugLogWithTimestamp(fmtStr string, objects ...interface{}){
+func (b *TaskBuilder) debugLogWithTimestamp(fmtStr string, objects ...interface{}) {
 	now := time.Now()
 	content := "[" + now.Format("01-02|15:04:05.000") + "] " + fmt.Sprintf(fmtStr, objects...) + "\n"
 	b.taskBuilderLogFile.WriteString(content)
 }
 
-func (b *TaskBuilder) mainLoop() {
+func (b *TaskBuilder) TaskBuilderLoop() {
 	for {
 		select {
 		case <-b.startCh:
 			startTime := time.Now()
 			b.mu.RLock()
-			checkDuration(startTime, 1, "taskBulder mainLoop TOO SLOW")
+			checkDuration(startTime, 1, "taskBulder GroupSchedulerLoop TOO SLOW")
 
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
 				rawPending, _ := b.txPool.Pending()
-				checkDuration(startTime, 2, "taskBulder mainLoop TOO SLOW")
+				checkDuration(startTime, 2, "taskBulder GroupSchedulerLoop TOO SLOW")
 				if b.cfg.TaskBuilderChecking {
 					b.debugLogWithTimestamp("mainLoopIter blockNum %v blockHash %v deadline %v currentTime %v",
 						currentBlock.NumberU64(), currentBlock.Hash().String(), b.txnDeadline, time.Now().Unix())
 				}
 				b.resetPackagePool(rawPending)
-				checkDuration(startTime, 3, "taskBulder mainLoop TOO SLOW")
+				checkDuration(startTime, 3, "taskBulder GroupSchedulerLoop TOO SLOW")
 				b.resetPreplayPool()
-				checkDuration(startTime, 4, "taskBulder mainLoop TOO SLOW")
+				checkDuration(startTime, 4, "taskBulder GroupSchedulerLoop TOO SLOW")
 				if len(b.preplayPool) > 0 {
 					b.commitNewWork()
 					b.updateTxnGroup()
 				}
-				checkDuration(startTime, 5, "taskBulder mainLoop TOO SLOW")
+				checkDuration(startTime, 5, "taskBulder GroupSchedulerLoop TOO SLOW")
 			}
 			b.mu.RUnlock()
-			checkDuration(startTime, 6, "taskBulder mainLoop TOO SLOW")
+			checkDuration(startTime, 6, "taskBulder GroupSchedulerLoop TOO SLOW")
 			b.finishOnceCh <- struct{}{}
-			checkDuration(startTime, 7, "taskBulder mainLoop TOO SLOW")
+			checkDuration(startTime, 7, "taskBulder GroupSchedulerLoop TOO SLOW")
 		case <-b.exitCh:
 			return
 		}
@@ -199,7 +201,6 @@ func (b *TaskBuilder) resetPackagePool(rawPending TransactionPool) {
 			b.debugLogWithTimestamp("  after_add_miner_whitelist PackagePoolLen %v curretPoolLen %v",
 				b.packagePool.size(), rawPending.size())
 		}
-
 
 		for _, from := range b.globalCache.GetWhiteList() {
 			if txns, ok := rawPending[from]; ok {
@@ -548,8 +549,9 @@ func (b *TaskBuilder) updateTxnGroup() {
 
 		// start walk for new group
 		walk := func(group *TxnGroup) {
-			lastIndex := len(group.subpoolList) - 1
-			walkTxnsPool(lastIndex, group.startList[lastIndex], group, make(TxnOrder, group.txnCount), b)
+			//lastIndex := len(group.subpoolList) - 1
+			//walkTxnsPool(lastIndex, group.startList[lastIndex], group, make(TxnOrder, group.txnCount), b)
+			walkTxnsPool_2(group, b)
 			close(group.nextOrderAndHeader)
 			b.preplayLog.reportGroupEnd(group)
 		}
@@ -584,8 +586,6 @@ func (b *TaskBuilder) updateTxnGroup() {
 		//	}
 		//}
 	}
-
-
 
 	totalGroupCount, totalTxnCount = b.preplayLog.getTotalGroupAndTxCount()
 	if b.cfg.TaskBuilderChecking {
@@ -718,11 +718,173 @@ func divideTransactionPool(txns TransactionPool, txnCount, chainFactor int) (ord
 var timeShift = []uint64{0, math.MaxUint64, 1, math.MaxUint64 - 1, 2}
 // TODO: based on statistic: replace 2, -2
 
+const MaxRetryCount = 10
+
+func walkTxnsPool_2(group *TxnGroup, b *TaskBuilder) {
+
+	if !group.isValid() {
+		return
+	}
+
+	var walkheaders []Header
+	if group.isChainDep() {
+		var (
+			coinbaseTryCount  = 1
+			timestampTryCount = 1
+		)
+		if group.isCoinbaseDep() {
+			coinbaseTryCount = topActiveCount
+		}
+		if group.isTimestampDep() {
+			timestampTryCount = len(timeShift)
+		}
+		walkheaders = make([]Header, coinbaseTryCount*timestampTryCount)
+		index := 0
+		for indexGap := 0; indexGap < timestampTryCount; indexGap++ {
+			for i := 0; i < coinbaseTryCount; i++ {
+				timeIndex := (i + indexGap) % timestampTryCount
+				header := Header{coinbase: b.minerList.topActive[i], time: b.nowHeader.time + timeShift[timeIndex],
+					gasLimit: b.nowHeader.gasLimit}
+				walkheaders[index] = header
+				index++
+			}
+		}
+		rand.Shuffle(len(walkheaders)-1, func(i, j int) {
+			tmp := walkheaders[i+1]
+			walkheaders[i+1] = walkheaders[j+1]
+			walkheaders[j+1] = tmp
+		})
+	} else {
+		walkheaders = []Header{*b.nowHeader}
+	}
+
+	maxOrderCount := new(big.Int).Div(group.orderCount, big.NewInt(int64(group.chainFactor)))
+	headerAllWorked := make([]bool, len(walkheaders))
+	allWalkedHeaderCount := 0
+	headerPriorities := make([]map[common.Hash]struct{}, len(walkheaders))
+	headerOrders := make([]map[common.Hash]struct{}, len(walkheaders))
+
+	for i := range walkheaders {
+		headerOrders[i] = make(map[common.Hash]struct{})
+		headerPriorities[i] = make(map[common.Hash]struct{})
+	}
+	//walkedPriorities := make(map[common.Hash]bool, 10)
+	//walkedOrder := make(map[common.Hash]struct{}, 10)
+
+	if len(group.txnPool) > 1 {
+		retryCount := 0
+		headerIndex := 0
+		startTime := time.Now()
+
+		for ; allWalkedHeaderCount < len(walkheaders); headerIndex++ {
+
+			if !group.isValid(){
+				break
+			}
+
+			headerIndex = headerIndex % len(walkheaders)
+
+			if headerAllWorked[headerIndex] {
+				continue
+			}
+
+			var shuffleIndex []int
+			var isRepeated bool
+
+
+			shuffleIndex = rand.Perm(group.txnCount)
+
+			sliceHash := getIntSliceHash(shuffleIndex)
+			curHeaderPriorities := headerPriorities[headerIndex]
+
+			_, ok := curHeaderPriorities[sliceHash]
+			if ok {
+				// retry
+				if retryCount < MaxRetryCount {
+					retryCount++
+					continue
+				}
+				isRepeated = true
+			} else {
+				curHeaderPriorities[sliceHash] = struct{}{}
+			}
+			//}
+
+			newPriorities := make(map[common.Hash]int, group.txnCount)
+			for index := 0; index < group.txnCount; index++ {
+				newPriorities[common.BytesToHash(group.txnList[index])] = shuffleIndex[index]
+			}
+
+			newOrder := make(TxnOrder, group.txnCount)
+
+			rawTxs := group.txnPool.copy()
+			txs := types.NewTransactionsByPriceAndNonce(b.signer, rawTxs, newPriorities, false)
+			for i := 0; i < group.txnCount; i++ {
+				newOrder[i] = txs.Peek().Hash()
+				txs.Shift()
+			}
+			curHeaderOrder := headerOrders[headerIndex]
+
+			newOrderHash := newOrder.Hash()
+			if _, ok := curHeaderOrder[newOrderHash]; ok {
+				// repeated order
+				// retry
+				if retryCount < MaxRetryCount {
+					retryCount++
+					continue
+				}
+				isRepeated = true
+			} else {
+				curHeaderOrder[newOrderHash] = struct{}{}
+			}
+
+			if maxOrderCount.IsInt64() && int64(len(curHeaderOrder)) >= maxOrderCount.Int64() {
+				headerAllWorked[headerIndex] = true
+				allWalkedHeaderCount++
+			}
+
+			dur := time.Since(startTime)
+			if dur > 100*time.Millisecond {
+				log.Warn("TOO SLOW walk loop", "duration", dur.String(), "groupSize", group.txnCount,
+					"subpoolSize", len(group.subpoolList), "curOrderCount", len(curHeaderOrder), "maxOrderCount", maxOrderCount,
+					"retryCount", retryCount, "isRepeated", isRepeated)
+			}
+
+			orderAndHeader := OrderAndHeader{header: walkheaders[headerIndex], order: newOrder, isRepeated: isRepeated}
+			group.nextOrderAndHeader <- orderAndHeader
+			retryCount = 0
+			startTime = time.Now()
+
+		}
+	} else {
+		for hi := 0; hi < len(walkheaders); hi++ {
+			if !group.isValid(){
+				break
+			}
+			orderAndHeader := OrderAndHeader{header: walkheaders[hi], order: make(TxnOrder, 0)}
+			group.nextOrderAndHeader <- orderAndHeader
+		}
+	}
+
+}
+
+func getIntSliceHash(nums []int) common.Hash {
+	data := make([]byte, 4*len(nums))
+	for i, num := range nums {
+		data[i*4] = byte(num)
+		data[i*4+1] = byte(num >> 8)
+		data[i*4+2] = byte(num >> 16)
+		data[i*4+3] = byte(num >> 24)
+	}
+	return sha256.Sum256(data)
+}
+
 func walkTxnsPool(subpoolLoc int, txnLoc int, group *TxnGroup, order TxnOrder, b *TaskBuilder) {
 	// boundaries of recursion
 	if !group.isValid() {
 		return
 	}
+
 	if group.isSubInOrder(subpoolLoc) {
 		if subpoolLoc == 0 {
 			orderAndHeader := OrderAndHeader{order: make(TxnOrder, len(order))}
@@ -877,8 +1039,6 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 		txnList: txnList,
 	}
 
-
-
 	//if b.preplayLog.isGroupExist(group) {
 	//	return
 	//}
@@ -962,7 +1122,7 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 				b.globalCache.CommitTxEnqueue(txn.Hash(), nowTime)
 			}
 		}
-		<- extraGroup.roundIDCh
+		<-extraGroup.roundIDCh
 	}
 
 	//for _, txns := range dupTxns {
