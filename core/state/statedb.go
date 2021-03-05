@@ -78,11 +78,15 @@ func newDeltaDB() *deltaDB {
 }
 
 type TxPerfAndStatus struct {
-	Receipt     *types.Receipt
-	Time        time.Duration
-	ReuseStatus *cmptypes.ReuseStatus
-	Tx          *types.Transaction
-	Delay       float64
+	Receipt              *types.Receipt
+	Time                 time.Duration
+	ReuseStatus          *cmptypes.ReuseStatus
+	Tx                   *types.Transaction
+	Delay                float64
+	AddrWarmupMiss       int
+	KeyWarmupMiss        int
+	AddrCreateWarmupMiss int
+	KeyCreateWarmupMiss  int
 }
 
 // StateDBs within the ethereum protocol are used to store anything
@@ -173,17 +177,17 @@ type StateDB struct {
 	preAllocatedLogArrays       [][]*types.Log
 	nextLogArrayIndex           int
 
-	ProcessedForDb       map[common.Address]map[common.Hash]struct{}
-	ProcessedForObj      map[common.Address]map[common.Hash]struct{}
-	CalWarmupMiss        bool
-	WarmupMissDetail     bool
-	AccountCreate        int
-	AddrWarmupMiss       int
-	AddrNoWarmup         int
-	AddrCreateWarmupMiss map[common.Address]struct{}
-	KeyWarmupMiss        int
-	KeyNoWarmup          int
-	KeyCreateWarmupMiss  int
+	ProcessedForDb         map[common.Address]map[common.Hash]struct{}
+	ProcessedForObj        map[common.Address]map[common.Hash]struct{}
+	CalWarmupMiss          bool
+	WarmupMissDetail       bool
+	AccountCreate          int
+	AddrWarmupMiss         int
+	AddrNoWarmup           int
+	AddrCreateWarmupMiss   map[common.Address]struct{}
+	KeyWarmupMiss          int
+	KeyNoWarmup            int
+	KeyCreateWarmupMiss    int
 	AccessedAccountAndKeys map[common.Address]map[common.Hash]struct{}
 
 	UnknownTxs        []*types.Transaction
@@ -199,13 +203,18 @@ type StateDB struct {
 	InWarmupMode       bool
 }
 
-func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64, tx *types.Transaction) {
+func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64, tx *types.Transaction,
+	AddrWarmupMiss, KeyWarmupMiss, AddrCreateWarmupMiss, KeyCreateWarmupMiss int) {
 	tf := self.GetNewTxPerf()
 	tf.ReuseStatus = status
 	tf.Receipt = receipt
 	tf.Time = time
 	tf.Delay = delayInSecond
 	tf.Tx = tx
+	tf.AddrWarmupMiss = AddrWarmupMiss
+	tf.KeyWarmupMiss = KeyWarmupMiss
+	tf.AddrCreateWarmupMiss = AddrCreateWarmupMiss
+	tf.KeyCreateWarmupMiss = KeyCreateWarmupMiss
 	self.TxPerfs = append(self.TxPerfs, tf)
 }
 

@@ -717,7 +717,7 @@ func (reuse *Cmpreuse) setStateDB(bc core.ChainContext, author *common.Address, 
 		case status.HitType == cmptypes.MixHit:
 			MixApplyObjState(statedb, round.RWrecord, round.WObjectWeakRefs, txPreplay, status.MixStatus, abort)
 		case status.HitType == cmptypes.TraceHit:
-			isAbort, txResMap := sr.ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching, isBlockProcess)
+			isAbort, txResMap := sr._ApplyStores(txPreplay, status.TraceStatus, abort, cfg.MSRAVMSettings.NoOverMatching, isBlockProcess)
 			if isAbort {
 				return
 			} else {

@@ -1874,6 +1874,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		if statedb == nil {
 			statedb, err = state.New(parent.Root, bc.stateCache)
+			statedb.CalWarmupMiss = true
+			statedb.AddrCreateWarmupMiss = make(map[common.Address]struct{})
 		} else {
 			if cache.ToScreen {
 				statedb.CalWarmupMiss = true
@@ -2011,6 +2013,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 					if txTo != nil {
 						toStr = txTo.String()
 					}
+
+					warmupMissStr := fmt.Sprintf("wmA %v wmK %v wmCA %v wmCK %v", tf.AddrWarmupMiss, tf.KeyWarmupMiss, tf.AddrCreateWarmupMiss,
+						tf.KeyCreateWarmupMiss)
+
 					if bc.vmConfig.MSRAVMSettings.CmpReuse {
 						reuseStatus := tf.ReuseStatus
 						reuseStr := fmt.Sprintf("baseStatus '%v'", reuseStatus.BaseStatus.String())
@@ -2039,11 +2045,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 							reuseStr += " " + reuseStatus.TraceStatus.GetPerfString()
 						}
 
-						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' reuse %v gas %v gasprice %v delay %v %v\n",
+						txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' reuse %v gas %v gasprice %v delay %v %v %v\n",
 							timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 							tf.Receipt.TxHash.Hex(),
 							toStr,
-							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr)
+							tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr, warmupMissStr)
 						bc.txLogFile.WriteString(txResult)
 					} else {
 						if bc.vmConfig.MSRAVMSettings.EnablePreplay {
@@ -2051,19 +2057,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 							if tf.Delay < 0 {
 								reuseStr = "baseStatus 'NoListen'"
 							}
-							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v delay %v %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v delay %v %v %v\n",
 								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								toStr,
-								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr)
+								tf.Time.Nanoseconds(), tf.Receipt.GasUsed, tf.Tx.GasPrice().String(), tf.Delay, reuseStr, warmupMissStr)
 							bc.txLogFile.WriteString(txResult)
 						} else {
-							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v\n",
+							txResult := fmt.Sprintf("t '[%s]' id '%v' tx '%v' to '%v' base %v gas %v gasprice %v %v\n",
 								timeStr, block.Number().String()+"_"+block.Hash().Hex()+"_"+strconv.Itoa(int(tf.Receipt.TransactionIndex)),
 								tf.Receipt.TxHash.Hex(),
 								toStr,
 								tf.Time.Nanoseconds(), tf.Receipt.GasUsed,
-								tf.Tx.GasPrice().String())
+								tf.Tx.GasPrice().String(), warmupMissStr)
 							bc.txLogFile.WriteString(txResult)
 						}
 					}

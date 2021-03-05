@@ -75,55 +75,78 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	traceNeeded := !(cfg.NoTrace || cfg.SingleFuture)
 
 	var err error
-	isTraceHit := reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit
+	//isTraceHit := reuseStatus.BaseStatus == cmptypes.Hit && reuseStatus.HitType == cmptypes.TraceHit
 	mixTreeNeeded := (!traceNeeded || cfg.AddFastPath) && !cfg.NoOverMatching
-	newMixRecord := notHit || (!isTraceHit && !(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit))
+	newMixRecord := notHit || !(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit)
+	//newMixRecord := notHit || (!isTraceHit && !(reuseStatus.HitType == cmptypes.MixHit && reuseStatus.MixStatus.MixHitType == cmptypes.AllDepHit))
 	if mixTreeNeeded && newMixRecord {
 		txPreplay.PreplayResults.MixTreeMu.Lock()
-		if cfg.SingleFuture {
-			txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
-		}
-		if setDelta {
-			curIsExternalTransfer := cache.IsExternalTransfer(rwrecord.ReadDetail, tx)
-			if curIsExternalTransfer != txPreplay.PreplayResults.IsExternalTransfer {
-				log.Warn("IsExternalTransfer changes", "tx", txPreplay.TxHash.Hex(),
-					"old", txPreplay.PreplayResults.IsExternalTransfer, "newValue", curIsExternalTransfer)
-				txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+		if trace == nil && txPreplay.PreplayResults.IsTraceBaseMixTree {
+			// do not insert non-trace based rwrecord into tracebasedmixtree
+		} else {
+			if trace != nil && !txPreplay.PreplayResults.IsTraceBaseMixTree {
+				if txPreplay.PreplayResults.MixTree.RoundCount != 0 {
+					txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+				}
+				txPreplay.PreplayResults.IsTraceBaseMixTree = true
 			}
-			txPreplay.PreplayResults.IsExternalTransfer = curIsExternalTransfer
-		}
+			if !cfg.SingleFuture || txPreplay.PreplayResults.MixTree.RoundCount == 0 {
+				//txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+				if setDelta {
+					curIsExternalTransfer := cache.IsExternalTransfer(rwrecord.ReadDetail, tx)
+					if curIsExternalTransfer != txPreplay.PreplayResults.IsExternalTransfer {
+						log.Warn("IsExternalTransfer changes", "tx", txPreplay.TxHash.Hex(),
+							"old", txPreplay.PreplayResults.IsExternalTransfer, "newValue", curIsExternalTransfer)
+						txPreplay.PreplayResults.MixTree = cmptypes.NewPreplayResTrie()
+					}
+					txPreplay.PreplayResults.IsExternalTransfer = curIsExternalTransfer
+				}
 
-		err = reuse.setMixTree(tx, txPreplay, round, setDelta)
+				err = reuse.setMixTree(tx, txPreplay, round, setDelta)
+			}
+		}
+		txPreplay.PreplayResults.MixTreeMu.Unlock()
 
 		if err != nil {
 			roundjs, _ := json.Marshal(round)
 			log.Error("setMixTree error", "round", string(roundjs))
 			panic(err.Error())
 		}
-
-		txPreplay.PreplayResults.MixTreeMu.Unlock()
 	}
 
 	rwTreeNeededBeforeTrace := (!traceNeeded || cfg.AddFastPath) && cfg.NoOverMatching
 	rwTreeNeededAfterTrace := traceNeeded && !cfg.AddFastPath
 	rwTreeNeeded := rwTreeNeededBeforeTrace || rwTreeNeededAfterTrace
-	newRWRecord := notHit || (!isTraceHit && rwTreeNeededBeforeTrace && (reuseStatus.HitType != cmptypes.TrieHit))
+	//newRWRecord := notHit || (!isTraceHit && rwTreeNeededBeforeTrace && (reuseStatus.HitType != cmptypes.TrieHit))
+	newRWRecord := notHit || (rwTreeNeededBeforeTrace && (reuseStatus.HitType != cmptypes.TrieHit))
 
 	if rwTreeNeeded && newRWRecord {
 
 		curBlockNumber := receipt.BlockNumber.Uint64()
 
 		txPreplay.PreplayResults.RWRecordTrieMu.Lock()
-		if cfg.SingleFuture {
-			txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+		if trace == nil && txPreplay.PreplayResults.IsTraceBasedRWTrie {
+			// do not insert no-trace based RWRecord after switched to TraceBasedRWTrie
+		} else {
+			if trace != nil && !txPreplay.PreplayResults.IsTraceBasedRWTrie {
+				// switch to trace based RWRecordTree
+				if txPreplay.PreplayResults.RWRecordTrie.RoundCount != 0 {
+					txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+				}
+				txPreplay.PreplayResults.IsTraceBasedRWTrie = true
+			}
+			if !cfg.SingleFuture || txPreplay.PreplayResults.RWRecordTrie.RoundCount == 0 {
+				//txPreplay.PreplayResults.RWRecordTrie = cmptypes.NewPreplayResTrie()
+				err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
+			}
 		}
-		err = reuse.setRWRecordTrie(txPreplay, round, curBlockNumber)
 		txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
 		if err != nil {
 			roundjs, _ := json.Marshal(round)
 			log.Error("setRWRecordTrie error", "round", string(roundjs))
 			panic(err.Error())
+
 		}
 	}
 
@@ -349,7 +372,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 			statusStr := reuseStatus.HitType.String()
 			if reuseStatus.HitType == cmptypes.MixHit {
 				statusStr += "-" + reuseStatus.MixStatus.MixHitType.String()
-			}else if reuseStatus.HitType == cmptypes.TraceHit {
+			} else if reuseStatus.HitType == cmptypes.TraceHit {
 				statusStr += "-" + reuseStatus.TraceStatus.TraceHitType.String()
 			}
 			defer func() {
@@ -414,7 +437,11 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 				//	//fmt.Printf(fmtStr, args...)
 				//	debugOut(fmtStr, args...)
 				//}
-				CrossCheck(trace.CrosscheckStats, readDetail, wstate, receipt.Logs, debugOut)
+				trace.ComputeDepAndJumpInfo()
+				rwrecord = trace.GenerateRWRecord(statedb, nil)
+				readDeps = rwrecord.ReadDetail.ReadAddressAndBlockSeq
+				//readDetail, wstate = rwrecord.ReadDetail, rwrecord.WState
+				//CrossCheck(trace.CrosscheckStats, readDetail, wstate, receipt.Logs, debugOut)
 
 				registerMapping, highestIndex := trace.RAlloc, trace.RegisterFileSize
 				loadCount, readCount, storeCount, logCount := GetLRSL(trace.Stats)

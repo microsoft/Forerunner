@@ -252,6 +252,7 @@ type PreplayResults struct {
 	// deprecated
 	ReadDepTree               *cmptypes.PreplayResTrie `json:"-"`
 	MixTree                   *cmptypes.PreplayResTrie
+	IsTraceBaseMixTree        bool
 	MixTreeMu                 *cmptypes.SimpleTryLock //trylock.TryLocker
 	TraceTrie                 ITracerTrie
 	TraceTrieMu               *cmptypes.SimpleTryLock //trylock.TryLocker
@@ -259,6 +260,7 @@ type PreplayResults struct {
 	DeltaTree                 *cmptypes.PreplayResTrie
 	DeltaTreeMu               *cmptypes.SimpleTryLock //trylock.TryLocker
 	RWRecordTrie              *cmptypes.PreplayResTrie
+	IsTraceBasedRWTrie        bool
 	RWRecordTrieMu            *cmptypes.SimpleTryLock
 
 	IsExternalTransfer bool
@@ -1281,7 +1283,10 @@ func (r *GlobalCache) SetMainResult(roundID uint64, receipt *types.Receipt, rwRe
 	txPreplay.LockRound()
 	defer txPreplay.UnlockRound()
 
-	round, _ := txPreplay.CreateOrGetRound(roundID)
+	round, isNewRound := txPreplay.CreateOrGetRound(roundID)
+
+	cmptypes.MyAssert(isNewRound, "Should always be a new round here txHash %v roundID %v old RoundID %v rwrecord %v",
+		txPreplay.TxHash.Hex(), roundID, round.RoundID, round.RWrecord == nil)
 
 	round.RWrecord = rwRecord
 	round.Receipt = receipt

@@ -429,7 +429,8 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 						confirmationDelayNano := blockPre.ListenTimeNano - txListen.ListenTimeNano
 						confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
 					}
-					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond, tx)
+					statedb.AddTxPerf(receipt, txDuration, reuseStatus, confirmationDelaySecond, tx,
+						statedb.AddrWarmupMiss, statedb.KeyWarmupMiss, len(statedb.AddrCreateWarmupMiss), statedb.KeyCreateWarmupMiss)
 				}
 			}
 
@@ -520,7 +521,8 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 							confirmationDelaySecond = float64(confirmationDelayNano) / float64(1000*1000*1000)
 						}
 					}
-					statedb.AddTxPerf(receipt, txDuration, nil, confirmationDelaySecond, tx)
+					statedb.AddTxPerf(receipt, txDuration, nil, confirmationDelaySecond, tx, statedb.AddrWarmupMiss, statedb.KeyWarmupMiss, len(statedb.AddrCreateWarmupMiss), statedb.KeyCreateWarmupMiss)
+					statedb.ClearMiss()
 				}
 
 			}

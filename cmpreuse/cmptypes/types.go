@@ -62,6 +62,10 @@ const (
 
 	//DeltaInfo
 	MinBalance
+
+	// State info used by tracer
+	CodeSize
+	FieldTotalSize
 )
 
 func (f Field) String() string {
@@ -100,6 +104,8 @@ func (f Field) String() string {
 		return "suicided"
 	case MinBalance:
 		return "minBalance"
+	case CodeSize:
+		return "codeSize"
 	}
 	return ""
 }
@@ -979,6 +985,7 @@ func NewPreplayResTrie() *PreplayResTrie {
 		RoundCount: 0,
 	}
 }
+
 
 //func (t *PreplayResTrie) Clear() {
 //	t.Root = &PreplayResTrieNode{}

@@ -145,30 +145,30 @@ func (b *TaskBuilder) TaskBuilderLoop() {
 		case <-b.startCh:
 			startTime := time.Now()
 			b.mu.RLock()
-			checkDuration(&startTime, 1, "taskBuilder GroupSchedulerLoop TOO SLOW")
+			checkDuration(&startTime, 1, "taskBuilder TaskBuilderLoop TOO SLOW", 100)
 			currentBlock := b.chain.CurrentBlock()
 			if b.parent != nil && currentBlock.Root() == b.parent.Root() {
 				rawPending, _ := b.txPool.Pending()
-				checkDuration(&startTime, 2, "taskBuilder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 2, "taskBuilder TaskBuilderLoop TOO SLOW", 200)
 				if b.cfg.TaskBuilderChecking {
 					b.debugLogWithTimestamp("mainLoopIter blockNum %v blockHash %v deadline %v currentTime %v",
 						currentBlock.NumberU64(), currentBlock.Hash().String(), b.txnDeadline, time.Now().Unix())
 				}
 				b.resetPackagePool(rawPending)
-				checkDuration(&startTime, 3, "taskBuilder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 3, "taskBuilder TaskBuilderLoop TOO SLOW", 200)
 				b.resetPreplayPool()
-				checkDuration(&startTime, 4, "taskBuilder GroupSchedulerLoop TOO SLOW")
+				checkDuration(&startTime, 4, "taskBuilder TaskBuilderLoop TOO SLOW", 100)
 				if len(b.preplayPool) > 0 {
 					b.commitNewWork()
-					checkDuration(&startTime, 5, "taskBuilder GroupSchedulerLoop TOO SLOW")
+					checkDuration(&startTime, 5, "taskBuilder TaskBuilderLoop TOO SLOW", 500)
 					b.updateTxnGroup()
-					checkDuration(&startTime, 6, "taskBuilder GroupSchedulerLoop TOO SLOW")
+					checkDuration(&startTime, 6, "taskBuilder TaskBuilderLoop TOO SLOW", 300)
 				}
 			}
 			b.mu.RUnlock()
-			checkDuration(&startTime, 7, "taskBuilder GroupSchedulerLoop TOO SLOW")
+			checkDuration(&startTime, 7, "taskBuilder TaskBuilderLoop TOO SLOW", 100)
 			b.finishOnceCh <- struct{}{}
-			checkDuration(&startTime, 8, "taskBuilder GroupSchedulerLoop TOO SLOW")
+			checkDuration(&startTime, 8, "taskBuilder TaskBuilderLoop TOO SLOW", 100)
 		case <-b.exitCh:
 			return
 		}

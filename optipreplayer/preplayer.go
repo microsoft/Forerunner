@@ -136,19 +136,19 @@ func (p *Preplayer) listenLoop() {
 		case chainHeadEvent := <-chainHeadCh:
 			start := time.Now()
 			p.builderMu.Lock()
-			checkDuration(&start, 1, "TOO SLOW function call in preplay listen loop")
+			checkDuration(&start, 1, "TOO SLOW function call in preplay listen loop", 100)
 			currentBlock := chainHeadEvent.Block
 			p.minerList.addMiner(currentBlock.Coinbase())
 			p.nowHeader.coinbase = p.minerList.topActive[0]
 			p.nowHeader.time = p.globalCache.GetPreplayTimeStamp()
 			p.nowHeader.gasLimit = core.CalcGasLimit(currentBlock, p.gasFloor, p.gasCeil)
-			checkDuration(&start, 2, "TOO SLOW function call in preplay listen loop")
+			checkDuration(&start, 2, "TOO SLOW function call in preplay listen loop", 100)
 			p.taskBuilder.chainHeadUpdate(currentBlock)
-			checkDuration(&start, 3, "TOO SLOW function call in preplay listen loop")
+			checkDuration(&start, 3, "TOO SLOW function call in preplay listen loop", 100)
 			p.preplayLog.disableGroup()
-			checkDuration(&start, 4, "TOO SLOW function call in preplay listen loop")
+			checkDuration(&start, 4, "TOO SLOW function call in preplay listen loop", 100)
 			p.preplayLog.printAndClearLog(currentBlock.NumberU64(), p.preplayTaskQueue.countTask())
-			checkDuration(&start, 5, "TOO SLOW function call in preplay listen loop")
+			checkDuration(&start, 5, "TOO SLOW function call in preplay listen loop", 100)
 			p.builderMu.Unlock()
 		case <-p.exitCh:
 			return
@@ -156,11 +156,11 @@ func (p *Preplayer) listenLoop() {
 	}
 }
 
-func checkDuration(st *time.Time, index int, msg string) {
+func checkDuration(st *time.Time, index int, msg string, threshold int64) {
 	dur:= time.Since(*st)
 	*st = time.Now()
-	if int64(dur) > int64(100)*int64(time.Millisecond) {
-		log.Warn(msg, "index", index, "duration", dur.String())
+	if int64(dur) > threshold * int64(time.Millisecond) {
+		log.Warn(msg, "index", index, "duration", dur.String(), "threshold", threshold)
 	}
 }
 

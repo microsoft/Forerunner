@@ -742,6 +742,10 @@ type AccountSearchTrieNode struct {
 	JumpTable []*AccountNodeJumpDef
 	Exit      *FieldSearchTrieNode
 	Rounds    []*cache.PreplayResult
+	AddrLoc   *cmptypes.AddrLocation
+	IsStore   bool
+	IsLoad    bool
+	IsRead    bool
 	SRefCount
 	BigSize
 }
@@ -749,6 +753,9 @@ type AccountSearchTrieNode struct {
 func NewAccountSearchTrieNode(node *SNode) *AccountSearchTrieNode {
 	return &AccountSearchTrieNode{
 		LRNode: node,
+		IsStore: node.Op.isStoreOp,
+		IsLoad: node.Op.isLoadOp,
+		IsRead: node.Op.isReadOp,
 	}
 }
 
@@ -791,6 +798,82 @@ func (n *AccountSearchTrieNode) GetAJumpDef(vid uint) (ret *AccountNodeJumpDef) 
 	return n.JumpTable[vid]
 }
 
+func (f *AccountSearchTrieNode) SetAddrLoc(registers *RegisterFile) {
+	cmptypes.MyAssert(f.LRNode.IsRLNode)
+	cmptypes.MyAssert(f.AddrLoc == nil)
+	f.AddrLoc = f.getAddrLoc(registers)
+}
+
+func (f *AccountSearchTrieNode) CheckAddrLoc(registers *RegisterFile) {
+	cmptypes.MyAssert(f.AddrLoc != nil)
+	addrLoc := f.getAddrLoc(registers)
+	if addrLoc.Field != f.AddrLoc.Field {
+		cmptypes.MyAssert(false, "Unequal Field %v %v", addrLoc.Field, f.AddrLoc.Field)
+	}
+	if addrLoc.Address != f.AddrLoc.Address {
+		cmptypes.MyAssert(false, "Unequal Address %v %v", addrLoc.Address, f.AddrLoc.Address)
+	}
+	if addrLoc.Loc != f.AddrLoc.Loc {
+		cmptypes.MyAssert(false, "Unequal Loc %v %v", addrLoc.Loc, f.AddrLoc.Loc)
+	}
+}
+
+func (f *AccountSearchTrieNode) getAddrLoc(registers *RegisterFile) *cmptypes.AddrLocation {
+	if f.LRNode.Op.isReadOp {
+		switch f.LRNode.Op.config.variant {
+		case BLOCK_COINBASE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Coinbase}
+		case BLOCK_TIMESTAMP:
+			return &cmptypes.AddrLocation{Field: cmptypes.Timestamp}
+		case BLOCK_NUMBER:
+			return &cmptypes.AddrLocation{Field: cmptypes.Number}
+		case BLOCK_DIFFICULTY:
+			return &cmptypes.AddrLocation{Field: cmptypes.Difficulty}
+		case BLOCK_GASLIMIT:
+			return &cmptypes.AddrLocation{Field: cmptypes.GasLimit}
+		case BLOCK_HASH:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 1)
+			num := f.LRNode.GetInputVal(0, registers).(*MultiTypedValue).GetBigInt(nil).Uint64()
+			return &cmptypes.AddrLocation{Field: cmptypes.Blockhash, Loc: num}
+		default:
+			panic("Unknown fRead variant")
+		}
+
+	} else if f.LRNode.Op.isLoadOp {
+		cmptypes.MyAssert(len(f.LRNode.InputVals) > 0)
+		addr := f.LRNode.GetInputVal(0, registers).(*MultiTypedValue).GetAddress()
+
+		switch f.LRNode.Op.config.variant {
+		case ACCOUNT_NONCE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Nonce, Address: addr}
+		case ACCOUNT_BALANCE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Balance, Address: addr}
+		case ACCOUNT_EXIST:
+			return &cmptypes.AddrLocation{Field: cmptypes.Exist, Address: addr}
+		case ACCOUNT_EMPTY:
+			return &cmptypes.AddrLocation{Field: cmptypes.Empty, Address: addr}
+		case ACCOUNT_CODEHASH:
+			return &cmptypes.AddrLocation{Field: cmptypes.CodeHash, Address: addr}
+		case ACCOUNT_CODESIZE:
+			return &cmptypes.AddrLocation{Field: cmptypes.CodeSize, Address: addr}
+		case ACCOUNT_CODE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Code, Address: addr}
+		case ACCOUNT_STATE:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 2)
+			return &cmptypes.AddrLocation{Field: cmptypes.Storage, Address: addr}
+		case ACCOUNT_COMMITTED_STATE:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 2)
+			return &cmptypes.AddrLocation{Field: cmptypes.CommittedStorage, Address: addr}
+		default:
+			panic("Unknown fLoad variant!")
+		}
+
+	} else {
+		cmptypes.MyAssert(false, "Should never reach here")
+	}
+	return nil
+}
+
 type FieldNodeJumpDef struct {
 	Dest                *FieldSearchTrieNode
 	RegisterSnapshot    *RegisterFile
@@ -823,6 +906,10 @@ type FieldSearchTrieNode struct {
 	FJumpTable []*FieldNodeJumpDef
 	Exit       *SNode
 	Rounds     []*cache.PreplayResult
+	AddrLoc    *cmptypes.AddrLocation
+	IsStore   bool
+	IsLoad    bool
+	IsRead    bool
 	SRefCount
 	BigSize
 }
@@ -830,6 +917,9 @@ type FieldSearchTrieNode struct {
 func NewFieldSearchTrieNode(node *SNode) *FieldSearchTrieNode {
 	fn := &FieldSearchTrieNode{
 		LRNode: node,
+		IsStore: node.Op.isStoreOp,
+		IsLoad: node.Op.isLoadOp,
+		IsRead: node.Op.isReadOp,
 	}
 	return fn
 }
@@ -885,6 +975,84 @@ func (f *FieldSearchTrieNode) getOrCreateJumpDef(jt []*FieldNodeJumpDef, vid uin
 		jd.InJumpVId = vid
 	}
 	return jt, jd
+}
+
+func (f *FieldSearchTrieNode) SetAddrLoc(registers *RegisterFile) {
+	cmptypes.MyAssert(f.LRNode.IsRLNode)
+	cmptypes.MyAssert(f.AddrLoc == nil)
+	f.AddrLoc = f.getAddrLoc(registers)
+}
+
+func (f *FieldSearchTrieNode) CheckAddrLoc(registers *RegisterFile) {
+	cmptypes.MyAssert(f.AddrLoc != nil)
+	addrLoc := f.getAddrLoc(registers)
+	if addrLoc.Field != f.AddrLoc.Field {
+		cmptypes.MyAssert(false, "Unequal Field %v %v", addrLoc.Field, f.AddrLoc.Field)
+	}
+	if addrLoc.Address != f.AddrLoc.Address {
+		cmptypes.MyAssert(false, "Unequal Address %v %v", addrLoc.Address, f.AddrLoc.Address)
+	}
+	if addrLoc.Loc != f.AddrLoc.Loc {
+		cmptypes.MyAssert(false, "Unequal Loc %v %v", addrLoc.Loc, f.AddrLoc.Loc)
+	}
+}
+
+func (f *FieldSearchTrieNode) getAddrLoc(registers *RegisterFile) *cmptypes.AddrLocation {
+	if f.LRNode.Op.isReadOp {
+		switch f.LRNode.Op.config.variant {
+		case BLOCK_COINBASE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Coinbase}
+		case BLOCK_TIMESTAMP:
+			return &cmptypes.AddrLocation{Field: cmptypes.Timestamp}
+		case BLOCK_NUMBER:
+			return &cmptypes.AddrLocation{Field: cmptypes.Number}
+		case BLOCK_DIFFICULTY:
+			return &cmptypes.AddrLocation{Field: cmptypes.Difficulty}
+		case BLOCK_GASLIMIT:
+			return &cmptypes.AddrLocation{Field: cmptypes.GasLimit}
+		case BLOCK_HASH:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 1)
+			num := f.LRNode.GetInputVal(0, registers).(*MultiTypedValue).GetBigInt(nil).Uint64()
+			return &cmptypes.AddrLocation{Field: cmptypes.Blockhash, Loc: num}
+		default:
+			panic("Unknown fRead variant")
+		}
+
+	} else if f.LRNode.Op.isLoadOp {
+		cmptypes.MyAssert(len(f.LRNode.InputVals) > 0)
+		addr := f.LRNode.GetInputVal(0, registers).(*MultiTypedValue).GetAddress()
+
+		switch f.LRNode.Op.config.variant {
+		case ACCOUNT_NONCE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Nonce, Address: addr}
+		case ACCOUNT_BALANCE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Balance, Address: addr}
+		case ACCOUNT_EXIST:
+			return &cmptypes.AddrLocation{Field: cmptypes.Exist, Address: addr}
+		case ACCOUNT_EMPTY:
+			return &cmptypes.AddrLocation{Field: cmptypes.Empty, Address: addr}
+		case ACCOUNT_CODEHASH:
+			return &cmptypes.AddrLocation{Field: cmptypes.CodeHash, Address: addr}
+		case ACCOUNT_CODESIZE:
+			return &cmptypes.AddrLocation{Field: cmptypes.CodeSize, Address: addr}
+		case ACCOUNT_CODE:
+			return &cmptypes.AddrLocation{Field: cmptypes.Code, Address: addr}
+		case ACCOUNT_STATE:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 2)
+			key := f.LRNode.GetInputVal(1, registers).(*MultiTypedValue).GetHash()
+			return &cmptypes.AddrLocation{Field: cmptypes.Storage, Address: addr, Loc: key}
+		case ACCOUNT_COMMITTED_STATE:
+			cmptypes.MyAssert(len(f.LRNode.InputVals) == 2)
+			key := f.LRNode.GetInputVal(1, registers).(*MultiTypedValue).GetHash()
+			return &cmptypes.AddrLocation{Field: cmptypes.CommittedStorage, Address: addr, Loc: key}
+		default:
+			panic("Unknown fLoad variant!")
+		}
+
+	} else {
+		cmptypes.MyAssert(false, "Should never reach here")
+	}
+	return nil
 }
 
 type OpNodeJumpDef struct {
@@ -1232,9 +1400,12 @@ type RoundMapping struct {
 	FieldDepsToStoreValues map[string]string
 }
 
-func GetDepsKey(depIndices []uint, history *RegisterFile) (string, bool, []uint) {
+func GetDepsKey(depIndices []uint, history *RegisterFile, debug bool) (string, bool, []uint) {
 	buf := strings.Builder{}
-	fvids := make([]uint, len(depIndices))
+	var fvids []uint
+	if debug {
+		fvids = make([]uint, len(depIndices))
+	}
 	cmptypes.MyAssert(reflect.TypeOf(uint(0)).Size() == 8)
 	for i, index := range depIndices {
 		vId := history.Get(index).(uint)
@@ -1242,7 +1413,9 @@ func GetDepsKey(depIndices []uint, history *RegisterFile) (string, bool, []uint)
 			return "", false, nil
 		} else {
 			buf.Write(((*[8]byte)(unsafe.Pointer(&(vId))))[:])
-			fvids[i] = vId
+			if debug {
+				fvids[i] = vId
+			}
 		}
 	}
 	return buf.String(), true, fvids
@@ -1310,6 +1483,7 @@ func AssertAAMapEqual(a, b map[uint]interface{}) {
 }
 
 func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *RegisterFile, fields *RegisterFile, round *cache.PreplayResult, debugOut DebugOutFunc) {
+	debug := debugOut != nil
 	for _, aIndex := range rr.StoreAccountIndices {
 		aVId := accounts.Get(aIndex).(uint)
 		cmptypes.MyAssert(aVId != 0)
@@ -1343,7 +1517,7 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 
 		if true {
 			accountDeps := rr.StoreAccountIndexToStoreAccountDependencies[aIndex]
-			adk, aok, avids := GetDepsKey(accountDeps, accounts)
+			adk, aok, avids := GetDepsKey(accountDeps, accounts, debug)
 			cmptypes.MyAssert(aok)
 			arounds := rm.AccountDepsToRounds[adk]
 			arounds = append(arounds, round)
@@ -1357,7 +1531,7 @@ func (rr *StoreInfo) SetupRoundMapping(registers *RegisterFile, accounts *Regist
 
 		if true {
 			fieldDeps := rr.StoreAccountIndexToStoreFieldDependencies[aIndex]
-			afk, fok, fvids := GetDepsKey(fieldDeps, fields)
+			afk, fok, fvids := GetDepsKey(fieldDeps, fields, debug)
 			cmptypes.MyAssert(fok)
 			frounds := rm.FieldDepsToRounds[afk]
 			frounds = append(frounds, round)
@@ -1509,8 +1683,11 @@ type SNode struct {
 	GuardedNext                            map[interface{}]*SNode
 	Seq                                    uint
 	BeforeNextGuardNewRegisterSize         int
+	FieldNodeType                          cmptypes.Field
 	FieldValueToID                         map[interface{}]uint
+	FastFieldValueToID                     interface{} //map[interface{}]uint
 	AccountValueToID                       map[interface{}]uint
+	FastAccountValueToID                   interface{} //
 	IsANode                                bool
 	IsTLNode                               bool
 	IsRLNode                               bool
@@ -1560,16 +1737,19 @@ func NewSNode(s *Statement, nodeIndex uint, st *STrace, prev *SNode, prevGuardKe
 	st.ComputeDepAndJumpInfo()
 
 	if n.Op.isReadOp || n.Op.isLoadOp {
+		n.FieldNodeType = n.Op.GetNodeType()
 		if st.ANodeSet[nodeIndex] {
 			n.AccountIndex = st.ANodeIndexToAccountIndex[nodeIndex]
 			n.IsANode = true
 			n.AccountValueToID = make(map[interface{}]uint)
+			n.FastAccountValueToID = NewAccountValueToID(n.FieldNodeType)
 		} else {
 			n.AccountIndex = st.RLNodeIndexToAccountIndex[nodeIndex]
 			n.IsTLNode = st.TLNodeSet[nodeIndex]
 		}
 		n.IsRLNode = true
 		n.FieldIndex = st.RLNodeIndexToFieldIndex[nodeIndex]
+		n.FastFieldValueToID = NewFieldValueToID(n.FieldNodeType)
 		n.FieldValueToID = make(map[interface{}]uint)
 	}
 
@@ -1690,7 +1870,7 @@ func (n *SNode) AddStoreInfo(round *cache.PreplayResult, trace *STrace) {
 	n.roundResults.AddAccountMatchMapping(trace)
 }
 
-func (n *SNode) Execute(env *ExecEnv, registers *RegisterFile) interface{} {
+func (n *SNode) executeWithoutCreateMTV(env *ExecEnv, registers *RegisterFile) interface{} {
 	env.inputs = n.InputVals
 	for i, rid := range n.InputRegisterIndices {
 		if rid != 0 {
@@ -1698,7 +1878,11 @@ func (n *SNode) Execute(env *ExecEnv, registers *RegisterFile) interface{} {
 		}
 	}
 	env.config = &n.Op.config
-	return CreateMultiTypedValueIfNeed(n.Op.impFuc(env), env)
+	return n.Op.impFuc(env)
+}
+
+func (n *SNode) Execute(env *ExecEnv, registers *RegisterFile) interface{} {
+	return CreateMultiTypedValueIfNeed(n.executeWithoutCreateMTV(env, registers), env)
 }
 
 func (n *SNode) SimpleNameString() string {
@@ -1728,10 +1912,14 @@ func (n *SNode) RegisterValueString(registers *RegisterFile) string {
 }
 
 func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile) (uint, bool) {
-	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	}
 	//cmptypes.MyAssert(n.IsANode)
-	if n.AccountIndex < accountHistory.size {
-		return accountHistory.Get(n.AccountIndex).(uint), false
+	if accountHistory != nil {
+		if n.AccountIndex < accountHistory.size {
+			return accountHistory.Get(n.AccountIndex).(uint), false
+		}
 	}
 
 	var vid uint
@@ -1742,11 +1930,12 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 		vid = n.AccountValueToID[k]
 	} else {
 		var addr common.Address
-		if n.InputRegisterIndices[0] == 0 {
-			addr = n.InputVals[0].(*MultiTypedValue).GetAddress()
-		} else {
-			addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
-		}
+		addr = n.GetInputVal(0, registers).(*MultiTypedValue).GetAddress()
+		//if n.InputRegisterIndices[0] == 0 {
+		//	addr = n.InputVals[0].(*MultiTypedValue).GetAddress()
+		//} else {
+		//	addr = registers.Get(n.InputRegisterIndices[0]).(*MultiTypedValue).GetAddress()
+		//}
 		changedBy, _ := env.state.GetAccountDepValue(addr)
 		val = changedBy
 		if changedBy == cmptypes.DEFAULT_TXRESID {
@@ -1758,10 +1947,12 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 		}
 	}
 
-	if DEBUG_TRACER {
-		cmptypes.MyAssert(accountHistory.firstSectionSealed == false)
+	if accountHistory != nil {
+		if DEBUG_TRACER {
+			cmptypes.MyAssert(accountHistory.firstSectionSealed == false)
+		}
+		accountHistory.AppendRegister(n.AccountIndex, vid)
 	}
-	accountHistory.AppendRegister(n.AccountIndex, vid)
 	if accountValHistory != nil {
 		if n.Op.isLoadOp {
 			a := val.(cmptypes.AccountDepValue)
@@ -1774,14 +1965,276 @@ func (n *SNode) GetOrLoadAccountValueID(env *ExecEnv, registers *RegisterFile, a
 	return vid, true
 }
 
-func (n *SNode) LoadFieldValueID(env *ExecEnv, registers *RegisterFile, fieldHistory *RegisterFile) (uint, interface{}) {
-	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+func (n *SNode) FastGetOrLoadAccountValueID(env *ExecEnv, addrLoc *cmptypes.AddrLocation, accountHistory *RegisterFile, accountValHistory *RegisterFile) (uint, bool) {
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	}
+	//cmptypes.MyAssert(n.IsANode)
+	if n.AccountIndex < accountHistory.size {
+		return accountHistory.Get(n.AccountIndex).(uint), false
+	}
 
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+		cmptypes.MyAssert(addrLoc.Field == n.FieldNodeType)
+	}
+
+	//var rawVal interface{}
+	var vid uint
+	var val interface{}
+
+	switch n.FieldNodeType {
+	case cmptypes.Coinbase:
+		cb := env.header.Coinbase
+		if accountValHistory != nil {
+			val = NewAddressValue(cb, env)
+		}
+		vid = n.FastAccountValueToID.(AddressFieldValueToID)[cb]
+	case cmptypes.Timestamp:
+		time := env.header.Time
+		if accountValHistory != nil {
+			val = NewBigIntValue(env.GetNewBigInt().SetUint64(time), env)
+		}
+		//rawVal = time
+		vid = n.FastAccountValueToID.(Uint64FieldValueToID)[time]
+	case cmptypes.Number:
+		number := env.header.Number.Uint64()
+		if accountValHistory != nil {
+			val = NewBigIntValue(env.GetNewBigInt().SetUint64(number), env)
+		}
+		//rawVal = env.header.Number
+		vid = n.FastAccountValueToID.(Uint64FieldValueToID)[number]
+	case cmptypes.Difficulty:
+		difficulty := env.header.Difficulty.Uint64()
+		if accountValHistory != nil {
+			val = NewBigIntValue(env.GetNewBigInt().SetUint64(difficulty), env)
+		}
+		vid = n.FastAccountValueToID.(Uint64FieldValueToID)[difficulty]
+	case cmptypes.GasLimit:
+		gaslimit := env.header.GasLimit
+		if accountValHistory != nil {
+			val = NewBigIntValue(env.GetNewBigInt().SetUint64(gaslimit), env)
+		}
+		vid = n.FastAccountValueToID.(Uint64FieldValueToID)[gaslimit]
+	case cmptypes.Blockhash:
+		number := addrLoc.Loc.(uint64)
+		curBn := env.header.Number.Uint64()
+		value := common.Hash{}
+		if curBn-number < 257 && number < curBn {
+			value = env.getHash(number)
+		}
+		if accountValHistory != nil {
+			val = NewHashValue(value, env)
+		}
+		//rawVal = value
+		vid = n.FastAccountValueToID.(HashFieldValueToID)[value]
+	case cmptypes.Exist, cmptypes.Empty, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage, cmptypes.Nonce, cmptypes.CodeSize,
+		cmptypes.Code:
+		changedBy, _ := env.state.GetAccountDepValue(addrLoc.Address)
+		if accountValHistory != nil {
+			val = changedBy
+		}
+		if changedBy == cmptypes.DEFAULT_TXRESID {
+			vid = 0
+		} else {
+			depHash := *changedBy.Hash()
+			vid = n.FastAccountValueToID.(StringFieldValueToID)[depHash]
+		}
+	default:
+		cmptypes.MyAssert(false, "Unknown FieldNodeType %v", n.FieldNodeType)
+	}
+
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(accountHistory.firstSectionSealed == false)
+	}
+	accountHistory.AppendRegister(n.AccountIndex, vid)
+	if accountValHistory != nil {
+		//if n.Op.isLoadOp {
+		//	a := val.(cmptypes.AccountDepValue)
+		//	if false {
+		//		panic(fmt.Sprintf("%v", a))
+		//	}
+		//}
+		accountValHistory.AppendRegister(n.AccountIndex, val)
+	}
+	return vid, true
+}
+
+func (n *SNode) LoadFieldValueID(env *ExecEnv, registers *RegisterFile, fieldHistory *RegisterFile) (uint, interface{}) {
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+	}
 	val := n.Execute(env, registers)
 	k := GetGuardKey(val)
 	vid := n.FieldValueToID[k]
-	fieldHistory.AppendRegister(n.FieldIndex, vid)
+	if fieldHistory != nil {
+		fieldHistory.AppendRegister(n.FieldIndex, vid)
+	}
 	return vid, val
+}
+
+func (n *SNode) DispatchBasedFastLoadFieldValueID(env *ExecEnv, addrLoc *cmptypes.AddrLocation, fieldHistory *RegisterFile) (vid uint) {
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+		cmptypes.MyAssert(addrLoc.Field == n.FieldNodeType)
+	}
+
+	f := dispatchFastLoadFieldFuncTable[addrLoc.Field]
+	if f != nil {
+		vid = f(env, addrLoc, n.FastFieldValueToID)
+	}else {
+		cmptypes.MyAssert(false, "Wrong field %d", addrLoc.Field)
+	}
+
+	fieldHistory.AppendRegister(n.FieldIndex, vid)
+	return
+}
+
+func (n *SNode) FastLoadFieldValueID(env *ExecEnv, addrLoc *cmptypes.AddrLocation, fieldHistory *RegisterFile) (vid uint) {
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+		cmptypes.MyAssert(addrLoc.Field == n.FieldNodeType)
+	}
+
+	//var rawVal interface{}
+
+	switch n.FieldNodeType {
+	case cmptypes.Coinbase:
+		cb := env.header.Coinbase
+		//rawVal = cb
+		vid = n.FastFieldValueToID.(AddressFieldValueToID)[cb]
+	case cmptypes.Timestamp:
+		time := env.header.Time
+		//rawVal = time
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[time]
+	case cmptypes.Number:
+		number := env.header.Number.Uint64()
+		//rawVal = env.header.Number
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[number]
+	case cmptypes.Difficulty:
+		difficulty := env.header.Difficulty.Uint64()
+		//rawVal = env.header.Difficulty
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[difficulty]
+	case cmptypes.GasLimit:
+		gaslimit := env.header.GasLimit
+		//rawVal = gaslimit
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[gaslimit]
+	case cmptypes.Blockhash:
+		number := addrLoc.Loc.(uint64)
+		curBn := env.header.Number.Uint64()
+		value := common.Hash{}
+		if curBn-number < 257 && number < curBn {
+			value = env.getHash(number)
+		}
+		//rawVal = value
+		vid = n.FastFieldValueToID.(HashFieldValueToID)[value]
+	case cmptypes.Exist:
+		value := env.state.Exist(addrLoc.Address)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(BoolFieldValueToID)[value]
+	case cmptypes.Empty:
+		value := env.state.Empty(addrLoc.Address)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(BoolFieldValueToID)[value]
+	case cmptypes.Balance:
+		balance := env.state.GetBalance(addrLoc.Address)
+		k := FastBigToHash(balance)
+		//rawVal = balance
+		vid = n.FastFieldValueToID.(HashFieldValueToID)[k]
+	case cmptypes.Nonce:
+		value := env.state.GetNonce(addrLoc.Address)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[value]
+	case cmptypes.CodeHash:
+		value := env.state.GetCodeHash(addrLoc.Address)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(HashFieldValueToID)[value]
+	case cmptypes.CodeSize:
+		value := env.state.GetCodeSize(addrLoc.Address)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(Uint64FieldValueToID)[uint64(value)]
+	case cmptypes.Code:
+		value := env.state.GetCode(addrLoc.Address)
+		k := ImmutableBytesToString(value)
+		//rawVal = value
+		vid = n.FastFieldValueToID.(StringFieldValueToID)[k]
+	case cmptypes.Storage:
+		value := env.state.GetState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+		//rawVal = value
+		vid = n.FastFieldValueToID.(HashFieldValueToID)[value]
+	case cmptypes.CommittedStorage:
+		value := env.state.GetCommittedState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+		//rawVal = value
+		vid = n.FastFieldValueToID.(HashFieldValueToID)[value]
+	default:
+		cmptypes.MyAssert(false, "Unknown FieldNodeType %v", n.FieldNodeType)
+	}
+
+	fieldHistory.AppendRegister(n.FieldIndex, vid)
+	return
+}
+
+func (n *SNode) FastGetFVal(addrLoc *cmptypes.AddrLocation, env *ExecEnv) (val interface{}) {
+	if DEBUG_TRACER {
+		cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+		cmptypes.MyAssert(addrLoc.Field == n.FieldNodeType)
+	}
+
+	switch n.FieldNodeType {
+	case cmptypes.Coinbase:
+		cb := env.header.Coinbase
+		return NewAddressValue(cb, env)
+	case cmptypes.Timestamp:
+		time := env.header.Time
+		return NewBigIntValue(env.GetNewBigInt().SetUint64(time), env)
+	case cmptypes.Number:
+		number := env.header.Number
+		return NewBigIntValue(env.GetNewBigInt().Set(number), env)
+	case cmptypes.Difficulty:
+		difficulty := env.header.Difficulty
+		return NewBigIntValue(env.GetNewBigInt().Set(difficulty), env)
+	case cmptypes.GasLimit:
+		gasLimit := env.header.GasLimit
+		return NewBigIntValue(env.GetNewBigInt().SetUint64(gasLimit), env)
+	case cmptypes.Blockhash:
+		number := addrLoc.Loc.(uint64)
+		curBn := env.header.Number.Uint64()
+		value := common.Hash{}
+		if curBn-number < 257 && number < curBn {
+			value = env.getHash(number)
+		}
+		return NewHashValue(value, env)
+	case cmptypes.Exist:
+		value := env.state.Exist(addrLoc.Address)
+		return value
+	case cmptypes.Empty:
+		value := env.state.Empty(addrLoc.Address)
+		return value
+	case cmptypes.Balance:
+		balance := env.state.GetBalance(addrLoc.Address)
+		return NewBigIntValue(env.CopyBig(balance), env)
+	case cmptypes.Nonce:
+		value := env.state.GetNonce(addrLoc.Address)
+		return value
+	case cmptypes.CodeHash:
+		value := env.state.GetCodeHash(addrLoc.Address)
+		return NewHashValue(value, env)
+	case cmptypes.CodeSize:
+		value := env.state.GetCodeSize(addrLoc.Address)
+		return NewBigIntValue(env.IntToBig(value), env)
+	case cmptypes.Code:
+		value := env.state.GetCode(addrLoc.Address)
+		return value
+	case cmptypes.Storage:
+		value := env.state.GetState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+		return NewHashValue(value, env)
+	case cmptypes.CommittedStorage:
+		value := env.state.GetCommittedState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+		return NewHashValue(value, env)
+	default:
+		cmptypes.MyAssert(false, "Unknown FieldNodeType %v", n.FieldNodeType)
+	}
+	return nil
 }
 
 func (n *SNode) GetOrCreateAccountValueID(val interface{}) uint {
@@ -1796,6 +2249,56 @@ func (n *SNode) GetOrCreateAccountValueID(val interface{}) uint {
 	}
 }
 
+func (n *SNode) FastGetOrCreateAccountValueID(val interface{}) uint {
+	cmptypes.MyAssert(n.IsANode)
+	switch n.FieldNodeType {
+	case cmptypes.Coinbase:
+		k := val.(*MultiTypedValue).GetAddress()
+		aToID := n.FastAccountValueToID.(AddressFieldValueToID)
+		if id, ok := aToID[k]; ok {
+			return id
+		} else {
+			id := uint(len(aToID)) + 1
+			aToID[k] = id
+			return id
+		}
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit:
+		tv := val.(*MultiTypedValue).GetBigInt(nil).Uint64()
+		aToID := n.FastAccountValueToID.(Uint64FieldValueToID)
+		if id, ok := aToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(aToID)) + 1
+			aToID[tv] = id
+			return id
+		}
+	case cmptypes.Blockhash:
+		k := val.(*MultiTypedValue).GetHash()
+		aToID := n.FastAccountValueToID.(HashFieldValueToID)
+		if id, ok := aToID[k]; ok {
+			return id
+		} else {
+			id := uint(len(aToID)) + 1
+			aToID[k] = id
+			return id
+		}
+	case cmptypes.Exist, cmptypes.Empty, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage, cmptypes.Nonce, cmptypes.CodeSize,
+		cmptypes.Code:
+		k := val.(string)
+		aToID := n.FastAccountValueToID.(StringFieldValueToID)
+		if id, ok := aToID[k]; ok {
+			return id
+		} else {
+			id := uint(len(aToID)) + 1
+			aToID[k] = id
+			return id
+		}
+	default:
+		panic("Wrong Field")
+	}
+	return 0
+}
+
 func (n *SNode) GetOrCreateFieldValueID(val interface{}) uint {
 	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
 	val = GetGuardKey(val)
@@ -1806,6 +2309,76 @@ func (n *SNode) GetOrCreateFieldValueID(val interface{}) uint {
 		n.FieldValueToID[val] = id
 		return id
 	}
+}
+
+func (n *SNode) FastGetOrCreateFieldValueID(val interface{}) uint {
+	cmptypes.MyAssert(n.Op.isLoadOp || n.Op.isReadOp)
+
+	switch n.FieldNodeType {
+	case cmptypes.Coinbase:
+		tv := val.(*MultiTypedValue).GetAddress()
+		vToID := n.FastFieldValueToID.(AddressFieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit, cmptypes.CodeSize:
+		tv := val.(*MultiTypedValue).GetBigInt(nil).Uint64()
+		vToID := n.FastFieldValueToID.(Uint64FieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	case cmptypes.Nonce:
+		tv := val.(uint64)
+		vToID := n.FastFieldValueToID.(Uint64FieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	case cmptypes.Blockhash, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage:
+		tv := val.(*MultiTypedValue).GetHash()
+		vToID := n.FastFieldValueToID.(HashFieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	case cmptypes.Exist, cmptypes.Empty:
+		tv := val.(bool)
+		vToID := n.FastFieldValueToID.(BoolFieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	case cmptypes.Code:
+		tv := ImmutableBytesToString(val.([]byte))
+		vToID := n.FastFieldValueToID.(StringFieldValueToID)
+		if id, ok := vToID[tv]; ok {
+			return id
+		} else {
+			id := uint(len(vToID)) + 1
+			vToID[tv] = id
+			return id
+		}
+	default:
+		cmptypes.MyAssert(false, "Wrong Field %v", n.FieldNodeType)
+	}
+	return 0
 }
 
 func (n *SNode) AssertIsomorphic(s *Statement, nodeIndex uint, trace *STrace, params ...interface{}) {
@@ -2343,7 +2916,7 @@ func (r *TraceTrieSearchResult) GetAnyRound() *cache.PreplayResult {
 	return nil
 }
 
-func GetFirstNonEmptyRound(rounds [] *cache.PreplayResult) *cache.PreplayResult {
+func GetFirstNonEmptyRound(rounds []*cache.PreplayResult) *cache.PreplayResult {
 	if rounds == nil {
 		panic("rounds should never be nil")
 	}
@@ -2354,6 +2927,36 @@ func GetFirstNonEmptyRound(rounds [] *cache.PreplayResult) *cache.PreplayResult 
 	}
 	cmptypes.MyAssert(false) // should never reach here
 	return nil
+}
+
+func (r *TraceTrieSearchResult) AllDepApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
+	noOverMatching, isBlockProcess bool) (bool, cmptypes.TxResIDMap) {
+	return r.ApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+}
+func (r *TraceTrieSearchResult) PartialApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
+	noOverMatching, isBlockProcess bool) (bool, cmptypes.TxResIDMap) {
+	return r.ApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+}
+func (r *TraceTrieSearchResult) OpApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
+	noOverMatching, isBlockProcess bool) (bool, cmptypes.TxResIDMap) {
+	return r.ApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+}
+
+func (r *TraceTrieSearchResult) _ApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
+	noOverMatching, isBlockProcess bool) (bool, cmptypes.TxResIDMap) {
+	switch traceStatus.TraceHitType {
+	case cmptypes.AllDepHit:
+		return r.AllDepApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+	case cmptypes.PartialHit:
+		return r.PartialApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+	case cmptypes.AllDetailHit:
+		return r.ApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+	case cmptypes.OpHit:
+		return r.OpApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
+	default:
+		panic("unknown trace hit type")
+	}
+	return r.ApplyStores(txPreplay, traceStatus, abort, noOverMatching, isBlockProcess)
 }
 
 func (r *TraceTrieSearchResult) ApplyStores(txPreplay *cache.TxPreplay, traceStatus *cmptypes.TraceStatus, abort func() bool,
@@ -2492,20 +3095,21 @@ func (r *TraceTrieSearchResult) applyObjectInRounds(txPreplay *cache.TxPreplay, 
 
 func (r *TraceTrieSearchResult) getMatchedRounds(si uint, rounds []*cache.PreplayResult, rm *RoundMapping, aVId uint) []*cache.PreplayResult {
 	accountDeps := r.storeInfo.StoreAccountIndexToStoreAccountDependencies[si]
-	dk, dok, dvids := GetDepsKey(accountDeps, r.accountHistory)
+	debug := r.debugOut != nil
+	dk, dok, dvids := GetDepsKey(accountDeps, r.accountHistory, debug)
 	rounds = nil
 	if dok {
 		rounds = rm.AccountDepsToRounds[dk]
-		if rounds != nil && r.debugOut != nil {
+		if rounds != nil && debug {
 			r.debugOut("Account %v AVId %v full match by AccountDeps %v of %v with keyLen %v\n", si, aVId, accountDeps, dvids, len(dk))
 		}
 	}
 	if rounds == nil {
 		fieldDeps := r.storeInfo.StoreAccountIndexToStoreFieldDependencies[si]
-		fk, fok, fvids := GetDepsKey(fieldDeps, r.fieldHistory)
+		fk, fok, fvids := GetDepsKey(fieldDeps, r.fieldHistory, debug)
 		if fok {
 			rounds = rm.FieldDepsToRounds[fk]
-			if rounds != nil && r.debugOut != nil {
+			if rounds != nil && debug {
 				r.debugOut("Account %v AVId %v full match by FieldDeps %v of %v with keyLen %v\n", si, aVId, fieldDeps, fvids, len(fk))
 			}
 		}
@@ -2680,12 +3284,12 @@ func (tt *TraceTrie) searchOpLane(nStart *SNode,
 		beforeJumpNode := node
 
 		if jHead != nil {
-			aCheckCount := 0
-			fCheckCount := 0
+			//aCheckCount := 0
+			//fCheckCount := 0
 			jNode := jHead
 			// try to jump
-			node = tt.OpLaneJump(debug, jNode, node, aCheckCount, accountHistory, debugOut,
-				fieldHistory, registers, fCheckCount, beforeJumpNode, traceStatus,
+			node = tt.OpLaneJump(debug, jNode, node, accountHistory, debugOut,
+				fieldHistory, registers, beforeJumpNode, traceStatus,
 				noOverMatching)
 		}
 
@@ -2810,29 +3414,60 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 	env *ExecEnv, registers *RegisterFile, accountHistory *RegisterFile, accountValHistory *RegisterFile, fieldHistory *RegisterFile,
 	traceStatus *cmptypes.TraceStatus,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
-	abort func() bool, noOverMatching bool) (fNode *FieldSearchTrieNode, node *SNode, fieldLaneRounds [] *cache.PreplayResult, aborted, ok bool) {
+	abort func() bool, noOverMatching bool) (fNode *FieldSearchTrieNode, node *SNode, fieldLaneRounds []*cache.PreplayResult, aborted, ok bool) {
 
 	if debug {
 		cmptypes.MyAssert(fStart != nil)
 	}
+
+	var registerSnapshotToApply *RegisterFile
 
 	fNode = fStart
 	node = nStart
 
 	// Now in the FieldLane
 	for {
-		if abort != nil && abort() {
-			aborted = true
-			break
-		}
+		//if abort != nil && abort() {
+		//	aborted = true
+		//	break
+		//}
 		if debug {
 			cmptypes.MyAssert(fNode.LRNode == node)
 		}
 
 		beforeNode := node
 
-		if !noOverMatching && fNode.LRNode.Op.isLoadOp {
-			aVId, newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
+		//if !noOverMatching && fNode.LRNode.Op.isLoadOp {
+		if !noOverMatching && fNode.IsLoad {
+			if DEBUG_TRACER {
+				cmptypes.MyAssert(fNode.LRNode.Op.isLoadOp)
+			}
+			aVId, newAccount := fNode.LRNode.FastGetOrLoadAccountValueID(env, fNode.AddrLoc, accountHistory, accountValHistory)
+			if DEBUG_TRACER && newAccount {
+				_registers := registers
+				if registerSnapshotToApply != nil {
+					_registers = registerSnapshotToApply
+				}
+				_aVId, _newAccount := fNode.LRNode.GetOrLoadAccountValueID(env, _registers, nil, nil)
+				addr := fNode.LRNode.GetInputVal(0, _registers).(*MultiTypedValue).GetAddress()
+				changedBy, _ := env.state.GetAccountDepValue(addr)
+				var vid, vid2 uint
+				var depHash string
+				if changedBy == cmptypes.DEFAULT_TXRESID {
+					vid = 0
+					vid2 = 0
+				} else {
+					depHash = *changedBy.Hash()
+					k := GetGuardKey(depHash)
+					vid = fNode.LRNode.AccountValueToID[k]
+					vid2 = fNode.LRNode.FastAccountValueToID.(StringFieldValueToID)[depHash]
+				}
+				cmptypes.MyAssert(aVId == _aVId, "aVId mismatch %v %v variant %v addr %v _addr %v vid %v vid2 %v depHash %v", aVId, _aVId, *fNode.LRNode.Op.config.variant,
+					fNode.AddrLoc.Address.Hex(), addr.Hex(), vid, vid2, depHash,
+				)
+				cmptypes.MyAssert(newAccount == _newAccount, "newAccount mismatch %v %v", newAccount, _newAccount)
+			}
+
 			if !node.IsANode {
 				cmptypes.MyAssert(!newAccount)
 			}
@@ -2865,7 +3500,8 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				if debug {
 					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
 				}
-				registers.ApplySnapshot(jd.RegisterSnapshot)
+				//registers.ApplySnapshot(jd.RegisterSnapshot)
+				registerSnapshotToApply = jd.RegisterSnapshot
 				if debug {
 					cmptypes.MyAssert(jd.FieldHistorySegment != nil)
 					cmptypes.MyAssert(fieldHistory.size == node.FieldIndex, "%v, %v", fieldHistory.size, node.FieldIndex)
@@ -2874,7 +3510,8 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				fNode = jd.Dest
 				node = fNode.LRNode
 				if debug {
-					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					//cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(registerSnapshotToApply.size == node.BeforeRegisterSize)
 					cmptypes.MyAssert(fieldHistory.size == node.BeforeFieldHistorySize)
 				}
 			}
@@ -2882,15 +3519,36 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 
 		if beforeNode == node {
 			if !noOverMatching && node.Op.isReadOp {
-				_, newAccount := node.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
-				if fNode != fStart && !newAccount {
-					cmptypes.MyAssert(false)
+				aVId, newAccount := fNode.LRNode.FastGetOrLoadAccountValueID(env, fNode.AddrLoc, accountHistory, accountValHistory)
+				if DEBUG_TRACER {
+					_registers := registers
+					if registerSnapshotToApply != nil {
+						_registers = registerSnapshotToApply
+					}
+					_aVId, _ := node.GetOrLoadAccountValueID(env, _registers, nil, nil)
+					cmptypes.MyAssert(aVId == _aVId, "aVId mismatch %v %v", aVId, _aVId)
+					if fNode != fStart && !newAccount {
+						cmptypes.MyAssert(false)
+					}
 				}
 			}
 
 			var fVId uint
 			var fVal interface{}
-			fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
+			fVId = fNode.LRNode.DispatchBasedFastLoadFieldValueID(env, fNode.AddrLoc, fieldHistory)
+
+			var _fVId uint
+			var _fVal interface{}
+			if DEBUG_TRACER {
+				_registers := registers
+				if registerSnapshotToApply != nil {
+					_registers = registerSnapshotToApply
+				}
+				_fVId, _fVal = fNode.LRNode.LoadFieldValueID(env, _registers, nil)
+				cmptypes.MyAssert(fVId == _fVId, "fVId mismatch %v %v", fVId, _fVId)
+			}
+
+			//fVId, fVal = fNode.LRNode.LoadFieldValueID(env, registers, fieldHistory)
 
 			if !(node == nStart && node.Op.isReadOp) { // if nStart is ReadOp, it is already counted in AccountLane
 				traceStatus.ExecutedNodes++
@@ -2921,6 +3579,13 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 				if debugOut != nil {
 					debugOut("  FieldLane FJump Failed #%v %v on FIndex %v FVId %v\n", node.Seq, node.Statement.SimpleNameString(), node.FieldIndex, fVId)
 				}
+				fVal = fNode.LRNode.FastGetFVal(fNode.AddrLoc, env)
+				if DEBUG_TRACER {
+					AssertEqualRegisterValue(fVal, _fVal)
+				}
+				if registerSnapshotToApply != nil {
+					registers.ApplySnapshot(registerSnapshotToApply)
+				}
 				registers.AppendRegister(node.OutputRegisterIndex, fVal)
 				node = fNode.Exit
 				if debug {
@@ -2934,23 +3599,30 @@ func (tt *TraceTrie) searchFieldLane(fStart *FieldSearchTrieNode, nStart *SNode,
 						jd.Dest.LRNode.Statement.SimpleNameString(),
 						node.FieldIndex, fVId)
 				}
-				if debug {
-					cmptypes.MyAssert(jd.RegisterSnapshot != nil)
-				}
-				registers.ApplySnapshot(jd.RegisterSnapshot)
+				//if debug {
+				//	cmptypes.MyAssert(jd.RegisterSnapshot != nil)
+				//}
+				//registers.ApplySnapshot(jd.RegisterSnapshot)
+				registerSnapshotToApply = jd.RegisterSnapshot
 				fNode = jd.Dest
 				node = fNode.LRNode
 				if debug {
-					cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					//cmptypes.MyAssert(registers.size == node.BeforeRegisterSize)
+					cmptypes.MyAssert(registerSnapshotToApply.size == node.BeforeRegisterSize)
 				}
 			}
 		}
 
-		if fNode.LRNode.Op.isStoreOp {
+		//if fNode.LRNode.Op.isStoreOp {
+		if fNode.IsStore {
+			if DEBUG_TRACER {
+				cmptypes.MyAssert(fNode.LRNode.Op.isStoreOp)
+			}
 			if debugOut != nil {
 				debugOut("FieldLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
 			}
 			fieldLaneRounds = fNode.Rounds
+			registers.ApplySnapshot(registerSnapshotToApply)
 			ok = true
 			break
 		}
@@ -2964,12 +3636,26 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 	debug bool, debugOut func(fmtStr string, params ...interface{}),
 	abort func() bool) (node *SNode, fNode *FieldSearchTrieNode, accountLaneRounds []*cache.PreplayResult, aborted bool, ok bool) {
 	node = aNode.LRNode
+	var registerSnapshotToApply, fieldHistorySnapshotToApply *RegisterFile
 	for {
-		if abort != nil && abort() {
-			aborted = true
-			break
+		//if abort != nil && abort() {
+		//	aborted = true
+		//	break
+		//}
+		aVId, newAccount := aNode.LRNode.FastGetOrLoadAccountValueID(env, aNode.AddrLoc, accountHistory, accountValHistory)
+
+		if DEBUG_TRACER {
+			cmptypes.MyAssert(newAccount)
+			_registers := registers
+			if registerSnapshotToApply != nil {
+				_registers = registerSnapshotToApply
+			}
+			_aVId, _newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, _registers, nil, nil)
+			cmptypes.MyAssert(aVId == _aVId, "aVId mismatch %v %v", aVId, _aVId)
+			cmptypes.MyAssert(newAccount == _newAccount, "newAccount mismatch %v %v", newAccount, _newAccount)
+
+			//aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, _registers, accountHistory, accountValHistory)
 		}
-		aVId, newAccount := aNode.LRNode.GetOrLoadAccountValueID(env, registers, accountHistory, accountValHistory)
 		if newAccount {
 			if aNode.LRNode.Op.isReadOp {
 				traceStatus.ExecutedNodes++
@@ -2986,9 +3672,6 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 					traceStatus.AccountReadUnknownCount++
 				}
 			}
-		}
-		if debug {
-			cmptypes.MyAssert(newAccount)
 		}
 
 		var jd *AccountNodeJumpDef
@@ -3011,6 +3694,10 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 			if debug {
 				cmptypes.MyAssert(aNode.LRNode == fNode.LRNode)
 			}
+			if registerSnapshotToApply != nil {
+				registers.ApplySnapshot(registerSnapshotToApply)
+				fieldHistory.ApplySnapshot(fieldHistorySnapshotToApply)
+			}
 			break
 		} else {
 			if debugOut != nil {
@@ -3021,18 +3708,25 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 				cmptypes.MyAssert(jd.RegisterSnapshot != nil)
 				cmptypes.MyAssert(jd.FieldHistorySnapshot != nil)
 			}
-			registers.ApplySnapshot(jd.RegisterSnapshot)
-			fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
+			//registers.ApplySnapshot(jd.RegisterSnapshot)
+			//fieldHistory.ApplySnapshot(jd.FieldHistorySnapshot)
+			registerSnapshotToApply = jd.RegisterSnapshot
+			fieldHistorySnapshotToApply = jd.FieldHistorySnapshot
 			aNode = jd.Dest
 			node = aNode.LRNode
 			if debug {
-				cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
+				//cmptypes.MyAssert(registers.size == aNode.LRNode.BeforeRegisterSize)
+				//if !aNode.LRNode.Op.isStoreOp {
+				//	cmptypes.MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
+				//}
+				cmptypes.MyAssert(registerSnapshotToApply.size == aNode.LRNode.BeforeRegisterSize)
 				if !aNode.LRNode.Op.isStoreOp {
-					cmptypes.MyAssert(fieldHistory.size == aNode.LRNode.FieldIndex)
+					cmptypes.MyAssert(fieldHistorySnapshotToApply.size == aNode.LRNode.FieldIndex)
 				}
 			}
 		}
-		if aNode.LRNode.Op.isStoreOp {
+		//if aNode.LRNode.Op.isStoreOp {
+		if aNode.IsStore {
 			if debugOut != nil {
 				debugOut("AccountLane Hit by reaching: #%v %v\n", node.Seq, node.Statement.SimpleNameString())
 			}
@@ -3040,6 +3734,9 @@ func (tt *TraceTrie) searchAccountLane(aNode *AccountSearchTrieNode,
 			if debug {
 				cmptypes.MyAssert(len(accountLaneRounds) > 0)
 			}
+			registers.ApplySnapshot(registerSnapshotToApply)
+			fieldHistory.ApplySnapshot(fieldHistorySnapshotToApply)
+
 			ok = true
 			break
 		}
@@ -3064,11 +3761,12 @@ func GetOpJumKey(rf *RegisterFile, indices []uint) (key OpJumpKey, ok bool) {
 	return
 }
 
-func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode, aCheckCount int,
+func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode,
 	accountHistory *RegisterFile, debugOut func(fmtStr string, params ...interface{}),
-	fieldHistory *RegisterFile, registers *RegisterFile, fCheckCount int, beforeJumpNode *SNode,
+	fieldHistory *RegisterFile, registers *RegisterFile, beforeJumpNode *SNode,
 	traceStatus *cmptypes.TraceStatus,
 	noOverMatching bool) *SNode {
+	var aCheckCount, fCheckCount int
 	for {
 		if debug {
 			cmptypes.MyAssert(jNode.OpNode == node)
@@ -3078,7 +3776,9 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				cmptypes.MyAssert(false, "Should not have AccountJump when overmatching is disabled")
 			}
 
-			aCheckCount += len(jNode.VIndices)
+			if debugOut != nil {
+				aCheckCount += len(jNode.VIndices)
+			}
 
 			aKey, aOk := GetOpJumKey(accountHistory, jNode.VIndices)
 
@@ -3142,7 +3842,9 @@ func (tt *TraceTrie) OpLaneJump(debug bool, jNode *OpSearchTrieNode, node *SNode
 				}
 			}
 		} else {
-			fCheckCount += len(jNode.VIndices)
+			if debugOut != nil {
+				fCheckCount += len(jNode.VIndices)
+			}
 			fKey, fOk := GetOpJumKey(fieldHistory, jNode.VIndices)
 			var jd *OpNodeJumpDef
 			if fOk {
@@ -3410,8 +4112,14 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 				}
 				aVId = node.GetOrCreateAccountValueID(aval)
 				accountHistory.AppendRegister(node.AccountIndex, aVId)
+				_aVId := node.FastGetOrCreateAccountValueID(aval)
 				if tt.DebugOut != nil {
 					tt.DebugOut("AccountVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), avalStr, aVId)
+					cmptypes.MyAssert(aVId == _aVId, "AVID Missmatch %v %v", aVId, _aVId)
+				} else {
+					if _aVId != aVId {
+						cmptypes.MyAssert(false, "AVID Mismatch %v %v", aVId, _aVId)
+					}
 				}
 			} else {
 				cmptypes.MyAssert(node.Op.isLoadOp)
@@ -3428,11 +4136,19 @@ func (j *JumpInserter) InitAccountAndFieldValueIDs() {
 			resultRegisters = j.result.registers
 		}
 		fVal := GetStatementOutputVal(s, resultRegisters, *rmap)
-		fVId = node.GetOrCreateFieldValueID(fVal)
+		fVId = node.FastGetOrCreateFieldValueID(fVal)
+		_fVId := node.GetOrCreateFieldValueID(fVal)
+		if tt.DebugOut == nil {
+			if _fVId != fVId {
+				cmptypes.MyAssert(false, "FVID Mismatch %v %v", fVId, _fVId)
+			}
+		}
+
 		fieldHistory.AppendRegister(node.FieldIndex, fVId)
 
 		if tt.DebugOut != nil {
 			tt.DebugOut("FieldVID for %v of %v is %v\n", s.SimpleNameStringWithRegisterAnnotation(rmap), fVal, fVId)
+			cmptypes.MyAssert(fVId == _fVId, "FVID Missmatch %v %v", fVId, _fVId)
 		}
 
 		j.nodeIndexToAVId[nodeIndex] = aVId
@@ -3460,11 +4176,13 @@ func (j *JumpInserter) SetupFieldJumpLane() (lastFDes *FieldSearchTrieNode) {
 	fSrc := tt.FieldHead
 	if fSrc == nil {
 		fSrc = NewFieldSearchTrieNode(snodes[0])
+		fSrc.SetAddrLoc(j.registers)
 		fSrc.Exit = snodes[1]
 		tt.FieldHead = fSrc
 	} else {
 		cmptypes.MyAssert(fSrc.LRNode == snodes[0])
 		cmptypes.MyAssert(fSrc.Exit == snodes[1])
+		fSrc.CheckAddrLoc(j.registers)
 	}
 	j.AddRefNode(fSrc)
 
@@ -3492,6 +4210,9 @@ func (j *JumpInserter) SetupFieldJumpLane() (lastFDes *FieldSearchTrieNode) {
 					fVId)
 			}
 			fDes = NewFieldSearchTrieNode(desNode)
+			if !fDes.LRNode.Op.isStoreOp {
+				fDes.SetAddrLoc(j.registers)
+			}
 			fDes.Exit = snodes[desNode.Seq+1]
 			jd.Dest = fDes
 			cmptypes.MyAssert(jd.RegisterSnapshot == nil && jd.FieldHistorySegment == nil)
@@ -3504,6 +4225,9 @@ func (j *JumpInserter) SetupFieldJumpLane() (lastFDes *FieldSearchTrieNode) {
 					fVId)
 			}
 			fDes = jd.Dest
+			if !fDes.LRNode.Op.isStoreOp {
+				fDes.CheckAddrLoc(j.registers)
+			}
 			if tt.DebugOut != nil {
 				cmptypes.MyAssert(fDes.LRNode == desNode)
 				cmptypes.MyAssert(fDes.Exit == snodes[desNode.Seq+1])
@@ -3607,11 +4331,13 @@ func (j *JumpInserter) SetupAccountJumpLane() (lastADes *AccountSearchTrieNode) 
 	aSrc := tt.AccountHead
 	if aSrc == nil {
 		aSrc = NewAccountSearchTrieNode(snodes[0])
+		aSrc.SetAddrLoc(j.registers)
 		aSrc.Exit = fnodes[0]
 		tt.AccountHead = aSrc
 	} else {
 		cmptypes.MyAssert(aSrc.LRNode == snodes[0])
 		cmptypes.MyAssert(aSrc.Exit == fnodes[0])
+		aSrc.CheckAddrLoc(j.registers)
 	}
 	j.AddRefNode(aSrc)
 
@@ -3631,6 +4357,9 @@ func (j *JumpInserter) SetupAccountJumpLane() (lastADes *AccountSearchTrieNode) 
 					aVId)
 			}
 			aDes = NewAccountSearchTrieNode(desNode)
+			if !aDes.LRNode.Op.isStoreOp {
+				aDes.SetAddrLoc(j.registers)
+			}
 			exitIndex := desNode.FieldIndex - 1
 			if desNode.Op.isStoreOp {
 				exitIndex = uint(len(fnodes) - 1)
@@ -3656,6 +4385,9 @@ func (j *JumpInserter) SetupAccountJumpLane() (lastADes *AccountSearchTrieNode) 
 			}
 			aDes = jd.Dest
 			cmptypes.MyAssert(aDes.LRNode == desNode)
+			if !aDes.LRNode.Op.isStoreOp {
+				aDes.CheckAddrLoc(j.registers)
+			}
 			exitIndex := desNode.FieldIndex - 1
 			if desNode.Op.isStoreOp {
 				exitIndex = uint(len(fnodes) - 1)

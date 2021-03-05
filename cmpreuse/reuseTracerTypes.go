@@ -863,6 +863,54 @@ func (op *OpDef) IsVirtual() bool {
 	return variant == VIRTUAL_GASUSED || variant == VIRTUAL_FAILED
 }
 
+func (op *OpDef) GetNodeType() cmptypes.Field {
+	if op.isReadOp {
+		switch op.config.variant {
+		case BLOCK_COINBASE:
+			return cmptypes.Coinbase
+		case BLOCK_TIMESTAMP:
+			return cmptypes.Timestamp
+		case BLOCK_NUMBER:
+			return cmptypes.Number
+		case BLOCK_DIFFICULTY:
+			return cmptypes.Difficulty
+		case BLOCK_GASLIMIT:
+			return cmptypes.GasLimit
+		case BLOCK_HASH:
+			return cmptypes.Blockhash
+		default:
+			panic("Unknown fRead variant")
+		}
+	} else if op.isLoadOp {
+		switch op.config.variant {
+		case ACCOUNT_NONCE:
+			return cmptypes.Nonce
+		case ACCOUNT_BALANCE:
+			return cmptypes.Balance
+		case ACCOUNT_EXIST:
+			return cmptypes.Exist
+		case ACCOUNT_EMPTY:
+			return cmptypes.Empty
+		case ACCOUNT_CODEHASH:
+			return cmptypes.CodeHash
+		case ACCOUNT_CODESIZE:
+			return cmptypes.CodeSize
+		case ACCOUNT_CODE:
+			return cmptypes.Code
+		case ACCOUNT_STATE:
+			return cmptypes.Storage
+		case ACCOUNT_COMMITTED_STATE:
+			return cmptypes.CommittedStorage
+		default:
+			panic("Unknown fLoad variant!")
+		}
+
+	} else {
+		cmptypes.MyAssert(false, "Should never reach here")
+	}
+	return 0
+}
+
 type DebugStatsForStatement struct {
 	cachedRecordValueString                   string
 	cachedSimpleNameString                    string
@@ -883,7 +931,7 @@ func NewStatement(op *OpDef, opSeq uint64, debug bool, outVar *Variable, inVars 
 		output: outVar,
 		inputs: inVars,
 		op:     op,
-		opSeq: opSeq,
+		opSeq:  opSeq,
 	}
 	if debug {
 		s.DebugStats = &DebugStatsForStatement{
@@ -1624,15 +1672,15 @@ func ImmutableBytesToString(buf []byte) string {
 }
 
 type DebugBuffer struct {
-	Base *DebugBuffer
+	Base   *DebugBuffer
 	Buffer []string
 }
 
-func NewDebugBuffer (base *DebugBuffer) *DebugBuffer {
+func NewDebugBuffer(base *DebugBuffer) *DebugBuffer {
 	return &DebugBuffer{Base: base}
 }
 
-func (b *DebugBuffer) AppendLog(fmtStr string, args... interface{}) {
+func (b *DebugBuffer) AppendLog(fmtStr string, args ...interface{}) {
 	r := fmt.Sprintf(fmtStr, args...)
 	b.Buffer = append(b.Buffer, r)
 }
@@ -1640,14 +1688,14 @@ func (b *DebugBuffer) AppendLog(fmtStr string, args... interface{}) {
 func (b *DebugBuffer) GetAllLogs() [][]string {
 	if b.Base == nil {
 		return [][]string{b.Buffer}
-	}else {
+	} else {
 		logs := b.Base.GetAllLogs()
 		logs = append(logs, b.Buffer)
 		return logs
 	}
 }
 
-func (b *DebugBuffer) DumpBufferToFile(fname string){
+func (b *DebugBuffer) DumpBufferToFile(fname string) {
 	fOut, _ := os.Create(fname)
 	for _, logs := range b.GetAllLogs() {
 		for _, s := range logs {
@@ -1657,4 +1705,215 @@ func (b *DebugBuffer) DumpBufferToFile(fname string){
 	fOut.Close()
 }
 
+const InitialChidrenLen = 10
 
+type AddressFieldValueToID map[common.Address]uint
+type Uint64FieldValueToID map[uint64]uint
+type HashFieldValueToID map[common.Hash]uint
+type BoolFieldValueToID map[bool]uint
+type StringFieldValueToID map[string]uint
+
+func NewFieldValueToID(field cmptypes.Field) interface{} {
+	switch field {
+	case cmptypes.Coinbase:
+		return make(AddressFieldValueToID, InitialChidrenLen)
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit, cmptypes.Nonce, cmptypes.CodeSize:
+		return make(Uint64FieldValueToID, InitialChidrenLen)
+	case cmptypes.Blockhash, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage:
+		return make(HashFieldValueToID, InitialChidrenLen)
+	case cmptypes.Exist, cmptypes.Empty:
+		return make(BoolFieldValueToID, InitialChidrenLen)
+	case cmptypes.Code:
+		return make(StringFieldValueToID, InitialChidrenLen)
+	default:
+		panic("Wrong Field")
+	}
+	return nil
+}
+
+func NewAccountValueToID(field cmptypes.Field) interface{} {
+	switch field {
+	case cmptypes.Coinbase:
+		return make(AddressFieldValueToID, InitialChidrenLen)
+	case cmptypes.Timestamp, cmptypes.Number, cmptypes.Difficulty, cmptypes.GasLimit:
+		return make(Uint64FieldValueToID, InitialChidrenLen)
+	case cmptypes.Blockhash:
+		return make(HashFieldValueToID, InitialChidrenLen)
+	case cmptypes.Exist, cmptypes.Empty, cmptypes.Balance, cmptypes.CodeHash, cmptypes.Storage, cmptypes.CommittedStorage, cmptypes.Nonce, cmptypes.CodeSize,
+		cmptypes.Code:
+		return make(StringFieldValueToID, InitialChidrenLen)
+	default:
+		panic("Wrong Field")
+	}
+	return nil
+}
+
+type _FastLoadFieldFunc func(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint)
+
+func _flfBlockhash(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Blockhash {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Blockhash)
+	}
+	number := addrLoc.Loc.(uint64)
+	curBn := env.header.Number.Uint64()
+	value := common.Hash{}
+	if curBn-number < 257 && number < curBn {
+		value = env.getHash(number)
+	}
+	//rawVal = value
+	vid = FastFieldValueToID.(HashFieldValueToID)[value]
+	return
+}
+
+func _flfCoinbase(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Coinbase {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Coinbase)
+	}
+	cb := env.header.Coinbase
+	//rawVal = cb
+	vid = FastFieldValueToID.(AddressFieldValueToID)[cb]
+	return
+}
+
+func _flfTimestamp(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Timestamp {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Timestamp)
+	}
+	time := env.header.Time
+	//rawVal = time
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[time]
+	return
+}
+func _flfNumber(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Number {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Number)
+	}
+	number := env.header.Number.Uint64()
+	//rawVal = env.header.Number
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[number]
+	return
+}
+func _flfDifficulty(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Difficulty {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Difficulty)
+	}
+	difficulty := env.header.Difficulty.Uint64()
+	//rawVal = env.header.Difficulty
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[difficulty]
+	return
+}
+func _flfGasLimit(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.GasLimit {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.GasLimit)
+	}
+	gaslimit := env.header.GasLimit
+	//rawVal = gaslimit
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[gaslimit]
+	return
+}
+func _flfBalance(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Balance {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Balance)
+	}
+	balance := env.state.GetBalance(addrLoc.Address)
+	k := FastBigToHash(balance)
+	//rawVal = balance
+	vid = FastFieldValueToID.(HashFieldValueToID)[k]
+	return
+}
+func _flfNonce(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Nonce {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Nonce)
+	}
+	value := env.state.GetNonce(addrLoc.Address)
+	//rawVal = value
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[value]
+	return
+}
+func _flfCodeHash(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.CodeHash {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.CodeHash)
+	}
+	value := env.state.GetCodeHash(addrLoc.Address)
+	//rawVal = value
+	vid = FastFieldValueToID.(HashFieldValueToID)[value]
+	return
+}
+func _flfExist(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Exist {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Exist)
+	}
+	value := env.state.Exist(addrLoc.Address)
+	//rawVal = value
+	vid = FastFieldValueToID.(BoolFieldValueToID)[value]
+	return
+}
+func _flfEmpty(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Empty {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Empty)
+	}
+	value := env.state.Empty(addrLoc.Address)
+	//rawVal = value
+	vid = FastFieldValueToID.(BoolFieldValueToID)[value]
+	return
+}
+func _flfCode(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Code {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Code)
+	}
+	value := env.state.GetCode(addrLoc.Address)
+	k := ImmutableBytesToString(value)
+	//rawVal = value
+	vid = FastFieldValueToID.(StringFieldValueToID)[k]
+	return
+}
+func _flfStorage(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.Storage {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.Storage)
+	}
+	value := env.state.GetState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+	//rawVal = value
+	vid = FastFieldValueToID.(HashFieldValueToID)[value]
+	return
+}
+func _flfCommittedStorage(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.CommittedStorage {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.CommittedStorage)
+	}
+	value := env.state.GetCommittedState(addrLoc.Address, addrLoc.Loc.(common.Hash))
+	//rawVal = value
+	vid = FastFieldValueToID.(HashFieldValueToID)[value]
+	return
+}
+func _flfCodeSize(env *ExecEnv, addrLoc *cmptypes.AddrLocation, FastFieldValueToID interface{}) (vid uint) {
+	if addrLoc.Field != cmptypes.CodeSize {
+		cmptypes.MyAssert(addrLoc.Field == cmptypes.CodeSize)
+	}
+	value := env.state.GetCodeSize(addrLoc.Address)
+	//rawVal = value
+	vid = FastFieldValueToID.(Uint64FieldValueToID)[uint64(value)]
+	return
+}
+
+var dispatchFastLoadFieldFuncTable = [cmptypes.FieldTotalSize]_FastLoadFieldFunc{
+	nil,
+	_flfBlockhash,
+	_flfCoinbase,
+	_flfTimestamp,
+	_flfNumber,
+	_flfDifficulty,
+	_flfGasLimit,
+	_flfBalance,
+	_flfNonce,
+	_flfCodeHash,
+	_flfExist,
+	_flfEmpty,
+	_flfCode,
+	_flfStorage,
+	_flfCommittedStorage,
+	nil, //Dependence
+	nil, //DirtyStorage
+	nil, //suicided,
+	nil, //MinBalance
+	_flfCodeSize,
+}
