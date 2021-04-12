@@ -68,11 +68,11 @@ type LogBlockInfo struct {
 	AbortedDelta  int `json:"aD"`
 	AbortedTrie   int `json:"aT"`
 
-	ReuseGas uint64        `json:"reuseGas"`
-	ProcTime int64         `json:"procTime"`
-	RunMode  string        `json:"runMode"`
-	TxnCount int           `json:"txnCount"`
-	Header   *types.Header `json:"header"`
+	ReuseGas      uint64        `json:"reuseGas"`
+	ProcTime      int64         `json:"procTime"`
+	RunMode       string        `json:"runMode"`
+	TxnCount      int           `json:"txnCount"`
+	Header        *types.Header `json:"header"`
 	TryPeekFailed uint64
 }
 
@@ -565,14 +565,16 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		infoResult.RunMode = "reuse"
 	}
 
-	filePath := fmt.Sprintf("%s/block/%s",
-		logDir,
-		block.Number().String())
+	if logDir != "" {
+		filePath := fmt.Sprintf("%s/block/%s",
+			logDir,
+			block.Number().String())
 
-	infoFileName := fmt.Sprintf("%s_%s_info_%d.json",
-		block.Number().String(), block.Hash().String(), block.Header().Time)
+		infoFileName := fmt.Sprintf("%s_%s_info_%d.json",
+			block.Number().String(), block.Hash().String(), block.Header().Time)
 
-	r.LogPrint(filePath, infoFileName, infoResult)
+		r.LogPrint(filePath, infoFileName, infoResult)
+	}
 
 	if r.SyncStart == 0 && synced {
 		r.SyncStart = block.NumberU64()

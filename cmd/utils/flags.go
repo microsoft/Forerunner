@@ -763,7 +763,7 @@ var (
 	LogRootFlag = DirectoryFlag{
 		Name:  "logdir",
 		Usage: "Log directory",
-		Value: DirectoryString(filepath.Join(node.DefaultDataDir(), "reuse")),
+		Value: "",
 	}
 
 	PreplayEnabledChainheadFlag = cli.BoolFlag{
@@ -1802,7 +1802,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	}
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
 		Silent:               ctx.GlobalBool(SilentFlag.Name),
-		LogRoot:              "/datadrive/reuse",
+		LogRoot:              "",
 		MemStatus:			 ctx.GlobalBool(MemStatusEnabledFlag.Name),
 		CmpReuse:             ctx.GlobalBool(CmpReuseEnabledFlag.Name),
 		CmpReuseChecking:     ctx.GlobalBool(CmpReuseCheckFlag.Name),
