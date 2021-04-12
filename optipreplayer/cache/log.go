@@ -73,6 +73,7 @@ type LogBlockInfo struct {
 	RunMode  string        `json:"runMode"`
 	TxnCount int           `json:"txnCount"`
 	Header   *types.Header `json:"header"`
+	TryPeekFailed uint64
 }
 
 type MissReporter interface {
@@ -327,7 +328,8 @@ var (
 	mixMiss     uint64
 	noMatchMiss uint64
 
-	LockCount [4]uint64
+	LockCount     [4]uint64
+	tryPeekFailed uint64
 
 	reuseGasUsed uint64
 	totalGasUsed uint64
@@ -447,6 +449,9 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 	processTimeNano := r.PeekBlockPre(block.Hash()).ListenTimeNano
 	if len(ReuseResult) != 0 {
 		for index, tx := range block.Transactions() {
+			if ReuseResult[index].TryPeekFailed {
+				infoResult.TryPeekFailed++
+			}
 			switch ReuseResult[index].BaseStatus {
 			case cmptypes.NoPreplay:
 				infoResult.NoPreplay++
@@ -844,6 +849,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 		reuseGasUsed += infoResult.ReuseGas
 		totalGasUsed += infoResult.Header.GasUsed
 
+		tryPeekFailed += infoResult.TryPeekFailed
+
 		context = []interface{}{
 			"block", blkCount, "txn", txnCount,
 			"listen", fmt.Sprintf("%d(%.3f)", listen, float64(listen)/float64(txnCount)),
@@ -905,7 +912,8 @@ func (r *GlobalCache) InfoPrint(block *types.Block, signer types.Signer, cfg vm.
 			"bothHitTxCount", bothHitTxCount,
 		)
 
-		log.Info("Tries lock", "count", fmt.Sprintf("%d-%d-%d-%d", LockCount[0], LockCount[1], LockCount[2], LockCount[3]))
+		log.Info("Tries lock", "count", fmt.Sprintf("%d-%d-%d-%d", LockCount[0], LockCount[1], LockCount[2], LockCount[3]), "tryPeekFailed",
+			tryPeekFailed)
 
 		var (
 			enqueues      = make([]uint64, 0)
@@ -1010,7 +1018,7 @@ func (r *GlobalCache) CachePrint(block *types.Block, reuseResult []*cmptypes.Reu
 				}
 			}
 
-			txPreplay := r.PeekTxPreplay(tx.Hash())
+			txPreplay := r.PeekTxPreplayInNonProcess(tx.Hash())
 			if txPreplay != nil {
 				txPreplay.RLockRound()
 				txCache.Rounds = txPreplay.KeysOfRound()
@@ -1107,7 +1115,7 @@ func (r *GlobalCache) PreplayPrint(RoundID uint64, executionOrder []*types.Trans
 	}
 	// Disable RWrecord writing
 	for _, tx := range executionOrder {
-		txPreplay := r.PeekTxPreplay(tx.Hash())
+		txPreplay := r.PeekTxPreplayInNonProcess(tx.Hash())
 		if txPreplay == nil {
 			log.Debug("[PreplayPrint] getTxPreplay Error", "txHash", tx.Hash())
 			preplayResult.Result = append(preplayResult.Result, nil)

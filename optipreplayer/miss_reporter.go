@@ -512,7 +512,7 @@ func (p *Preplayer) getGroundGroup(block *types.Block, txnsIndexMap map[common.H
 	for _, txns := range pendingTxn {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
-			txPreplay := p.globalCache.PeekTxPreplay(txnHash)
+			txPreplay := p.globalCache.PeekTxPreplayInNonProcess(txnHash)
 			if txPreplay != nil {
 				txPreplay.RLockRound()
 				if round, ok := txPreplay.PeekRound(executor.RoundID); ok {

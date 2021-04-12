@@ -63,7 +63,8 @@ func (reuse *Cmpreuse) tryReuseTransaction(bc *core.BlockChain, author *common.A
 
 func (reuse *Cmpreuse) finaliseByRealapply(config *params.ChainConfig, statedb *state.StateDB, header *types.Header, tx *types.Transaction,
 	usedGas *uint64, gasUsed uint64, failed bool, msg core.Message) *types.Receipt {
-	return reuse.finalise(config, statedb, header, tx, usedGas, gasUsed, failed, msg)
+	r := reuse.finalise(config, statedb, header, tx, usedGas, gasUsed, failed, msg)
+	return r
 }
 
 func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.StateDB, header *types.Header, tx *types.Transaction,
@@ -89,6 +90,53 @@ func (reuse *Cmpreuse) finalise(config *params.ChainConfig, statedb *state.State
 	}
 
 	return receipt
+	//// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
+	//// based on the eip phase, we're passing whether the root touch-delete accounts.
+	////receipt := types.NewReceipt(root, failed, *usedGas)
+	////receipt.TxHash = tx.Hash()
+	//receipt.GasUsed = gasUsed
+	//// if the transaction created a contract, store the creation address in the receipt.
+	//if msg.To() == nil {
+	//	receipt.ContractAddress = crypto.CreateAddress(msg.From(), tx.Nonce())
+	//}
+	//// Set the receipt logs and create a bloom for filtering
+	//receipt.Logs = statedb.GetLogs(tx.Hash())
+	//if statedb.BloomProcessor != nil {
+	//	statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	//} else {
+	//	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	//}
+	//receipt.BlockHash = statedb.BlockHash()
+	//receipt.BlockNumber = header.Number
+	//receipt.TransactionIndex = uint(statedb.TxIndex())
+	//return receipt
+}
+
+func (reuse *Cmpreuse) finaliseWithTime(config *params.ChainConfig, statedb *state.StateDB, header *types.Header, tx *types.Transaction,
+	usedGas *uint64, gasUsed uint64, failed bool, msg core.Message) (*types.Receipt, time.Time) {
+	// Update the state with pending changes
+	var root []byte
+	if config.IsByzantium(header.Number) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(config.IsEIP158(header.Number)).Bytes()
+	}
+	*usedGas += gasUsed
+
+	endTime := time.Now()
+
+	receipt := reuse.TryCreateReceipt(statedb, header, tx, msg)
+	// update the basic info
+	receipt.PostState = common.CopyBytes(root)
+	receipt.CumulativeGasUsed = *usedGas
+	receipt.GasUsed = gasUsed
+	if failed {
+		receipt.Status = types.ReceiptStatusFailed
+	} else {
+		receipt.Status = types.ReceiptStatusSuccessful
+	}
+
+	return receipt, endTime
 	//// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
 	//// based on the eip phase, we're passing whether the root touch-delete accounts.
 	////receipt := types.NewReceipt(root, failed, *usedGas)

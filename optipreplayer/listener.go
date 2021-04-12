@@ -56,6 +56,8 @@ func (l *Listener) cacheEvictionLoop2() {
 		currentBlock := chainHeadEvent.Block
 		l.blockMap[currentBlock.NumberU64()] = append(l.blockMap[currentBlock.NumberU64()], currentBlock)
 
+		l.globalCache.PauseForProcess()
+
 		sizes := l.globalCache.GetTrieAndWObjectSizes()
 		detail := &sizes.ExternalTransferDetails
 		log.Info("ET trie size in cache",
@@ -82,6 +84,9 @@ func (l *Listener) cacheEvictionLoop2() {
 		totalNodeCount := detail.TotalMixTrieNodeCount + detail.TotalTraceTrieNodeCount + detail.TotalRWTrieNodeCount + detail.TotalDeltaTrieNodeCount
 		totalWObjectSize := detail.TotalWObjectCount*config.WOBJECT_BASE_SIZE+ detail.TotalWObjectStorageSize
 
+		l.globalCache.PauseForProcess()
+
+
         detail = &sizes.SmartContractDetails
 		log.Info("SC trie size in cache",
 			"totalTxCnt", sizes.TotalTxCount,
@@ -107,6 +112,7 @@ func (l *Listener) cacheEvictionLoop2() {
         totalNodeCount += detail.TotalMixTrieNodeCount + detail.TotalTraceTrieNodeCount + detail.TotalRWTrieNodeCount + detail.TotalDeltaTrieNodeCount
 		totalWObjectSize += detail.TotalWObjectCount*config.WOBJECT_BASE_SIZE+ detail.TotalWObjectStorageSize
 
+		l.globalCache.PauseForProcess()
 
 		beforeSize := l.globalCache.LenOfTxPreplay()
 
@@ -115,10 +121,14 @@ func (l *Listener) cacheEvictionLoop2() {
 		removed2 := 0
 		removedHalf := 0
 
+		l.globalCache.PauseForProcess()
+
 		m := new(runtime.MemStats)
 		runtime.ReadMemStats(m)
 		if m.NumGC > lastNumGC {
 			// remove txs with 12 confirmations
+			l.globalCache.PauseForProcess()
+
 			before12 := l.globalCache.LenOfTxPreplay()
 			l.removeBefore(currentBlock.NumberU64() - 12)
 			removed12 = before12 - l.globalCache.LenOfTxPreplay()
@@ -126,6 +136,7 @@ func (l *Listener) cacheEvictionLoop2() {
 			if m.HeapAlloc > config.CACHE_START_EVICTION_SIZE_LIMIT {
 
 				if m.HeapAlloc > config.CACHE_LIGHT_EVICTION_SIZE_LIMIT {
+					l.globalCache.PauseForProcess()
 					// remove txs with 6 confirmations
 					before6 := l.globalCache.LenOfTxPreplay()
 					l.removeBefore(currentBlock.NumberU64() - 6)
@@ -136,12 +147,14 @@ func (l *Listener) cacheEvictionLoop2() {
 					// remove txs with 2 confirmations
 				}
 				if m.HeapAlloc > config.CACHE_SOFT_EVICTION_SIZE_LIMIT {
+					l.globalCache.PauseForProcess()
 					// remove txs with 2 confirmations
 					before2 := l.globalCache.LenOfTxPreplay()
 					l.removeBefore(currentBlock.NumberU64() - 2)
 					removed2 = before2 - l.globalCache.LenOfTxPreplay()
 				}
 				if m.HeapAlloc > config.CACHE_HARD_EVICTION_SIZE_LIMIT {
+					l.globalCache.PauseForProcess()
 					currentCacheSize := l.globalCache.LenOfTxPreplay()
 					targetCacheSize := currentCacheSize / 2
 					l.globalCache.ResizeTxPreplay(targetCacheSize)
@@ -150,11 +163,16 @@ func (l *Listener) cacheEvictionLoop2() {
 			}
 		}
 
+		l.globalCache.PauseForProcess()
+
 		l.globalCache.GCWObjects()
 
+		l.globalCache.PauseForProcess()
 
 		afterSize := l.globalCache.LenOfTxPreplay()
 		removed := beforeSize - afterSize
+
+		l.globalCache.PauseForProcess()
 
 		log.Info("TxPreplay cache eviction", "number", currentBlock.NumberU64(),
 			"heapAlloc", m.HeapAlloc/1024/1024/1024,

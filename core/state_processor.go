@@ -42,7 +42,7 @@ type TransactionApplier interface {
 	ApplyTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
 		cfg *vm.Config, blockPre *cache.BlockPre, getHashFunc vm.GetHashFunc, precompiles map[common.Address]vm.PrecompiledContract,
-		pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus)
+		pMsg *types.Message, signer types.Signer) (*types.Receipt, error, *cmptypes.ReuseStatus, time.Time)
 
 	ReuseTransaction(config *params.ChainConfig, bc *BlockChain, author *common.Address,
 		gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64,
@@ -414,14 +414,18 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}()
 			} else {
 				txStart := time.Now()
+				var txDuration time.Duration
 				if cfg.MSRAVMSettings.ParallelizeReuse {
 					receipt, err, reuseStatus = p.bc.Cmpreuse.ReuseTransaction(p.config, p.bc, nil, gp, statedb, header,
 						tx, usedGas, &cfg, blockPre, p.asyncProcessor, controller, getHashFunc, precompiles, pMsg, signer)
+					txDuration = time.Since(txStart)
 				} else {
-					receipt, err, reuseStatus = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header,
+					var endTime time.Time
+					receipt, err, reuseStatus, endTime = p.bc.Cmpreuse.ApplyTransaction(p.config, p.bc, nil, gp, statedb, header,
 						tx, usedGas, &cfg, blockPre, getHashFunc, precompiles, pMsg, signer)
+					txDuration = endTime.Sub(txStart)
 				}
-				txDuration := time.Since(txStart)
+				//txDuration := time.Since(txStart)
 				if cfg.MSRAVMSettings.PerfLogging {
 					txListen := p.bc.MSRACache.GetTxListen(tx.Hash())
 					confirmationDelaySecond := -1.0
@@ -510,8 +514,11 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				}()
 			} else {
 				txStart := time.Now()
-				receipt, err = ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
-				txDuration := time.Since(txStart)
+				var endTime time.Time
+				receipt, err, endTime = ApplyTransactionWithTime(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
+				//txDuration := time.Since(txStart)
+				txDuration := endTime.Sub(txStart)
+
 				if cfg.MSRAVMSettings.PerfLogging {
 					confirmationDelaySecond := -1.0
 					if cfg.MSRAVMSettings.EnablePreplay {
@@ -543,8 +550,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				cache.MaxLongExecutionCost = cache.Apply[len(cache.Apply)-1]
 			}
 			if len(reuseResult) > 0 {
-				if cache.Reuse[len(cache.Reuse)-1] > cache.MaxLongExecutionReuseCost {
-					cache.MaxLongExecutionReuseCost = cache.Reuse[len(cache.Reuse)-1]
+				if cfg.MSRAVMSettings.DetailTime {
+					if cache.Reuse[len(cache.Reuse)-1] > cache.MaxLongExecutionReuseCost {
+						cache.MaxLongExecutionReuseCost = cache.Reuse[len(cache.Reuse)-1]
+					}
 				}
 			}
 			context := []interface{}{
@@ -555,12 +564,14 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 				"max cost", common.PrettyDuration(cache.MaxLongExecutionCost),
 			}
 			if len(reuseResult) > 0 {
-				context = append(context,
-					"getRW cost", common.PrettyDuration(cache.GetRW[len(cache.GetRW)-1]),
-					"setDB cost", common.PrettyDuration(cache.SetDB[len(cache.SetDB)-1]),
-					"reuse cost", common.PrettyDuration(cache.Reuse[len(cache.Reuse)-1]),
-					"max reuse cost", common.PrettyDuration(cache.MaxLongExecutionReuseCost),
-				)
+				if cfg.MSRAVMSettings.DetailTime {
+					context = append(context,
+						"getRW cost", common.PrettyDuration(cache.GetRW[len(cache.GetRW)-1]),
+						"setDB cost", common.PrettyDuration(cache.SetDB[len(cache.SetDB)-1]),
+						"reuse cost", common.PrettyDuration(cache.Reuse[len(cache.Reuse)-1]),
+						"max reuse cost", common.PrettyDuration(cache.MaxLongExecutionReuseCost),
+					)
+				}
 
 				var status = reuseResult[len(reuseResult)-1]
 				var statusStr = status.BaseStatus.String()
@@ -649,6 +660,56 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	receipt.TransactionIndex = uint(statedb.TxIndex())
 
 	return receipt, err
+}
+
+func ApplyTransactionWithTime(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error, time.Time) {
+	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
+	if err != nil {
+		return nil, err, time.Now()
+	}
+	// Create a new context to be used in the EVM environment
+	context := NewEVMContext(msg, header, bc, author)
+	// Create a new environment which holds all relevant information
+	// about the transaction and calling mechanisms.
+	vmenv := vm.NewEVM(context, statedb, config, cfg)
+	// Apply the transaction to the current state (included in the env)
+	_, gas, failed, err := ApplyMessage(vmenv, msg, gp)
+	if err != nil {
+		return nil, err, time.Now()
+	}
+	// Update the state with pending changes
+	var root []byte
+	if config.IsByzantium(header.Number) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(config.IsEIP158(header.Number)).Bytes()
+	}
+	*usedGas += gas
+
+	endTime := time.Now()
+
+	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
+	// based on the eip phase, we're passing whether the root touch-delete accounts.
+	receipt := types.NewReceipt(root, failed, *usedGas)
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = gas
+	// if the transaction created a contract, store the creation address in the receipt.
+	if msg.To() == nil {
+		receipt.ContractAddress = crypto.CreateAddress(vmenv.Context.Origin, tx.Nonce())
+	}
+	// Set the receipt logs and create a bloom for filtering
+	receipt.Logs = statedb.GetLogs(tx.Hash())
+	if statedb.BloomProcessor != nil {
+		statedb.BloomProcessor.CreateBloomForTransaction(receipt)
+	} else {
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	}
+
+	receipt.BlockHash = statedb.BlockHash()
+	receipt.BlockNumber = header.Number
+	receipt.TransactionIndex = uint(statedb.TxIndex())
+
+	return receipt, err, endTime
 }
 
 func ApplyTransactionPerfTest(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB,

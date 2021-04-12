@@ -970,7 +970,7 @@ func (b *TaskBuilder) isTxnTooLate(txn *types.Transaction) bool {
 func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsByPriceAndNonce, txnRemovedForGasLimit map[*types.Transaction]struct{}, rawPendingCopy TransactionPool) {
 	var pickTxn = make(map[common.Hash]*types.Transaction)
 	for txn := range txnRemovedForGasLimit {
-		if b.globalCache.PeekTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
+		if b.globalCache.PeekTxPreplayInNonProcess(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
 			pickTxn[txn.Hash()] = txn
 		}
 	}
@@ -980,7 +980,7 @@ func (b *TaskBuilder) handleRemainPreplayPool(remainPending *types.TransactionsB
 		if txn == nil {
 			break
 		}
-		if b.globalCache.PeekTxPreplay(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
+		if b.globalCache.PeekTxPreplayInNonProcess(txn.Hash()) == nil && b.remainCount[txn.Hash()] < preplayLimitForRemain {
 			pickTxn[txn.Hash()] = txn
 			needSize--
 		}
@@ -1166,7 +1166,7 @@ func (b *TaskBuilder) updateDependency(roundID uint64, pool TransactionPool) {
 	for _, txns := range pool {
 		for _, txn := range txns {
 			txnHash := txn.Hash()
-			if txPreplay := b.globalCache.PeekTxPreplay(txnHash); txPreplay != nil {
+			if txPreplay := b.globalCache.PeekTxPreplayInNonProcess(txnHash); txPreplay != nil {
 				txPreplay.RLockRound()
 				if round, ok := txPreplay.PeekRound(roundID); ok {
 					b.insertRWRecord(txnHash, NewRWRecord(round.RWrecord))

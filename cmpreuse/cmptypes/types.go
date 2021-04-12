@@ -128,6 +128,7 @@ type ReuseStatus struct {
 	BlockHash         common.Hash
 	BlockNumber       *big.Int
 	GasUsed           uint64
+	TryPeekFailed     bool
 }
 
 type MixStatus struct {

@@ -58,6 +58,7 @@ type GlobalCache struct {
 
 	// Preplay result
 	PreplayCache     *lru.Cache // Result Cache
+	PreplayCacheTryLock *cmptypes.SimpleTryLock
 	PreplayCacheSize int
 	PreplayRoundID   uint64
 	PreplayRoundIDMu sync.RWMutex
@@ -119,6 +120,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.TxEnqueueCache, _ = lru.New(tSize)
 
 	g.PreplayCache, _ = lru.New(pSize)
+	g.PreplayCacheTryLock = cmptypes.NewSimpleTryLock()
 	g.PreplayCacheSize = pSize
 	g.PreplayRoundID = 1
 	g.PreplayTimestamp = uint64(time.Now().Unix())
@@ -279,7 +281,7 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (sizes *TrieAndWObjectSizes) {
 	sizes = &TrieAndWObjectSizes{}
 	txHashes := r.KeysOfTxPreplay()
 	for _, key := range txHashes {
-		if txPreplay := r.PeekTxPreplay(key); txPreplay != nil {
+		if txPreplay := r.PeekTxPreplayInNonProcess(key); txPreplay != nil {
 			sizes.TotalTxCount++
 			var detail *TrieAndWObjectSizeDetail
 			if txPreplay.PreplayResults.IsExternalTransfer {
@@ -359,7 +361,7 @@ func (r *GlobalCache) GetTrieAndWObjectSizes() (sizes *TrieAndWObjectSizes) {
 func (r *GlobalCache) GCWObjects() () {
 	txHashes := r.KeysOfTxPreplay()
 	for _, key := range txHashes {
-		if txPreplay := r.PeekTxPreplay(key); txPreplay != nil {
+		if txPreplay := r.PeekTxPreplayInNonProcess(key); txPreplay != nil {
 			txPreplay.PreplayResults.GCWObjects()
 		}
 	}
@@ -367,7 +369,7 @@ func (r *GlobalCache) GCWObjects() () {
 
 // ResetGlobalCache reset the global cache size
 func (r *GlobalCache) ResetGlobalCache(bSize int, tSize int, pSize int) bool {
-
+    panic("Should never be called!")
 	r.BlockMu.Lock()
 	r.PreplayRoundIDMu.Lock()
 	r.TxMu.Lock()
@@ -550,6 +552,21 @@ func (r *GlobalCache) PauseForProcess() {
 	for atomic.LoadInt32(&r.pause) == 1 {
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+func (r *GlobalCache) TryPeekPreplay(txHash interface{}) (txPreplay *TxPreplay, failed bool) {
+	if r.PreplayCacheTryLock.TryLock() {
+		result, response := r.PreplayCache.Peek(txHash)
+		r.PreplayCacheTryLock.Unlock()
+		if response {
+			if tx, ok := result.(*TxPreplay); ok {
+				txPreplay = tx
+			}
+		}
+	}else {
+		failed = true
+	}
+	return
 }
 
 type SimpleResult struct {

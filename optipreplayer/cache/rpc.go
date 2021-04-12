@@ -38,7 +38,7 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 	roundID := uint64(0)
 	result := &TxDistributionList{}
 
-	queryTx := r.PeekTxPreplay(txHash)
+	queryTx := r.PeekTxPreplayInNonProcess(txHash)
 	if queryTx == nil {
 		return result
 	}
@@ -56,7 +56,7 @@ func (r *GlobalCache) GetDistributionList(txHash common.Hash) *TxDistributionLis
 		for _, tx := range rawPending[acc] {
 			txHash := tx.Hash()
 
-			txPreplay := r.PeekTxPreplay(txHash)
+			txPreplay := r.PeekTxPreplayInNonProcess(txHash)
 			if txPreplay == nil {
 				continue
 			}

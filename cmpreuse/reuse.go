@@ -433,7 +433,7 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 					} else {
 						log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
-						preTxPreplay := reuse.MSRACache.PeekTxPreplay(*preTxResId.Txhash)
+						preTxPreplay := reuse.MSRACache.PeekTxPreplayInProcessForDebug(*preTxResId.Txhash)
 						if preTxPreplay != nil {
 							preTxPreplay.RLockRound()
 							if preTxRound, okk := preTxPreplay.PeekRound(preTxResId.RoundID); okk {
@@ -548,7 +548,7 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain
 						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 					} else {
 						log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
-						preTxPreplay := reuse.MSRACache.PeekTxPreplay(*preTxResId.Txhash)
+						preTxPreplay := reuse.MSRACache.PeekTxPreplayInProcessForDebug(*preTxResId.Txhash)
 						if preTxPreplay != nil {
 							preTxPreplay.RLockRound()
 							if preTxRound, okk := preTxPreplay.PeekRound(preTxResId.RoundID); okk {
@@ -791,8 +791,34 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 	blockPre *cache.BlockPre, abort func() bool, isBlockProcess bool, fullPreplay bool, cfg *vm.Config) (
 	status *cmptypes.ReuseStatus, round *cache.PreplayResult, d0 time.Duration, d1 time.Duration) {
 
+	detailedTime := cfg.MSRAVMSettings.DetailTime
+
 	var sr *TraceTrieSearchResult
 	status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Undefined}
+
+	var t0 time.Time
+	if detailedTime {
+		t0 = time.Now()
+	}
+
+	var txPreplay *cache.TxPreplay
+	if isBlockProcess {
+		var tryFailed bool
+		txPreplay, tryFailed = reuse.MSRACache.TryPeekPreplay(tx.Hash())
+		if tryFailed {
+			status.TryPeekFailed = true
+		}
+	} else {
+		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
+	}
+	if (isBlockProcess && cfg.MSRAVMSettings.NoReuse) || txPreplay == nil {
+		if detailedTime {
+			d0 = time.Since(t0)
+		}
+		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
+		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
+		return
+	}
 
 	var lockCount int
 	var tryHoldLock = func(mu *cmptypes.SimpleTryLock) (hold bool) {
@@ -807,40 +833,28 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 		return true
 	}
 
-	t0 := time.Now()
-	var txPreplay *cache.TxPreplay
-	if isBlockProcess {
-		txPreplay = reuse.MSRACache.PeekTxPreplay(tx.Hash())
-	} else {
-		txPreplay = reuse.MSRACache.GetTxPreplay(tx.Hash())
-	}
-	if (isBlockProcess && cfg.MSRAVMSettings.NoReuse) || txPreplay == nil {
-		d0 = time.Since(t0)
-		//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
-		status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
-		return
-	} else {
-		if fullPreplay && !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer && !cfg.MSRAVMSettings.NoTrace {
-			//if !txPreplay.PreplayResults.IsExternalTransfer {
-			if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
-				traceNotExist := txPreplay.PreplayResults.TraceTrie == nil
-				if txPreplay.PreplayResults.ForcedTraceTrieGeneration {
-					traceNotExist = false
-				} else {
-					txPreplay.PreplayResults.ForcedTraceTrieGeneration = true
-				}
-				txPreplay.PreplayResults.TraceTrieMu.Unlock()
-				if traceNotExist {
-					// force miss to run real apply if there is no trace
-					// otherwise if the result is hit, no trace will be created at all
-					d0 = time.Since(t0)
-					//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
-					status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
-					return
-				}
+	if fullPreplay && !isBlockProcess && cfg.MSRAVMSettings.EnableReuseTracer && !cfg.MSRAVMSettings.NoTrace {
+		//if !txPreplay.PreplayResults.IsExternalTransfer {
+		if tryHoldLock(txPreplay.PreplayResults.TraceTrieMu) {
+			traceNotExist := txPreplay.PreplayResults.TraceTrie == nil
+			if txPreplay.PreplayResults.ForcedTraceTrieGeneration {
+				traceNotExist = false
+			} else {
+				txPreplay.PreplayResults.ForcedTraceTrieGeneration = true
 			}
-			//}
+			txPreplay.PreplayResults.TraceTrieMu.Unlock()
+			if traceNotExist {
+				// force miss to run real apply if there is no trace
+				// otherwise if the result is hit, no trace will be created at all
+				if detailedTime {
+					d0 = time.Since(t0)
+				}
+				//status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.NoPreplay}
+				status.BaseStatus = cmptypes.NoPreplay //no cache, quit compete
+				return
+			}
 		}
+		//}
 	}
 
 	traceTrieChecked := false
@@ -851,15 +865,15 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 			panic("BaseStatus should be undefined before the first check")
 		}
 		if cfg.MSRAVMSettings.NoOverMatching {
-				round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
-				if status.BaseStatus == cmptypes.Unknown {
-					return
-				}
+			round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+			if status.BaseStatus == cmptypes.Unknown {
+				return
+			}
 		} else {
-				round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
-				if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
-					return
-				}
+			round, d0 = reuse.tryMixCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, status, t0)
+			if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+				return
+			}
 		}
 	}
 
@@ -882,7 +896,6 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 			}
 		}
 	}
-
 
 	if status.BaseStatus == cmptypes.Undefined {
 		if isBlockProcess && lockCount == 4 {
@@ -1066,7 +1079,7 @@ func (reuse *Cmpreuse) tryTrieCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock)
 						log.Info("show depcheck match read dep (no tx changed)", "readaddress", addr)
 					} else {
 						log.Info("show depcheck match read dep", "readaddress", addr, "lastTxhash", preTxResId.Txhash.Hex(), "preRoundID", preTxResId.RoundID)
-						preTxPreplay := reuse.MSRACache.PeekTxPreplay(*preTxResId.Txhash)
+						preTxPreplay := reuse.MSRACache.PeekTxPreplayInProcessForDebug(*preTxResId.Txhash)
 						if preTxPreplay != nil {
 							preTxPreplay.RLockRound()
 							if preTxRound, okk := preTxPreplay.PeekRound(preTxResId.RoundID); okk {

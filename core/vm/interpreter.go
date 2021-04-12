@@ -70,6 +70,7 @@ type MSRAVMConfig struct {
 	NoWarmuper          bool
 	NoReuse             bool
 	AddFastPath         bool
+	DetailTime          bool
 
 	// emulator
 	EmulatorDir          string

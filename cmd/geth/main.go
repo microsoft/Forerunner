@@ -238,6 +238,7 @@ var (
 		utils.NoOverMatchingFlag,
 		utils.NoReuseFlag,
 		utils.AddFastPathFlag,
+		utils.DetailTimeFlag,
 		alliedNodeFileFlag,
 	}
 )

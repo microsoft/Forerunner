@@ -43,7 +43,7 @@ func (reuse *Cmpreuse) setAllResult(reuseStatus *cmptypes.ReuseStatus, curRoundI
 	}
 
 	txHash := tx.Hash()
-	txPreplay := reuse.MSRACache.PeekTxPreplay(txHash)
+	txPreplay := reuse.MSRACache.PeekTxPreplayInNonProcess(txHash)
 
 	//setDelta := !cfg.NoTrace && !cfg.SingleFuture
 	setDelta := false

@@ -1053,6 +1053,10 @@ func (m *TxPreplayMap) RemoveCheapest(remove int) {
 
 // GetTxPreplay returns the result of preplay and updates the "recently used"-ness of the key
 func (r *GlobalCache) GetTxPreplay(txHash interface{}) *TxPreplay {
+	r.PauseForProcess()
+
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 
 	result, response := r.PreplayCache.Get(txHash)
 
@@ -1067,9 +1071,9 @@ func (r *GlobalCache) GetTxPreplay(txHash interface{}) *TxPreplay {
 	return nil
 }
 
-// PeekTxPreplay returns the result of preplay and will not update the "recently used"-ness of the key
-func (r *GlobalCache) PeekTxPreplay(txHash interface{}) *TxPreplay {
-
+func (r *GlobalCache) doPeekTxPreplay(txHash  interface{}) *TxPreplay {
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	result, response := r.PreplayCache.Peek(txHash)
 
 	if !response {
@@ -1083,11 +1087,27 @@ func (r *GlobalCache) PeekTxPreplay(txHash interface{}) *TxPreplay {
 	return nil
 }
 
+// PeekTxPreplay returns the result of preplay and will not update the "recently used"-ness of the key
+func (r *GlobalCache) PeekTxPreplayInNonProcess(txHash interface{}) *TxPreplay {
+	r.PauseForProcess()
+	return r.doPeekTxPreplay(txHash)
+}
+
+func (r *GlobalCache) PeekTxPreplayInProcessForDebug(txHash interface{}) *TxPreplay {
+   return r.doPeekTxPreplay(txHash)
+}
+
 func (r *GlobalCache) KeysOfTxPreplay() []interface{} {
+	r.PauseForProcess()
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	return r.PreplayCache.Keys()
 }
 
 func (r *GlobalCache) LenOfTxPreplay() int {
+	r.PauseForProcess()
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	return r.PreplayCache.Len()
 }
 
@@ -1339,7 +1359,7 @@ func (r *GlobalCache) SetExtraResult(roundID uint64, hash common.Hash, currentSt
 		return false
 	}
 
-	txPreplay := r.PeekTxPreplay(hash)
+	txPreplay := r.PeekTxPreplayInNonProcess(hash)
 	if txPreplay == nil {
 		log.Debug("[PreplayCache] SetMainResult Error", "txHash", hash)
 		return false
@@ -1402,18 +1422,28 @@ func (r *GlobalCache) SetReadDep(roundID uint64, txHash common.Hash, txPreplay *
 
 // AddTxPreplay update after preplay
 func (r *GlobalCache) AddTxPreplay(txPreplay *TxPreplay) {
+	r.PauseForProcess()
 	if txPreplay == nil {
 		return
 	}
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	r.PreplayCache.Add(txPreplay.TxHash, txPreplay)
 }
 
 func (r *GlobalCache) ResizeTxPreplay(size int) int {
+	r.PauseForProcess()
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	return r.PreplayCache.Resize(size)
 }
 
 func (c *GlobalCache) RemoveOldest() (int64, bool) {
+	c.PauseForProcess()
+	c.PreplayCacheTryLock.Lock()
 	key, value, ok := c.PreplayCache.GetOldest()
+	c.PreplayCacheTryLock.Unlock()
+
 	if ok {
 		r := value.(*TxPreplay).PreplayResults
 		var nodeCount int64
@@ -1426,7 +1456,9 @@ func (c *GlobalCache) RemoveOldest() (int64, bool) {
 		if r.RWRecordTrie != nil {
 			nodeCount += r.RWRecordTrie.GetNodeCount()
 		}
+		c.PreplayCacheTryLock.Lock()
 		c.PreplayCache.Remove(key)
+		c.PreplayCacheTryLock.Unlock()
 		return nodeCount, true
 	} else {
 		return 0, false
@@ -1434,6 +1466,9 @@ func (c *GlobalCache) RemoveOldest() (int64, bool) {
 }
 
 func (r *GlobalCache) RemoveTxPreplay(txn common.Hash) {
+	r.PauseForProcess()
+	r.PreplayCacheTryLock.Lock()
+	defer r.PreplayCacheTryLock.Unlock()
 	r.PreplayCache.Remove(txn)
 }
 
@@ -1441,11 +1476,11 @@ func (r *GlobalCache) RemoveTxPreplay(txn common.Hash) {
 func (r *GlobalCache) CommitTxResult(roundID uint64, currentState *CurrentState, rawTxs map[common.Address]types.Transactions,
 	rawTxResult map[common.Hash]*ExtraResult) {
 
-	log.Debug(
-		"Preplay update",
-		"preplay", currentState.PreplayName,
-		"len", len(rawTxResult),
-		"tot", r.PreplayCache.Len())
+	//log.Debug(
+	//	"Preplay update",
+	//	"preplay", currentState.PreplayName,
+	//	"len", len(rawTxResult),
+	//	"tot", r.PreplayCache.Len())
 
 	if len(rawTxResult) == 0 {
 		return

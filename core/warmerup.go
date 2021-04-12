@@ -379,7 +379,7 @@ func (w *Warmuper) warmupMiner(root common.Hash) {
 }
 
 func (w *Warmuper) getObjectHolder(wref *cache.WObjectWeakReference) *state.ObjectHolder {
-	txPreplay := w.globalCache.PeekTxPreplay(wref.TxHash)
+	txPreplay := w.globalCache.PeekTxPreplayInNonProcess(wref.TxHash)
 	if txPreplay != nil {
 		return txPreplay.GetWObjectHolder(wref)
 	}

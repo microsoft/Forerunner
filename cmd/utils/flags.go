@@ -955,6 +955,10 @@ var (
 		Name: "add-fastpath",
 		Usage: "add mix/rw-tree before trace",
 	}
+	DetailTimeFlag = cli.BoolFlag{
+		Name:  "detailtime",
+		Usage: "measure detail time consumption in reuse",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1823,6 +1827,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
 		NoReuse:          ctx.GlobalBool(NoReuseFlag.Name),
 		AddFastPath:      ctx.GlobalBool(AddFastPathFlag.Name),
+		DetailTime:       ctx.GlobalBool(DetailTimeFlag.Name),
 
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
