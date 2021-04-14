@@ -85,6 +85,7 @@ type MSRAVMConfig struct {
 	ParallelizeReuse   bool
 	WarmupMissDetail   bool
 	ReportMissDetail   bool
+	GethCacheSizeInMB  int
 }
 
 func (p *MSRAVMConfig) IsPrintRecord() bool {

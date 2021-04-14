@@ -318,6 +318,11 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 		panic("PreplayTransaction can't be used for process and statedb must be RW mode and not be shared.")
 	}
 
+	if enablePause {
+		statedb.PauseableCache = reuse.MSRACache
+		defer func() {statedb.PauseableCache = nil} ()
+	}
+
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number))
 	if err != nil {
 		return nil, err
@@ -402,6 +407,12 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 				rt := statedb.ReuseTracer.(*ReuseTracer)
 				statedb.ReuseTracer = nil
 				stats := rt.Statements
+				totalEVMOpCount := rt.OpCount
+				if rt.IsExternalTransfer {
+					//cmptypes.MyAssert(rt.IsExternalTransfer, "Tx %v stats %v opCount %v", tx.Hash().Hex(), len(stats), rt.OpCount)
+					totalEVMOpCount = len(stats)
+				}
+				rt.SpecializationStats.TotalEVMOpCount = totalEVMOpCount
 				debugBuffer := NewDebugBuffer(rt.DebugBuffer)
 
 				defer func() {
@@ -431,7 +442,7 @@ func (reuse *Cmpreuse) PreplayTransaction(config *params.ChainConfig, bc *core.B
 					panic("Tracer Error:InComplete Trace or Unimplemeted Code reached!")
 				}
 
-				trace = NewSTrace(stats, debugOut, debugBuffer)
+				trace = NewSTrace(stats, debugOut, debugBuffer, rt.SpecializationStats, cfg.MSRAVMSettings.PerfLogging, &msg)
 
 				//writeDoubleOut := func(fmtStr string, args ...interface{}) {
 				//	//fmt.Printf(fmtStr, args...)

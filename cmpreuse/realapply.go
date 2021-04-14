@@ -15,25 +15,26 @@ import (
 func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc *core.BlockChain, author *common.Address,
 	gp *core.GasPool, statedb *state.StateDB, header *types.Header, cfg *vm.Config, abort func() bool, setEvm func(evm *vm.EVM),
 	msg core.Message, tx *types.Transaction) (gas uint64, failed bool, err error, d time.Duration) {
-	t := time.Now()
-	defer func() {
-		d = time.Since(t)
-	}()
+	d = 0
+	//t := time.Now()
+	//defer func() {
+	//	d = time.Since(t)
+	//}()
 
-	if abort != nil && abort() {
-		return
-	}
+	//if abort != nil && abort() {
+	//	return
+	//}
 	snap := statedb.Snapshot()
 	if statedb.IsRWMode() {
 		statedb.RWRecorder().RWClear()
 	}
-	if abort != nil && abort() {
-		return
-	}
+	//if abort != nil && abort() {
+	//	return
+	//}
 	context := core.NewEVMContext(msg, header, bc, author)
-	if abort != nil && abort() {
-		return
-	}
+	//if abort != nil && abort() {
+	//	return
+	//}
 	evm := vm.NewEVM(context, statedb, config, *cfg)
 	//expCount := 10000000
 	//expCount = 1
@@ -53,12 +54,12 @@ func (reuse *Cmpreuse) realApplyTransaction(config *params.ChainConfig, bc *core
 		}()
 	}
 
-	if setEvm != nil {
-		setEvm(evm)
-	}
-	if abort != nil && abort() {
-		return
-	}
+	//if setEvm != nil {
+	//	setEvm(evm)
+	//}
+	//if abort != nil && abort() {
+	//	return
+	//}
 	_, gas, failed, err = core.ApplyMessage(evm, msg, gp)
 
 	if err != nil {

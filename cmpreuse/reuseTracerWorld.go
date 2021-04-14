@@ -259,7 +259,7 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 		so.GuardedKeyVars[keyVar] = struct{}{}
 	}
 	if so.HasNonConstKey {
-		gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key")
+		gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key", "stateDep")
 		if gk.Uint32() == 0 || isStore {
 			if isStore {
 				cmptypes.MyAssert(gk.Uint32() != 0, "read should be before store")
@@ -277,7 +277,7 @@ func (ws *TracerWorldState) guardStateKey(hashKey common.Hash, keyVar *Variable,
 		} else {
 			cmptypes.MyAssert(so.StateIDMVar == nil)
 			so.StateIDMVar = keyVar.tracer.ConstVarWithName(so.StateIDs, "initSIDM")
-			gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key")
+			gk := so.StateIDMVar.GetStateValueID(keyVar).NGuard("state_key", "stateDep")
 			if gk.Uint32() == 0 || isStore {
 				if isStore {
 					cmptypes.MyAssert(gk.Uint32() != 0, "read should be before store")
@@ -297,7 +297,7 @@ func (ws *TracerWorldState) guardAddr(addr common.Address, addrVar *Variable) {
 		ws.GuardedAddrVars[addrVar] = true
 	}
 	if ws.HasNonConstAddr {
-		ak := ws.AddrIDMVar.GetAddrID(addrVar).NGuard("account_addr")
+		ak := ws.AddrIDMVar.GetAddrID(addrVar).NGuard("account_addr", "stateDep")
 		if ak.Uint32() == 0 {
 			ws.AddrIDMVar = ws.AddrIDMVar.SetAddrID(addrVar, addrVar.tracer.ConstVarWithName(addrVar.id, "aID"+strconv.Itoa(int(addrVar.id))))
 		}
@@ -309,7 +309,7 @@ func (ws *TracerWorldState) guardAddr(addr common.Address, addrVar *Variable) {
 		} else {
 			cmptypes.MyAssert(ws.AddrIDMVar == nil)
 			ws.AddrIDMVar = addrVar.tracer.ConstVarWithName(ws.AddrIDs, "initAIDM")
-			ak := ws.AddrIDMVar.GetAddrID(addrVar).NGuard("account_addr")
+			ak := ws.AddrIDMVar.GetAddrID(addrVar).NGuard("account_addr", "stateDep")
 			if ak.Uint32() == 0 {
 				ws.AddrIDMVar = ws.AddrIDMVar.SetAddrID(addrVar, addrVar.tracer.ConstVarWithName(addrVar.id, "aID"+strconv.Itoa(int(addrVar.id))))
 			}

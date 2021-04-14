@@ -151,6 +151,10 @@ func (v *Variable) Bool() bool {
 	return v.val.(bool)
 }
 
+func (v *Variable) GetValAsString() string {
+	return v.val.(string)
+}
+
 func (v *Variable) BAddress() common.Address {
 	return v.val.(*MultiTypedValue).GetAddress()
 }
@@ -598,12 +602,13 @@ func (v *Variable) Guard() *Variable {
 	return out
 }
 
-func (v *Variable) NGuard(name string) *Variable {
+func (v *Variable) NGuard(name, guardType string) *Variable {
 	if v.IsConst() {
 		return v
 	}
 	annotation := v.tracer.ConstVarWithName(name, name)
-	out := v.tracer.Trace(OP_Guard, nil, v, annotation)
+	gType := v.tracer.ConstVarWithName(guardType, guardType)
+	out := v.tracer.Trace(OP_Guard, nil, v, annotation, gType)
 	return out
 }
 
@@ -845,6 +850,11 @@ func (op *OpDef) IsGuard() bool {
 	return op.isGuardOp
 }
 
+func (op *OpDef) IsStateDependencyOp() bool {
+	f := op
+	return f == OP_GetAddrID || f == OP_GetBlockHashNumID || f == OP_GetStateValueID || f == OP_SetAddrID || f == OP_SetBlockHashNumID || f == OP_SetStateValueID
+}
+
 func (op *OpDef) IsLoadOrStoreOrRead() bool {
 	return op.isLoadOp || op.isStoreOp || op.isReadOp
 }
@@ -924,6 +934,7 @@ type Statement struct {
 	opSeq      uint64 // starting from 1
 	Reverted   bool
 	DebugStats *DebugStatsForStatement
+	IsGasOp    bool
 }
 
 func NewStatement(op *OpDef, opSeq uint64, debug bool, outVar *Variable, inVars ...*Variable) *Statement {
@@ -1155,7 +1166,7 @@ func (cf *TracerCallFrame) GuardCodeAddress() {
 	if cf.codeAddress.IsConst() {
 		return
 	}
-	gca := cf.codeAddress.NGuard("account_precompiled")
+	gca := cf.codeAddress.NGuard("account_precompiled", "path")
 
 	if cf.contractAddress == cf.codeAddress {
 		cf.contractAddress = gca
@@ -1188,8 +1199,8 @@ func newTracerMem(tracer *ReuseTracer) *TracerMem {
 func (m *TracerMem) Set(offsetVar, sizeVar, byteArrayValueVariable *Variable) {
 	// It's possible the offset is greater than 0 and size equals 0. This is because
 	// the calcMemSize (common.go) could potentially return 0 when size is zero (NO-OP)
-	offsetVar = offsetVar.NGuard("mem_offset")
-	sizeVar = sizeVar.NGuard("mem_size")
+	offsetVar = offsetVar.NGuard("mem_offset", "memDep")
+	sizeVar = sizeVar.NGuard("mem_size", "memDep")
 	offset, size := offsetVar.BigInt().Uint64(), sizeVar.BigInt().Uint64()
 	if size > 0 {
 		// length of store may never be less than offset + size.
@@ -1197,7 +1208,7 @@ func (m *TracerMem) Set(offsetVar, sizeVar, byteArrayValueVariable *Variable) {
 		if offset+size > uint64(len(m.store)) {
 			panic("invalid memory: store empty")
 		}
-		byteArrayValueVariable.LenByteArray().NGuard("mem_vlen")
+		byteArrayValueVariable.LenByteArray().NGuard("mem_vlen", "memDep")
 		if cells, ok := m.tracer.byteArrayOriginCells[byteArrayValueVariable]; ok {
 			valueLen := uint64(len(cells))
 			bArray := byteArrayValueVariable.ByteArray()
@@ -1223,7 +1234,7 @@ func (m *TracerMem) Set(offsetVar, sizeVar, byteArrayValueVariable *Variable) {
 func (m *TracerMem) Set32(offsetVar, bigIntVal *Variable) {
 	// length of store may never be less than offset + size.
 	// The store should be resized PRIOR to setting the memory
-	offsetVar = offsetVar.NGuard("mem_offset")
+	offsetVar = offsetVar.NGuard("mem_offset", "memDep")
 	offset := offsetVar.BigInt().Uint64()
 	if offset+32 > uint64(len(m.store)) {
 		panic("invalid memory: store empty")
@@ -1258,8 +1269,8 @@ func (m *TracerMem) GetCopy(offsetVar, sizeVar *Variable) *Variable {
 // GetPtr returns the offset + size
 func (m *TracerMem) GetPtr(offsetVar_BigInt, sizeVar_BigInt *Variable) *Variable {
 	// make sure that we read the same mem loc
-	offsetVar_BigInt = offsetVar_BigInt.NGuard("mem_offset")
-	sizeVar_BigInt = sizeVar_BigInt.NGuard("mem_sze")
+	offsetVar_BigInt = offsetVar_BigInt.NGuard("mem_offset", "memDep")
+	sizeVar_BigInt = sizeVar_BigInt.NGuard("mem_sze", "memDep")
 	size := sizeVar_BigInt.BigInt().Int64()
 	offset := offsetVar_BigInt.BigInt().Int64()
 	if size == 0 {
@@ -1275,8 +1286,8 @@ func (m *TracerMem) GetPtr(offsetVar_BigInt, sizeVar_BigInt *Variable) *Variable
 
 func (m *TracerMem) GetPtrForMLoad(offsetVar_BigInt, sizeVar_BigInt *Variable) *Variable {
 	// make sure that we read the same mem loc
-	offsetVar_BigInt = offsetVar_BigInt.NGuard("mem_offset")
-	sizeVar_BigInt = sizeVar_BigInt.NGuard("mem_size")
+	offsetVar_BigInt = offsetVar_BigInt.NGuard("mem_offset", "memDep")
+	sizeVar_BigInt = sizeVar_BigInt.NGuard("mem_size", "memDep")
 	size := sizeVar_BigInt.BigInt().Int64()
 	offset := offsetVar_BigInt.BigInt().Int64()
 	if size == 0 {
@@ -1916,4 +1927,25 @@ var dispatchFastLoadFieldFuncTable = [cmptypes.FieldTotalSize]_FastLoadFieldFunc
 	nil, //suicided,
 	nil, //MinBalance
 	_flfCodeSize,
+}
+
+type SpecializationStats struct {
+	TotalEVMOpCount                   int
+	PathGuardCount                    int
+	MemDependencyGuardCount           int
+	StateDependencyGuardCount         int
+	GasGuardCount                     int
+	EliminatedConstantOpCount         int
+	EliminatedControlOpCount          int
+	EliminatedStackOpCount            int
+	EliminatedMemOpCount              int
+	EliminatedStateOpCount            int
+	EliminatedDuplicatedOpCount       int
+	EliminatedUnusedOpCount           int
+	ConstraintNodeCount               int
+	FastPathNodeCount                 int
+	FastPathConstraintCommonNodeCount int
+	GeneratedStateDependencyOpCount   int
+	GeneratedGasOpCount               int
+	GeneratedConcatOpCount            int
 }

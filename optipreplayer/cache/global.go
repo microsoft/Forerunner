@@ -145,7 +145,7 @@ func NewGlobalCache(bSize int, tSize int, pSize int, logRoot string) *GlobalCach
 	g.CreateTimeStamp = time.Now()
 	// g.BucketCache, _ = lru.New(bSize)
 
-	if logRoot != "" {
+	if false {//if logRoot != "" {
 		logDir = filepath.Join(logRoot, g.CreateTimeStamp.Format("2006_01_02_15_04_05")+"_"+strconv.FormatInt(g.CreateTimeStamp.Unix(), 10))
 		_, err := os.Stat(logDir)
 		if err != nil {

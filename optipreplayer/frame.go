@@ -71,7 +71,7 @@ type Frame struct {
 
 // NewFrame create a new frame
 func NewFrame(eth Backend, config *params.ChainConfig, mux *event.TypeMux, engine consensus.Engine, gasFloor, gasCeil uint64, cfg *vm.MSRAVMConfig) *Frame {
-	listener := NewListener(eth)
+	listener := NewListener(eth, cfg.GethCacheSizeInMB)
 	frame := &Frame{
 		eth:         eth,
 		preplayFlag: false,

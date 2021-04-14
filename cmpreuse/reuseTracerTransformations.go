@@ -39,6 +39,10 @@ func PrintStatementsWithWriteOutAndRegisterAnnotation(stats []*Statement, regist
 			prefix += ">"
 		}
 
+		if s.IsGasOp {
+			prefix += "_GO"
+		}
+
 		debugOut(prefix + " " + s.SimpleNameStringWithRegisterAnnotation(registerMapping) + "\n")
 		debugOut("     " + s.RecordedValueString() + "\n")
 	}

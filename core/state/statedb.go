@@ -89,6 +89,10 @@ type TxPerfAndStatus struct {
 	KeyCreateWarmupMiss  int
 }
 
+type PauseableCache interface {
+	PauseForProcess()
+}
+
 // StateDBs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -201,6 +205,7 @@ type StateDB struct {
 
 	IgnoreJournalEntry bool
 	InWarmupMode       bool
+	PauseableCache     PauseableCache
 }
 
 func (self *StateDB) AddTxPerf(receipt *types.Receipt, time time.Duration, status *cmptypes.ReuseStatus, delayInSecond float64, tx *types.Transaction,
@@ -1008,6 +1013,9 @@ func (s *StateDB) deleteStateObject(obj *stateObject) {
 // the object is not found or was deleted in this execution context. If you need
 // to differentiate between non-existent/just-deleted, use getDeletedStateObject.
 func (s *StateDB) getStateObject(addr common.Address) *stateObject {
+	if s.PauseableCache != nil {
+		s.PauseableCache.PauseForProcess()
+	}
 	if obj := s.getDeletedStateObject(addr); obj != nil && !obj.deleted {
 		return obj
 	}

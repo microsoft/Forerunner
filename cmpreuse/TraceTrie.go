@@ -54,21 +54,27 @@ type STrace struct {
 	computed                                    bool
 	DebugBuffer                                 *DebugBuffer
 	TraceDuration                               time.Duration
+	SpecializationStats                         *SpecializationStats
 }
 
-func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer) *STrace {
-	st := &STrace{}
+func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer, specializedStats *SpecializationStats, perfLogOn bool, msg *types.Message) *STrace {
+	st := &STrace{SpecializationStats: specializedStats}
 	PrintStatementsWithWriteOut(stats, debugOut)
+	beforeEliminatedStoreStateCount := len(stats)
 	stats = ExecutePassAndPrintWithOut(EliminateRevertedStore, stats, debugOut, false)
 	stats = ExecutePassAndPrintWithOut(EliminateRedundantStore, stats, debugOut, false)
 	stats = ExecutePassAndPrintWithOut(EliminateSuicidedStore, stats, debugOut, false)
+	st.SpecializationStats.EliminatedStateOpCount += beforeEliminatedStoreStateCount - len(stats)
 
 	st.CrosscheckStats = stats
 
+	st.SpecializationStats.EliminatedUnusedOpCount = len(stats)
 	stats = ExecutePassAndPrintWithOut(EliminateUnusedStatement, stats, debugOut, false)
+	st.SpecializationStats.EliminatedUnusedOpCount -= len(stats)
 	stats = ExecutePassAndPrintWithOut(PushAllStoresToBottom, stats, debugOut, false)
 	stats = ExecutePassAndPrintWithOut(PushLoadReadComputationDownToFirstUse, stats, debugOut, false)
 	st.Stats = stats
+	st.MeasureSpecializationStats(perfLogOn, msg)
 	rmapping, highestRegisterIndex := AllocateVirtualRegisterForNonConstVariables(st.Stats)
 	st.RAlloc = rmapping
 	st.RegisterFileSize = highestRegisterIndex + 1
@@ -97,6 +103,53 @@ func NewSTrace(stats []*Statement, debugOut DebugOutFunc, buffer *DebugBuffer) *
 		}
 	}
 	return st
+}
+
+
+//var TraceLogFile    *os.File
+//var TraceLogChan    chan string = make(chan string, 100000)
+//
+//func StartTraceLogWriter(){
+//
+//}
+
+func (st *STrace) MeasureSpecializationStats(perfLogOn bool, msg *types.Message) {
+	lastGuardIndex := -1
+	fastPathUsedVar := make(map[uint32]struct{})
+	for i, s := range reversedStatements(st.Stats) {
+		if s.IsGasOp {
+			st.SpecializationStats.GeneratedGasOpCount++
+		} else if s.op == OP_ConcatBytes {
+			st.SpecializationStats.GeneratedConcatOpCount++
+		} else if s.op.IsStateDependencyOp() {
+			st.SpecializationStats.GeneratedStateDependencyOpCount++
+		}
+		if s.op.IsGuard() && lastGuardIndex == -1 {
+			lastGuardIndex = len(st.Stats) - i - 1
+		}
+
+		if lastGuardIndex != -1 { // fast path
+			for _, v := range s.inputs {
+				fastPathUsedVar[v.id] = struct{}{}
+			}
+		} else { // constraint
+			if s.output != nil {
+				if _, ok := fastPathUsedVar[s.output.id]; ok {
+					st.SpecializationStats.FastPathConstraintCommonNodeCount++
+					for _, v := range s.inputs {
+						fastPathUsedVar[v.id] = struct{}{}
+					}
+				}
+			}
+		}
+
+	}
+	st.SpecializationStats.ConstraintNodeCount = lastGuardIndex + 1
+	st.SpecializationStats.FastPathNodeCount = len(st.Stats) - (lastGuardIndex + 1)
+
+	if perfLogOn {
+
+	}
 }
 
 func (st *STrace) ShallowCopyAndExtendTrace() *STrace {
@@ -752,10 +805,10 @@ type AccountSearchTrieNode struct {
 
 func NewAccountSearchTrieNode(node *SNode) *AccountSearchTrieNode {
 	return &AccountSearchTrieNode{
-		LRNode: node,
+		LRNode:  node,
 		IsStore: node.Op.isStoreOp,
-		IsLoad: node.Op.isLoadOp,
-		IsRead: node.Op.isReadOp,
+		IsLoad:  node.Op.isLoadOp,
+		IsRead:  node.Op.isReadOp,
 	}
 }
 
@@ -907,19 +960,19 @@ type FieldSearchTrieNode struct {
 	Exit       *SNode
 	Rounds     []*cache.PreplayResult
 	AddrLoc    *cmptypes.AddrLocation
-	IsStore   bool
-	IsLoad    bool
-	IsRead    bool
+	IsStore    bool
+	IsLoad     bool
+	IsRead     bool
 	SRefCount
 	BigSize
 }
 
 func NewFieldSearchTrieNode(node *SNode) *FieldSearchTrieNode {
 	fn := &FieldSearchTrieNode{
-		LRNode: node,
+		LRNode:  node,
 		IsStore: node.Op.isStoreOp,
-		IsLoad: node.Op.isLoadOp,
-		IsRead: node.Op.isReadOp,
+		IsLoad:  node.Op.isLoadOp,
+		IsRead:  node.Op.isReadOp,
 	}
 	return fn
 }
@@ -2082,7 +2135,7 @@ func (n *SNode) DispatchBasedFastLoadFieldValueID(env *ExecEnv, addrLoc *cmptype
 	f := dispatchFastLoadFieldFuncTable[addrLoc.Field]
 	if f != nil {
 		vid = f(env, addrLoc, n.FastFieldValueToID)
-	}else {
+	} else {
 		cmptypes.MyAssert(false, "Wrong field %d", addrLoc.Field)
 	}
 

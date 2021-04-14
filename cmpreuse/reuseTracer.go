@@ -64,26 +64,28 @@ type ReuseTracer struct {
 	txFrom                     *Variable
 	txTo                       *Variable
 	txGasPrice_BigInt          *Variable
-	txGas_uint64               *Variable
-	txValue                    *Variable
-	txData_byteArray           *Variable
-	txNonce_uint64             *Variable
-	Bool_false                 *Variable
-	Bool_true                  *Variable
-	currentGas                 uint64
-	txHash                     common.Hash
-	ChainID                    *Variable
-	chainRules                 params.Rules
-	opCount                    int
-	DebugBuffer                *DebugBuffer
-	DebugFlag                  bool
-	guardedBlockHashNum        map[*Variable]bool
-	blockHashNumIDs            *BlockHashNumIDM
-	blockHashNumIDMVar         *Variable
-	hasNonConstBlockHashNum    bool
-	methodCache                map[string]reflect.Value
-	execEnv                    *ExecEnv
-	TraceStartTime             time.Time
+	txGas_uint64            *Variable
+	txValue                 *Variable
+	txData_byteArray        *Variable
+	txNonce_uint64          *Variable
+	Bool_false              *Variable
+	Bool_true               *Variable
+	currentGas              uint64
+	txHash                  common.Hash
+	ChainID                 *Variable
+	chainRules              params.Rules
+	OpCount                 int
+	DebugBuffer             *DebugBuffer
+	DebugFlag               bool
+	guardedBlockHashNum     map[*Variable]bool
+	blockHashNumIDs         *BlockHashNumIDM
+	blockHashNumIDMVar      *Variable
+	hasNonConstBlockHashNum bool
+	methodCache             map[string]reflect.Value
+	execEnv                 *ExecEnv
+	TraceStartTime          time.Time
+	SpecializationStats     *SpecializationStats
+	isGeneratingGasOp       bool
 }
 
 var ReuseTracerTracedTxCount uint64
@@ -118,6 +120,7 @@ func NewReuseTracer(statedb *state.StateDB, header *types.Header, hashFunc vm.Ge
 			precompiles: vm.GetPrecompiledMapping(&(chainRules))},
 		DebugBuffer: NewDebugBuffer(nil),
 		TraceStartTime: time.Now(),
+		SpecializationStats: &SpecializationStats{},
 	}
 
 	rt.snapshotStartingPoints[0] = 0
@@ -393,13 +396,39 @@ func (rt *ReuseTracer) VarWithName(val interface{}, name string) *Variable {
 	return v
 }
 
+func (rt *ReuseTracer) StartGasOpGeneration() {
+	rt.isGeneratingGasOp = true
+}
+
+func (rt *ReuseTracer) EndGasOpGeneration() {
+	rt.isGeneratingGasOp = false
+}
+
 func (rt *ReuseTracer) NewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {
-	return NewStatement(f, uint64(rt.opCount), rt.DebugFlag, outputVar, inputVars...)
+	return NewStatement(f, uint64(rt.OpCount), rt.DebugFlag, outputVar, inputVars...)
 }
 
 func (rt *ReuseTracer) AppendNewStatement(f *OpDef, outputVar *Variable, inputVars ...*Variable) *Statement {
 	s := rt.NewStatement(f, outputVar, inputVars...)
 	rt.Statements = append(rt.Statements, s)
+	if f.IsGuard() {
+		guardType := inputVars[2].GetValAsString()
+		switch guardType {
+		case "path":
+			rt.SpecializationStats.PathGuardCount++
+		case "memDep":
+			rt.SpecializationStats.MemDependencyGuardCount++
+		case "stateDep":
+			rt.SpecializationStats.StateDependencyGuardCount++
+		case "gas":
+			rt.SpecializationStats.GasGuardCount++
+		default:
+			panic(fmt.Sprintf("Unknown guard type %v", guardType))
+		}
+	}else if rt.isGeneratingGasOp {
+		s.IsGasOp = true
+	}
+
 	if rt.DebugFlag {
 		if len(rt.Statements) == 1 {
 			rt.DebugOut("\n\nTx %v trace\n", rt.txHash.Hex())
@@ -432,11 +461,13 @@ func (rt *ReuseTracer) TraceWithName(f *OpDef, output interface{}, outputVarName
 	if f.isLoadOp {
 		outputVar := rt.world.TWLoad(f.config.variant, inputVars...)
 		if outputVar != nil {
+			rt.SpecializationStats.EliminatedStateOpCount++
 			return outputVar // skip read
 		}
 	} else if f.isReadOp {
 		outputVar := rt.GetCachedHeaderRead(f.config.variant, inputVars...)
 		if outputVar != nil {
+			rt.SpecializationStats.EliminatedDuplicatedOpCount++
 			return outputVar
 		}
 	} else {
@@ -466,6 +497,11 @@ func (rt *ReuseTracer) TraceWithName(f *OpDef, output interface{}, outputVarName
 				//}
 				//rt.DebugOut("  inputs: %v\n", inputs)
 			}
+			if !outputVar.IsConst() {
+				rt.SpecializationStats.EliminatedDuplicatedOpCount++
+			}else {
+				rt.SpecializationStats.EliminatedConstantOpCount++
+			}
 			return outputVar
 		}
 	}
@@ -487,6 +523,7 @@ func (rt *ReuseTracer) TraceWithName(f *OpDef, output interface{}, outputVarName
 	if !f.isLoadOp && !f.isReadOp && !f.IsGuard() && IsAllConstants(inputVars) {
 		outputVar = rt.ConstVarWithName(output, name)
 		rt.NewStatement(f, outputVar, inputVars...)
+		rt.SpecializationStats.EliminatedConstantOpCount++
 	} else {
 		outputVar = rt.VarWithName(output, name)
 	}
@@ -535,7 +572,7 @@ func (rt *ReuseTracer) TracePreCheck() {
 }
 
 func (rt *ReuseTracer) TraceLoadAndCheckNonce() bool {
-	accountNonceVar := rt.CF().callerAddress.LoadNonce(nil).NGuard("nonce")
+	accountNonceVar := rt.CF().callerAddress.LoadNonce(nil).NGuard("nonce", "path")
 	return accountNonceVar.Uint64() == rt.txNonce_uint64.Uint64()
 }
 
@@ -547,7 +584,7 @@ func (rt *ReuseTracer) TraceBuyGas() {
 	maxGasCostVar := rt.ConstVarWithName(maxGasCost, "maxGasCost")
 
 	balanceVar := fromVar.LoadBalance(nil)
-	result := balanceVar.GEBigInt(maxGasCostVar).NGuard("buygas")
+	result := balanceVar.GEBigInt(maxGasCostVar).NGuard("buygas", "path")
 	if !result.Bool() {
 		rt.EncounterUnimplementedCode = true
 		return
@@ -566,12 +603,12 @@ func (rt *ReuseTracer) TraceIncCallerNonce() {
 func (rt *ReuseTracer) TraceCanTransfer() {
 	cf := rt.CF()
 	balanceVar := cf.callerAddress.LoadBalance(nil)
-	balanceVar.GEBigInt(cf.value).NGuard("balance")
+	balanceVar.GEBigInt(cf.value).NGuard("balance", "path")
 	return
 }
 
 func (rt *ReuseTracer) TraceAssertCodeAddrExistence() {
-	rt.CF().codeAddress.LoadExist(nil).NGuard("account_exist")
+	rt.CF().codeAddress.LoadExist(nil).NGuard("account_exist", "path")
 }
 
 func (rt *ReuseTracer) TraceGuardIsCodeAddressPrecompiled() {
@@ -583,7 +620,7 @@ func (rt *ReuseTracer) TraceGuardIsCodeAddressPrecompiled() {
 		}
 		return
 	}
-	gr := toVar.IsPrecompiled().NGuard("account_precompiled")
+	gr := toVar.IsPrecompiled().NGuard("account_precompiled", "path")
 	if gr.Bool() {
 		rt.CF().GuardCodeAddress()
 	}
@@ -618,7 +655,7 @@ func (rt *ReuseTracer) TraceTransfer() {
 func (rt *ReuseTracer) TraceGuardCodeLen() {
 	cf := rt.CF()
 	// here we guard code hash instead to be more efficient
-	cf.codeHash = cf.codeHash.NGuard("code_len")
+	cf.codeHash = cf.codeHash.NGuard("code_len", "path")
 	//	cf.codeAddress.LoadCodeHash(nil).Guard()
 }
 
@@ -750,7 +787,7 @@ func (rt *ReuseTracer) TraceMemoryRead(arrayLenVar_BigInt *Variable, cells []*Me
 }
 
 func (rt *ReuseTracer) TraceAssertBigIntZeroness(stackVar *Variable) {
-	stackVar.EqualBigInt(rt.BigInt_0).NGuard("val_zero_check")
+	stackVar.EqualBigInt(rt.BigInt_0).NGuard("val_zero_check", "path")
 }
 
 func (rt *ReuseTracer) TraceAssertStackValueZeroness() {
@@ -761,7 +798,7 @@ func (rt *ReuseTracer) TraceAssertStackValueSelf(backs ...int) {
 	stack := rt.CF().stack
 	for _, back := range backs {
 		stackVar := stack.Back(back)
-		stack.ReplaceBack(back, stackVar.NGuard("gas_valueself"))
+		stack.ReplaceBack(back, stackVar.NGuard("gas_valueself", "gas"))
 	}
 }
 
@@ -826,7 +863,7 @@ func (rt *ReuseTracer) traceSetCreateCode() {
 func (rt *ReuseTracer) TraceLoadCodeAndGuardHash() {
 	cf := rt.CF()
 	// note to be efficient, we guard hash instead of code itself
-	cf.codeHash = cf.codeAddress.LoadCodeHash(nil).NGuard("code")
+	cf.codeHash = cf.codeAddress.LoadCodeHash(nil).NGuard("code", "path")
 	//cf.code = cf.codeAddress.LoadCode(nil).Guard()
 	cf.code = rt.ConstVarWithName(rt.statedb.GetCode(cf.codeAddress.BAddress()), "Code")
 }
@@ -834,9 +871,9 @@ func (rt *ReuseTracer) TraceLoadCodeAndGuardHash() {
 func (rt *ReuseTracer) TraceAssertNoExistingContract() {
 	codeHash := rt.CF().contractAddress.LoadCodeHash(nil)
 	nonceVar := rt.CF().contractAddress.LoadNonce(nil)
-	nonceVar.NGuard("account_exist_nonce")
+	nonceVar.NGuard("account_exist_nonce", "path")
 	if nonceVar.Uint64() == 0 {
-		codeHash.NGuard("code_exist")
+		codeHash.NGuard("code_exist", "path")
 	}
 }
 
@@ -846,7 +883,7 @@ func (rt *ReuseTracer) TraceSetNonceForCreatedContract() {
 
 func (rt *ReuseTracer) TraceAssertNewCodeLen() {
 	if !rt.statedb.HasSuicided(rt.CF().contractAddress.BAddress()) { // suicided no return data
-		rt.returnData.LenByteArray().NGuard("code")
+		rt.returnData.LenByteArray().NGuard("code", "path")
 	}
 }
 
@@ -862,17 +899,21 @@ func (rt *ReuseTracer) TraceStoreNewCode() {
 }
 
 func (rt *ReuseTracer) TraceAssertInputLen() {
-	rt.CF().input.LenByteArray().NGuard("gas_inputlen")
+	rt.StartGasOpGeneration()
+	rt.CF().input.LenByteArray().NGuard("gas_inputlen", "gas")
+	rt.EndGasOpGeneration()
 }
 
 func (rt *ReuseTracer) TraceGasBigModExp() {
 	input := rt.CF().input
-	inputLenVar := input.LenByteArray().NGuard("gas_bigmodexp")
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
+	inputLenVar := input.LenByteArray().NGuard("gas_bigmodexp", "gas")
 
 	var (
-		baseLen = input.GetDataBig(rt.BigInt_0, rt.BigInt_32).NGuard("gas").ByteArrayToBigInt()  //  new(big.Int).SetBytes(getData(input, 0, 32))
-		expLen  = input.GetDataBig(rt.BigInt_32, rt.BigInt_32).NGuard("gas").ByteArrayToBigInt() // new(big.Int).SetBytes(getData(input, 32, 32))
-		_       = input.GetDataBig(rt.BigInt_64, rt.BigInt_32).NGuard("gas").ByteArrayToBigInt() // modeLen = new(big.Int).SetBytes(getData(input, 64, 32))
+		baseLen = input.GetDataBig(rt.BigInt_0, rt.BigInt_32).NGuard("gas", "gas").ByteArrayToBigInt()  //  new(big.Int).SetBytes(getData(input, 0, 32))
+		expLen  = input.GetDataBig(rt.BigInt_32, rt.BigInt_32).NGuard("gas", "gas").ByteArrayToBigInt() // new(big.Int).SetBytes(getData(input, 32, 32))
+		_       = input.GetDataBig(rt.BigInt_64, rt.BigInt_32).NGuard("gas", "gas").ByteArrayToBigInt() // modeLen = new(big.Int).SetBytes(getData(input, 64, 32))
 	)
 
 	inputLen := inputLenVar.BigInt().Int64()
@@ -887,10 +928,10 @@ func (rt *ReuseTracer) TraceGasBigModExp() {
 		// expHead = new(big.Int)
 	} else {
 		if expLen.BigInt().Cmp(rt.BigInt_32.BigInt()) > 0 {
-			input.GetDataBig(baseLen.AddBigInt(rt.BigInt_96), rt.BigInt_32).ByteArrayToBigInt().BitLenBigInt().NGuard("gas")
+			input.GetDataBig(baseLen.AddBigInt(rt.BigInt_96), rt.BigInt_32).ByteArrayToBigInt().BitLenBigInt().NGuard("gas", "gas")
 			//expHead = new(big.Int).SetBytes(getData(input, baseLen.Uint64(), 32))
 		} else {
-			input.GetDataBig(baseLen.AddBigInt(rt.BigInt_96), expLen).ByteArrayToBigInt().BitLenBigInt().NGuard("gas")
+			input.GetDataBig(baseLen.AddBigInt(rt.BigInt_96), expLen).ByteArrayToBigInt().BitLenBigInt().NGuard("gas", "gas")
 			//expHead = new(big.Int).SetBytes(getData(input, baseLen.Uint64(), expLen.Uint64()))
 		}
 	}
@@ -903,16 +944,21 @@ func (rt *ReuseTracer) TraceRunPrecompiled(p cmptypes.PrecompiledContract) {
 }
 
 func (rt *ReuseTracer) TraceGasSStore() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
 	stack := rt.CF().stack
 	yVar, xVar := stack.Back(1), stack.Back(0)
 	keyVar := xVar
 	currentVar := rt.CF().contractAddress.LoadState(keyVar, nil)
 	//currentVar.EqualGeneric(rt.Hash_Empty).Guard()
-	currentVar.EqualBigInt(rt.BigInt_0).NGuard("gas")
-	yVar.EqualBigInt(rt.BigInt_0).NGuard("gas")
+	currentVar.EqualBigInt(rt.BigInt_0).NGuard("gas", "gas")
+	yVar.EqualBigInt(rt.BigInt_0).NGuard("gas", "gas")
 }
 
 func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
+
 	stack := rt.CF().stack
 	yVar, xVar := stack.Back(1), stack.Back(0)
 	keyVar := xVar
@@ -926,7 +972,7 @@ func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
 	*/
 	//cmpResult := currentVar.EqualGeneric(yValueHashVar)
 	cmpResult := currentVar.EqualBigInt(yValueHashVar)
-	cmpResult.NGuard("gas_store")
+	cmpResult.NGuard("gas_store", "gas")
 	if cmpResult.Bool() {
 		return
 	}
@@ -944,16 +990,16 @@ func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
 		}
 	*/
 	cmpResult = originalVar.EqualBigInt(currentVar)
-	cmpResult.NGuard("gas_store")
+	cmpResult.NGuard("gas_store", "gas")
 	if cmpResult.Bool() {
 		//cmpResult := originalVar.EqualGeneric(rt.Hash_Empty)
 		cmpResult := originalVar.EqualBigInt(rt.BigInt_0)
-		cmpResult.NGuard("gas_store")
+		cmpResult.NGuard("gas_store", "gas")
 		if cmpResult.Bool() {
 			return
 		}
 		//yValueHashVar.EqualGeneric(rt.Hash_Empty).Guard()
-		yValueHashVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store")
+		yValueHashVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store", "gas")
 		return
 	}
 
@@ -968,14 +1014,14 @@ func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
 	*/
 	//cmpResult = originalVar.EqualGeneric(rt.Hash_Empty)
 	cmpResult = originalVar.EqualBigInt(rt.BigInt_0)
-	cmpResult.NGuard("gas_store")
+	cmpResult.NGuard("gas_store", "gas")
 	if !cmpResult.Bool() {
 		//cmpResult := currentVar.EqualGeneric(rt.Hash_Empty)
 		cmpResult := currentVar.EqualBigInt(rt.BigInt_0) //.EqualGeneric(rt.Hash_Empty)
-		cmpResult.NGuard("gas_store")
+		cmpResult.NGuard("gas_store", "gas")
 		if !cmpResult.Bool() {
 			//yValueHashVar.EqualGeneric(rt.Hash_Empty).Guard()
-			yValueHashVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store")
+			yValueHashVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store", "gas")
 		}
 	}
 	/*
@@ -990,66 +1036,75 @@ func (rt *ReuseTracer) TraceGasSStoreEIP2200() {
 	*/
 	//cmpResult = originalVar.EqualGeneric(yValueHashVar)
 	cmpResult = originalVar.EqualBigInt(yValueHashVar)
-	cmpResult.NGuard("gas_store")
+	cmpResult.NGuard("gas_store", "gas")
 	if cmpResult.Bool() {
 		//originalVar.EqualGeneric(rt.Hash_Empty).Guard()
-		originalVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store")
+		originalVar.EqualBigInt(rt.BigInt_0).NGuard("gas_store", "gas")
 	}
 }
 
 func (rt *ReuseTracer) TraceAssertExpByteLen() {
 	stack := rt.CF().stack
-	stack.data[stack.len()-2].BitLenBigInt().NGuard("gas_expbytelen")
+	rt.StartGasOpGeneration()
+	stack.data[stack.len()-2].BitLenBigInt().NGuard("gas_expbytelen", "gas")
+	rt.EndGasOpGeneration()
 }
 
 func (rt *ReuseTracer) TraceGasCall() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
 	stack := rt.CF().stack
 	valueVar := stack.Back(2)
 	callGasVar := stack.Back(0)
 
 	transfersValue := valueVar.EqualBigInt(rt.BigInt_0)
-	transfersValue.NGuard("gas")
+	transfersValue.NGuard("gas", "gas")
 
 	if rt.chainRules.IsEIP158 {
 		if !transfersValue.Bool() {
 			addressVar := stack.Back(1)
-			addressVar.LoadEmpty(nil).NGuard("gas")
+			addressVar.LoadEmpty(nil).NGuard("gas", "gas")
 		}
 	} else {
 		addressVar := stack.Back(1)
-		addressVar.LoadExist(nil).NGuard("gas")
+		addressVar.LoadExist(nil).NGuard("gas", "gas")
 	}
 
-	callGasVar.NGuard("gas")
+	callGasVar.NGuard("gas", "gas")
 }
 
 func (rt *ReuseTracer) TraceGasCallCode() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
+
 	stack := rt.CF().stack
 	valueVar := stack.Back(2)
 	callGasVar := stack.Back(0)
 
-	valueVar.EqualBigInt(rt.BigInt_0).NGuard("gas")
-	callGasVar.NGuard("gas")
+	valueVar.EqualBigInt(rt.BigInt_0).NGuard("gas", "gas")
+	callGasVar.NGuard("gas", "gas")
 }
 
 func (rt *ReuseTracer) TraceGasDelegateOrStaticCall() {
 	stack := rt.CF().stack
 	callGasVar := stack.Back(0)
-	callGasVar.NGuard("gas")
+	callGasVar.NGuard("gas", "gas")
 }
 
 func (rt *ReuseTracer) TraceGasSelfdestruct() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
 	stack := rt.CF().stack
 	if rt.chainRules.IsEIP150 {
 		addressVar := stack.Back(0)
 		if rt.chainRules.IsEIP158 {
-			g := addressVar.LoadEmpty(nil).NGuard("gas")
+			g := addressVar.LoadEmpty(nil).NGuard("gas", "gas")
 			if !g.Bool() {
 				return
 			}
-			rt.CF().contractAddress.LoadBalance(nil).EqualBigInt(rt.BigInt_0).NGuard("gas")
+			rt.CF().contractAddress.LoadBalance(nil).EqualBigInt(rt.BigInt_0).NGuard("gas", "gas")
 		} else {
-			addressVar.LoadExist(nil).NGuard("gas")
+			addressVar.LoadExist(nil).NGuard("gas", "gas")
 		}
 	}
 }
@@ -1062,9 +1117,9 @@ var EmptyValue = reflect.Value{}
 
 func (rt *ReuseTracer) TraceOpByName(opName string, pc uint64, gas uint64) {
 	if rt.DebugFlag {
-		rt.DebugOut("%v: %v\n", rt.opCount, opName)
+		rt.DebugOut("%v: %v\n", rt.OpCount, opName)
 	}
-	rt.opCount++
+	rt.OpCount++
 	rt.currentPC = pc
 	rt.currentGas = gas
 	if strings.Index(opName, "LOG") == 0 {
@@ -1460,7 +1515,7 @@ func (rt *ReuseTracer) Trace_opReturndatacopy() {
 	memOffset, dataOffset, length := rt.Pop3()
 	end := dataOffset.AddBigInt(length)
 	checkPassed := rt.returnData.ArrayBoundCheck(end)
-	checkPassed.NGuard("return_data_bound")
+	checkPassed.NGuard("return_data_bound", "path")
 	if !checkPassed.Bool() {
 		return
 	}
@@ -1508,7 +1563,7 @@ func (rt *ReuseTracer) Trace_opExtcodecopy() {
 func (rt *ReuseTracer) Trace_opExtcodehash() {
 	addr := rt.Pop()
 	emptyCondition := addr.LoadEmpty(nil)
-	emptyCondition.NGuard("account_ext_empty")
+	emptyCondition.NGuard("account_ext_empty", "path")
 	if emptyCondition.Bool() {
 		rt.Push(rt.BigInt_0)
 	} else {
@@ -1560,6 +1615,7 @@ func (rt *ReuseTracer) Trace_opGaslimit() {
 
 func (rt *ReuseTracer) Trace_opPop() {
 	rt.Pop()
+	rt.SpecializationStats.EliminatedStackOpCount++
 }
 
 var byteArrayType = reflect.TypeOf([]byte{0})
@@ -1572,18 +1628,21 @@ func (rt *ReuseTracer) Trace_opMload() {
 	}
 	r.BigInt() // check to make sure it is a bigint
 	rt.Push(r)
+	rt.SpecializationStats.EliminatedMemOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opMstore() {
 	// pop value of the stack
 	mStart, val := rt.Pop2()
 	rt.Mem().Set32(mStart, val)
+	rt.SpecializationStats.EliminatedMemOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opMstore8() {
 	off, val := rt.Pop2()
 	byteArrayVar := val.LowestByteBigInt()
 	rt.Mem().Set(off, rt.BigInt_1, byteArrayVar)
+	rt.SpecializationStats.EliminatedMemOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opSload() {
@@ -1599,33 +1658,39 @@ func (rt *ReuseTracer) Trace_opSstore() {
 
 func (rt *ReuseTracer) Trace_opJump() {
 	pos := rt.Pop()
-	pos.NGuard("jump_pos")
+	pos.NGuard("jump_pos", "path")
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opJumpi() {
 	pos, cond := rt.Pop2()
-	r := cond.IszeroBigInt().NGuard("jump_cond")
+	r := cond.IszeroBigInt().NGuard("jump_cond", "path")
 	//r := cond.EqualBigInt(rt.BigInt_0)
 	//r.Guard()
 	if r.BigInt().Uint64() == 0 { //!r.Bool() { // cond != 0
-		pos.NGuard("jump_pos")
+		pos.NGuard("jump_pos", "path")
 	}
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opJumpdest() {
 	// do nothing
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opPc() {
 	rt.Push(rt.ConstVarWithName(new(big.Int).SetUint64(rt.currentPC), "PC"))
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opMsize() {
 	rt.Push(rt.ConstVarWithName(new(big.Int).SetInt64(int64(rt.Mem().Len())), "msize"))
+	rt.SpecializationStats.EliminatedMemOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opGas() {
 	rt.Push(rt.ConstVarWithName(new(big.Int).SetUint64(rt.currentGas), "txGasLimit"))
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opCreate() {
@@ -1635,6 +1700,7 @@ func (rt *ReuseTracer) Trace_opCreate() {
 	cf := rt.CF()
 
 	rt.StartNewCall(cf.contractAddress, nil, nil, value, input)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opCreate2() {
@@ -1649,9 +1715,12 @@ func (rt *ReuseTracer) Trace_opCreate2() {
 
 	rt.StartNewCall(cf.contractAddress, nil, nil, endowment, input)
 	rt.TraceCreateAddress2(salt)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opCall() {
+	rt.StartGasOpGeneration()
+	defer rt.EndGasOpGeneration()
 	// Pop gas. The actual gas is in interpreter.evm.callGasTemp.
 	rt.Pop() // Pop gas
 	// Pop other call parameters.
@@ -1660,7 +1729,7 @@ func (rt *ReuseTracer) Trace_opCall() {
 	toAddr := addr.CropBigIntAddress()
 	value = value.U256BigInt()
 	args := rt.Mem().GetPtr(inOffset, inSize)
-	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas")
+	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas", "gas")
 
 	//save return offset and return Size before doing call
 	cf := rt.CF()
@@ -1669,6 +1738,7 @@ func (rt *ReuseTracer) Trace_opCall() {
 
 	// push new call stack
 	rt.StartNewCall(cf.contractAddress, toAddr, toAddr, value, args)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opCallcode() {
@@ -1680,7 +1750,7 @@ func (rt *ReuseTracer) Trace_opCallcode() {
 	toAddr := addr.CropBigIntAddress()
 	value = value.U256BigInt()
 	args := rt.Mem().GetPtr(inOffset, inSize)
-	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas")
+	value.EqualBigInt(rt.BigInt_0).NGuard("call_gas", "gas")
 
 	//save return offset and return Size before doing call
 	cf := rt.CF()
@@ -1689,6 +1759,7 @@ func (rt *ReuseTracer) Trace_opCallcode() {
 
 	// push new call stack
 	rt.StartNewCall(cf.contractAddress, cf.contractAddress, toAddr, value, args)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opDelegatecall() {
@@ -1707,6 +1778,7 @@ func (rt *ReuseTracer) Trace_opDelegatecall() {
 
 	// push new call stack
 	rt.StartNewCall(cf.callerAddress, cf.contractAddress, toAddr, cf.value, args)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opStaticcall() {
@@ -1725,12 +1797,14 @@ func (rt *ReuseTracer) Trace_opStaticcall() {
 
 	// push new call stack
 	rt.StartNewCall(cf.contractAddress, toAddr, toAddr, rt.BigInt_0, args)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opReturn() {
 	offset, size := rt.Pop2()
 	ret := rt.Mem().GetPtr(offset, size)
 	rt.returnData = ret
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opRevert() {
@@ -1739,6 +1813,7 @@ func (rt *ReuseTracer) Trace_opRevert() {
 
 func (rt *ReuseTracer) Trace_opStop() {
 	rt.returnData = rt.ByteArray_Empty
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opSelfdestruct() {
@@ -1750,6 +1825,7 @@ func (rt *ReuseTracer) Trace_opSelfdestruct() {
 	}
 
 	suicider.StoreSuicide()
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opLogN(size int) {
@@ -1783,6 +1859,7 @@ func (rt *ReuseTracer) Trace_opPush1() {
 	} else {
 		rt.Push(rt.BigInt_0)
 	}
+	rt.SpecializationStats.EliminatedStackOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opPushN(pushByteSize int) {
@@ -1805,14 +1882,17 @@ func (rt *ReuseTracer) Trace_opPushN(pushByteSize int) {
 	rBytes := common.RightPadBytes(code[startMin:endMin], pushByteSize)
 	rVar := rt.ConstVarWithName(new(big.Int).SetBytes(rBytes), "push"+strconv.Itoa(pushByteSize)+"_"+strconv.Itoa(pc))
 	rt.Push(rVar)
+	rt.SpecializationStats.EliminatedStackOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opDupN(size int) {
 	rt.CF().stack.dup(size)
+	rt.SpecializationStats.EliminatedStackOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opSwapN(size int) {
 	rt.CF().stack.swap(size + 1)
+	rt.SpecializationStats.EliminatedStackOpCount++
 }
 
 func (rt *ReuseTracer) Trace_opSelfbalance() {
@@ -1821,6 +1901,7 @@ func (rt *ReuseTracer) Trace_opSelfbalance() {
 
 func (rt *ReuseTracer) Trace_opChainid() {
 	rt.Push(rt.ChainID)
+	rt.SpecializationStats.EliminatedControlOpCount++
 }
 
 func (rt *ReuseTracer) GetCachedHeaderRead(variant StringID, vars ...*Variable) *Variable {
@@ -1854,7 +1935,7 @@ func (rt *ReuseTracer) guardBlockHashNum(numVar *Variable) {
 	num := numVar.BigInt().Uint64()
 
 	if rt.hasNonConstBlockHashNum {
-		ak := rt.blockHashNumIDMVar.GetBlockHashNumID(numVar).NGuard("block_num")
+		ak := rt.blockHashNumIDMVar.GetBlockHashNumID(numVar).NGuard("block_num", "stateDep")
 		if ak.Uint32() == 0 {
 			rt.blockHashNumIDMVar = rt.blockHashNumIDMVar.SetBlockHashNumID(numVar, numVar.tracer.ConstVarWithName(numVar.id, "nID"+strconv.Itoa(int(numVar.id))))
 		}
@@ -1866,7 +1947,7 @@ func (rt *ReuseTracer) guardBlockHashNum(numVar *Variable) {
 		} else {
 			cmptypes.MyAssert(rt.blockHashNumIDMVar == nil)
 			rt.blockHashNumIDMVar = numVar.tracer.ConstVarWithName(rt.blockHashNumIDs, "initNIDM")
-			ak := rt.blockHashNumIDMVar.GetBlockHashNumID(numVar).NGuard("block_num")
+			ak := rt.blockHashNumIDMVar.GetBlockHashNumID(numVar).NGuard("block_num", "stateDep")
 			if ak.Uint32() == 0 {
 				rt.blockHashNumIDMVar = rt.blockHashNumIDMVar.SetBlockHashNumID(numVar, numVar.tracer.ConstVarWithName(numVar.id, "nID"+strconv.Itoa(int(numVar.id))))
 			}

@@ -1836,7 +1836,11 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
 		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
 		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
+		GethCacheSizeInMB: ctx.GlobalInt(CacheFlag.Name),
 	}
+
+
+
 	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpReuseLogDirFlag.Name)
 	}

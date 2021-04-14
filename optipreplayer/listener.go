@@ -24,13 +24,16 @@ type Listener struct {
 
 	// Cache
 	globalCache *cache.GlobalCache
+
+	gethCacheSizeInMB int
 }
 
-func NewListener(eth Backend) *Listener {
+func NewListener(eth Backend, gethCacheSizeInMB int) *Listener {
 	listener := &Listener{
-		blockMap: make(map[uint64][]*types.Block),
-		chain:    eth.BlockChain(),
-		txPool:   eth.TxPool(),
+		blockMap:          make(map[uint64][]*types.Block),
+		chain:             eth.BlockChain(),
+		txPool:            eth.TxPool(),
+		gethCacheSizeInMB: gethCacheSizeInMB,
 	}
 
 	go listener.cacheEvictionLoop2()
@@ -49,6 +52,8 @@ func (l *Listener) cacheEvictionLoop2() {
 	chainHeadSub := l.chain.SubscribeChainHeadEvent(chainHeadCh)
 	defer chainHeadSub.Unsubscribe()
 
+
+	baseCacheSize := uint64(l.gethCacheSizeInMB* 1024 * 1024)
 	m := new(runtime.MemStats)
 	runtime.ReadMemStats(m)
 	lastNumGC := m.NumGC
@@ -133,9 +138,9 @@ func (l *Listener) cacheEvictionLoop2() {
 			l.removeBefore(currentBlock.NumberU64() - 12)
 			removed12 = before12 - l.globalCache.LenOfTxPreplay()
 
-			if m.HeapAlloc > config.CACHE_START_EVICTION_SIZE_LIMIT {
+			if m.HeapAlloc > (config.CACHE_START_EVICTION_SIZE_LIMIT + baseCacheSize) {
 
-				if m.HeapAlloc > config.CACHE_LIGHT_EVICTION_SIZE_LIMIT {
+				if m.HeapAlloc > (config.CACHE_LIGHT_EVICTION_SIZE_LIMIT + baseCacheSize) {
 					l.globalCache.PauseForProcess()
 					// remove txs with 6 confirmations
 					before6 := l.globalCache.LenOfTxPreplay()
@@ -146,14 +151,14 @@ func (l *Listener) cacheEvictionLoop2() {
 					//removed6 = before6 - l.globalCache.LenOfTxPreplay()
 					// remove txs with 2 confirmations
 				}
-				if m.HeapAlloc > config.CACHE_SOFT_EVICTION_SIZE_LIMIT {
+				if m.HeapAlloc > (config.CACHE_SOFT_EVICTION_SIZE_LIMIT + baseCacheSize) {
 					l.globalCache.PauseForProcess()
 					// remove txs with 2 confirmations
 					before2 := l.globalCache.LenOfTxPreplay()
 					l.removeBefore(currentBlock.NumberU64() - 2)
 					removed2 = before2 - l.globalCache.LenOfTxPreplay()
 				}
-				if m.HeapAlloc > config.CACHE_HARD_EVICTION_SIZE_LIMIT {
+				if m.HeapAlloc > (config.CACHE_HARD_EVICTION_SIZE_LIMIT + baseCacheSize) {
 					l.globalCache.PauseForProcess()
 					currentCacheSize := l.globalCache.LenOfTxPreplay()
 					targetCacheSize := currentCacheSize / 2
