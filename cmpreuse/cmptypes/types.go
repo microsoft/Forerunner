@@ -39,22 +39,22 @@ const (
 	Timestamp
 	Number
 	Difficulty
-	GasLimit // 6
+	GasLimit  // 6
 
 	//PreBlockHash // used in the top of dep tree (in fact, there is a blocknumber layer on the top of PreBlockHash
 
 	// State info
-	Balance          //7
-	Nonce            //8
-	CodeHash         //9
-	Exist            // 10
-	Empty            // 11
-	Code             // 12
-	Storage          // 13
-	CommittedStorage //14
+	Balance           //7
+	Nonce             //8
+	CodeHash          //9
+	Exist             // 10
+	Empty             // 11
+	Code              // 12
+	Storage           // 13
+	CommittedStorage  //14
 
 	// Dep info
-	Dependence //15
+	Dependence  //15
 
 	// Write State
 	DirtyStorage
@@ -129,6 +129,7 @@ type ReuseStatus struct {
 	BlockNumber       *big.Int
 	GasUsed           uint64
 	TryPeekFailed     bool
+	RoundCount        uint64 // has value when miss
 }
 
 type MixStatus struct {
@@ -144,14 +145,15 @@ type MixStatus struct {
 	WriteDetailCount   int
 	WriteDetailTotal   int
 
+	RoundCount    uint64
 	HitRoundID    uint64
 	HitRWRecordID uintptr
 }
 
 func (ms *MixStatus) GetPerfString() string {
-	return fmt.Sprintf("fARm %v fPRm %v aRm %v aRFm %v fAWm %v fPWm %v aWm %v",
+	return fmt.Sprintf("fARm %v fPRm %v aRm %v aRFm %v fAWm %v fPWm %v aWm %v RnC %v",
 		ms.DetailCheckedCount, ms.BasicDetailCount, ms.HitDepNodeCount+ms.UnhitDepNodeCount, ms.UnhitDepNodeCount,
-		ms.WriteDetailCount, ms.WriteDetailTotal, ms.WriteDepCount)
+		ms.WriteDetailCount, ms.WriteDetailTotal, ms.WriteDepCount, ms.RoundCount)
 }
 
 type TraceStatus struct {
@@ -307,9 +309,9 @@ type HitSubType int
 const (
 	AllDepHit HitSubType = iota
 	AllDetailHit
-	PartialHit // partial dep and partial detail hit
+	PartialHit  // partial dep and partial detail hit
 	AllDeltaHit
-	PartialDeltaHit // partial dep and partial delta hit
+	PartialDeltaHit  // partial dep and partial delta hit
 	NotMixHit
 	OpHit
 )
@@ -807,8 +809,8 @@ type PreplayResTrieRoundNodes struct {
 }
 
 type PreplayResTrieNode struct {
-	Value        interface{}         `json:"value"` // this value is the key in its parent
-	Children     IChildren           //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
+	Value        interface{} `json:"value"` // this value is the key in its parent
+	Children     IChildren                  //`json:"children"` //  map[interface{}]*PreplayResTrieNode // value => child node
 	NodeType     *AddrLocation       `json:"node_type"`
 	DetailChild  *PreplayResTrieNode `json:"detail_child"`
 	Parent       *PreplayResTrieNode
@@ -986,7 +988,6 @@ func NewPreplayResTrie() *PreplayResTrie {
 		RoundCount: 0,
 	}
 }
-
 
 //func (t *PreplayResTrie) Clear() {
 //	t.Root = &PreplayResTrieNode{}

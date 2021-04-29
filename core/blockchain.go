@@ -1735,7 +1735,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 			st := time.Now()
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
-			if time.Since(st) > 200 *time.Millisecond{
+			if time.Since(st) > 200*time.Millisecond {
 				log.Warn("SEND CHAINHEADEVENT TOO SLOW", "bn", lastCanon.NumberU64())
 			}
 		}
@@ -1923,7 +1923,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 		var memStats runtime.MemStats
 		var beforeTotalPausedNs, afterTotalPausedNs uint64
-		var beforeTotalGCNum,afterTotalGCNum uint32
+		var beforeTotalGCNum, afterTotalGCNum uint32
 		if bc.vmConfig.MSRAVMSettings.MemStatus {
 			runtime.ReadMemStats(&memStats)
 			beforeTotalPausedNs = memStats.PauseTotalNs
@@ -2026,7 +2026,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 						if reuseStatus.BaseStatus == cmptypes.Hit {
 							reuseStr += fmt.Sprintf(" hitType '%v'", reuseStatus.HitType.String())
 							if reuseStatus.HitType == cmptypes.MixHit {
-							//if reuseStatus.MixStatus != nil && reuseStatus.MixStatus.MixHitType != cmptypes.NotMixHit {
+								//if reuseStatus.MixStatus != nil && reuseStatus.MixStatus.MixHitType != cmptypes.NotMixHit {
 								reuseStr += fmt.Sprintf(" mixHitType '%v'", reuseStatus.MixStatus.MixHitType.String())
 							} else if reuseStatus.HitType == cmptypes.TraceHit {
 								reuseStr += fmt.Sprintf(" traceHitType '%v'", reuseStatus.TraceStatus.TraceHitType.String())
@@ -2034,7 +2034,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 						}
 
 						if reuseStatus.BaseStatus == cmptypes.Miss {
-							reuseStr += fmt.Sprintf(" missType '%v'", reuseStatus.MissType.String())
+							reuseStr += fmt.Sprintf(" missType '%v' RnC %v", reuseStatus.MissType.String(), reuseStatus.RoundCount)
 						}
 
 						if reuseStatus.MixStatus != nil {

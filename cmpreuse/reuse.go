@@ -514,21 +514,21 @@ func (reuse *Cmpreuse) depCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain,
 }
 
 func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
-	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (*cache.PreplayResult, bool, bool) {
+	blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config) (*cache.PreplayResult, uint64, bool, bool) {
 	trie := txPreplay.PreplayResults.RWRecordTrie
 	trieNode, isAbort, ok := SearchTree(trie, statedb, bc, header, abort, isBlockProcess, false)
 
 	if ok {
 		res := trieNode.Round.(*cache.PreplayResult)
 		if blockPre != nil && blockPre.ListenTimeNano < res.TimestampNano {
-			return nil, false, false
+			return nil, trie.RoundCount, false, false
 		}
 		if cfg.MSRAVMSettings.CmpReuseChecking {
 			if !CheckRChain(res.RWrecord, bc, header, false) {
 				log.Warn("depcheck unmatch due to chain info", "txhash", txPreplay.TxHash.Hex())
 				CheckRChain(res.RWrecord, bc, header, true)
 				panic("depcheck unmatch due to chain info: txhash=" + txPreplay.TxHash.Hex())
-				return nil, isAbort, false
+				return nil, trie.RoundCount, isAbort, false
 			} else if !CheckRState(res.RWrecord, statedb, true, true) {
 				log.Warn("depcheck unmatch due to state info", "blockHash", header.Hash(), "blockprocess", isBlockProcess, "txhash", txPreplay.TxHash.Hex())
 				br, _ := json.Marshal(res)
@@ -613,13 +613,13 @@ func (reuse *Cmpreuse) trieCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain
 				log.Warn("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 				panic("depcheck unmatch due to state info: txhash=" + txPreplay.TxHash.Hex())
 
-				return nil, false, false
+				return nil, trie.RoundCount, false, false
 			}
 		}
 
-		return res, isAbort, true
+		return res, trie.RoundCount, isAbort, true
 	}
-	return nil, isAbort, false
+	return nil, trie.RoundCount, isAbort, false
 }
 
 func (reuse *Cmpreuse) deltaCheck(txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header, abort func() bool,
@@ -795,6 +795,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 
 	var sr *TraceTrieSearchResult
 	status = &cmptypes.ReuseStatus{BaseStatus: cmptypes.Undefined}
+	roundCount := uint64(0)
 
 	var t0 time.Time
 	if detailedTime {
@@ -865,8 +866,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 			panic("BaseStatus should be undefined before the first check")
 		}
 		if cfg.MSRAVMSettings.NoOverMatching {
-			round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+			round, roundCount, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
 			if status.BaseStatus == cmptypes.Unknown {
+				status.RoundCount = roundCount
 				return
 			}
 		} else {
@@ -881,6 +883,7 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 		if status.BaseStatus == cmptypes.Undefined {
 			traceTrieChecked, sr, d0, round = reuse.tryTraceCheck(tryHoldLock, txPreplay, statedb, header, abort, isBlockProcess, getHashFunc, precompiles, cfg, status, t0)
 			if status.BaseStatus == cmptypes.Miss || status.BaseStatus == cmptypes.Unknown {
+				status.RoundCount = roundCount
 				return
 			}
 		}
@@ -888,8 +891,9 @@ func (reuse *Cmpreuse) reuseTransaction(bc *core.BlockChain, author *common.Addr
 		if !cfg.MSRAVMSettings.AddFastPath {
 			if !cfg.MSRAVMSettings.NoMemoization || !isBlockProcess {
 				if status.BaseStatus == cmptypes.Undefined {
-					round, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
+					round, roundCount, d0 = reuse.tryTrieCheck(tryHoldLock, txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg, t0, status)
 					if status.BaseStatus == cmptypes.Unknown {
+						status.RoundCount = roundCount
 						return
 					}
 				}
@@ -1041,10 +1045,10 @@ func (reuse *Cmpreuse) tryMixCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) 
 func (reuse *Cmpreuse) tryTrieCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock) (hold bool),
 	txPreplay *cache.TxPreplay, bc *core.BlockChain, statedb *state.StateDB, header *types.Header,
 	abort func() bool, blockPre *cache.BlockPre, isBlockProcess bool, cfg *vm.Config, t0 time.Time,
-	status *cmptypes.ReuseStatus) (round *cache.PreplayResult, d0 time.Duration) {
+	status *cmptypes.ReuseStatus) (round *cache.PreplayResult, roundCount uint64,  d0 time.Duration) {
 	if tryHoldLock(txPreplay.PreplayResults.RWRecordTrieMu) {
 		var isAbort, ok bool
-		round, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
+		round, roundCount, isAbort, ok = reuse.trieCheck(txPreplay, bc, statedb, header, abort, blockPre, isBlockProcess, cfg)
 		txPreplay.PreplayResults.RWRecordTrieMu.Unlock()
 
 		if ok {
@@ -1053,7 +1057,9 @@ func (reuse *Cmpreuse) tryTrieCheck(tryHoldLock func(mu *cmptypes.SimpleTryLock)
 			status.BaseStatus = cmptypes.Hit
 			status.HitType = cmptypes.TrieHit
 			mixStatus := &cmptypes.MixStatus{MixHitType: cmptypes.NotMixHit, HitDepNodeCount: 0, UnhitDepNodeCount: -1,
-				DetailCheckedCount: len(round.RWrecord.ReadDetail.ReadDetailSeq), BasicDetailCount: len(round.RWrecord.ReadDetail.ReadDetailSeq)}
+				DetailCheckedCount: len(round.RWrecord.ReadDetail.ReadDetailSeq), BasicDetailCount: len(round.RWrecord.ReadDetail.ReadDetailSeq),
+				RoundCount: roundCount}
+
 			status.MixStatus = mixStatus
 
 			if false && isBlockProcess {
