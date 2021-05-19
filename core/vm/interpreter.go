@@ -71,6 +71,7 @@ type MSRAVMConfig struct {
 	NoReuse             bool
 	AddFastPath         bool
 	DetailTime          bool
+	FindAllStateFrom	uint64
 
 	// emulator
 	EmulatorDir          string

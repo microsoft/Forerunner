@@ -239,6 +239,7 @@ var (
 		utils.NoReuseFlag,
 		utils.AddFastPathFlag,
 		utils.DetailTimeFlag,
+		utils.FindAllStateFrom,
 		alliedNodeFileFlag,
 	}
 )

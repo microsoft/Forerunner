@@ -267,6 +267,25 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}
+
+	if vmConfig.MSRAVMSettings.FindAllStateFrom != 0 {
+		curBlockNumber := bc.CurrentBlock().NumberU64()
+		cbn := (curBlockNumber - 1) / 1000 * 1000
+		minAVBN := curBlockNumber
+		for i := cbn; i >= vmConfig.MSRAVMSettings.FindAllStateFrom; i -= 1000 {
+			log.Info("Check block state", "blockNumber", i)
+			cb := bc.GetBlockByNumber(i)
+			if _, err := state.New(cb.Root(), bc.stateCache); err != nil {
+				// Dangling block without a state associated, init from scratch
+				log.Warn("Head state missing !!!!!!", "number", cb.Number(), "hash", cb.Hash())
+			}else{
+				minAVBN = i
+			}
+		}
+		log.Info("Min available block ", "blocknumber", minAVBN)
+		return nil, fmt.Errorf("finished")
+	}
+
 	// The first thing the node will do is reconstruct the verification data for
 	// the head block (ethash cache or clique voting snapshot). Might as well do
 	// it in advance.

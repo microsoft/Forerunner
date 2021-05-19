@@ -952,12 +952,16 @@ var (
 		Usage: "Disable computation reuse in process",
 	}
 	AddFastPathFlag = cli.BoolFlag{
-		Name: "add-fastpath",
+		Name:  "add-fastpath",
 		Usage: "add mix/rw-tree before trace",
 	}
 	DetailTimeFlag = cli.BoolFlag{
 		Name:  "detailtime",
 		Usage: "measure detail time consumption in reuse",
+	}
+	FindAllStateFrom = cli.Uint64Flag{
+		Name:  "statefrom",
+		Usage: "print all state from the given block number",
 	}
 )
 
@@ -1801,45 +1805,48 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		}
 	}
 	cfg.MSRAVMSettings = vm.MSRAVMConfig{
-		Silent:               ctx.GlobalBool(SilentFlag.Name),
-		LogRoot:              "",
-		MemStatus:			 ctx.GlobalBool(MemStatusEnabledFlag.Name),
-		CmpReuse:             ctx.GlobalBool(CmpReuseEnabledFlag.Name),
-		CmpReuseChecking:     ctx.GlobalBool(CmpReuseCheckFlag.Name),
-		TaskBuilderChecking:  ctx.GlobalBool(TaskBuilderCheckFlag.Name),
-		TxApplyPerfLogging:   ctx.GlobalBool(TxApplyPerfLogFlag.Name),
-		PerfLogging:          ctx.GlobalBool(PerfLogFlag.Name),
-		CmpReuseLogging:      ctx.GlobalBool(CmpReuseLogFlag.Name),
-		CmpReuseLoggingDir:   filepath.Join(node.DefaultDataDir(), "cmpreuse"),
-		EnablePreplay:        ctx.GlobalBool(PreplayFlag.Name),
-		CacheRecord:          ctx.GlobalBool(CacheRecordEnabledFlag.Name),
-		GroundRecord:         ctx.GlobalBool(GroundRecordEnabledFlag.Name),
-		PreplayRecord:        ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
-		EnableReuseVerifier:  ctx.GlobalBool(ReuseVerifierFlag.Name),
-		HasherParallelism:    ctx.GlobalInt(HasherParallelismFlag.Name),
-		PipelinedBloom:       ctx.GlobalBool(ParallelBloomFlag.Name),
-		ReuseTracerChecking:  ctx.GlobalBool(ReuseTracerCheckFlag.Name),
-		Selfish:              ctx.GlobalBool(SelfishFlag.Name),
-		NoTrace:              ctx.GlobalBool(NoTraceFlag.Name),
-		NoMemoization:        ctx.GlobalBool(NoMemoizationFlag.Name),
-		NoOverMatching:       ctx.GlobalBool(NoOverMatchingFlag.Name),
-		SingleFuture:         ctx.GlobalBool(SingleFutureFlag.Name),
-		NoWarmuper:       ctx.GlobalBool(NoWarmuperFlag.Name),
-		NoReuse:          ctx.GlobalBool(NoReuseFlag.Name),
-		AddFastPath:      ctx.GlobalBool(AddFastPathFlag.Name),
-		DetailTime:       ctx.GlobalBool(DetailTimeFlag.Name),
+		Silent:              ctx.GlobalBool(SilentFlag.Name),
+		LogRoot:             "",
+		MemStatus:           ctx.GlobalBool(MemStatusEnabledFlag.Name),
+		CmpReuse:            ctx.GlobalBool(CmpReuseEnabledFlag.Name),
+		CmpReuseChecking:    ctx.GlobalBool(CmpReuseCheckFlag.Name),
+		TaskBuilderChecking: ctx.GlobalBool(TaskBuilderCheckFlag.Name),
+		TxApplyPerfLogging:  ctx.GlobalBool(TxApplyPerfLogFlag.Name),
+		PerfLogging:         ctx.GlobalBool(PerfLogFlag.Name),
+		CmpReuseLogging:     ctx.GlobalBool(CmpReuseLogFlag.Name),
+		CmpReuseLoggingDir:  filepath.Join(node.DefaultDataDir(), "cmpreuse"),
+		EnablePreplay:       ctx.GlobalBool(PreplayFlag.Name),
+		CacheRecord:         ctx.GlobalBool(CacheRecordEnabledFlag.Name),
+		GroundRecord:        ctx.GlobalBool(GroundRecordEnabledFlag.Name),
+		PreplayRecord:       ctx.GlobalBool(PreplayRecordEnabledFlag.Name),
+		EnableReuseVerifier: ctx.GlobalBool(ReuseVerifierFlag.Name),
+		HasherParallelism:   ctx.GlobalInt(HasherParallelismFlag.Name),
+		PipelinedBloom:      ctx.GlobalBool(ParallelBloomFlag.Name),
+		ReuseTracerChecking: ctx.GlobalBool(ReuseTracerCheckFlag.Name),
+		Selfish:             ctx.GlobalBool(SelfishFlag.Name),
+		NoTrace:             ctx.GlobalBool(NoTraceFlag.Name),
+		NoMemoization:       ctx.GlobalBool(NoMemoizationFlag.Name),
+		NoOverMatching:      ctx.GlobalBool(NoOverMatchingFlag.Name),
+		SingleFuture:        ctx.GlobalBool(SingleFutureFlag.Name),
+		NoWarmuper:          ctx.GlobalBool(NoWarmuperFlag.Name),
+		NoReuse:             ctx.GlobalBool(NoReuseFlag.Name),
+		AddFastPath:         ctx.GlobalBool(AddFastPathFlag.Name),
+		DetailTime:          ctx.GlobalBool(DetailTimeFlag.Name),
+		FindAllStateFrom:    0,
 
 		EnableEmulatorLogger: ctx.GlobalBool(EmulatorLoggerFlag.Name),
 		EmulatorDir:          ctx.GlobalString(EmulatorDirFlag.Name),
 		EmulateFile:          "my.json",
 
-		ParallelizeReuse: ctx.GlobalBool(ParallelizeReuseFlag.Name),
-		WarmupMissDetail: ctx.GlobalBool(WarmupMissDetailFlag.Name),
-		ReportMissDetail: ctx.GlobalBool(ReportMissDetailFlag.Name),
+		ParallelizeReuse:  ctx.GlobalBool(ParallelizeReuseFlag.Name),
+		WarmupMissDetail:  ctx.GlobalBool(WarmupMissDetailFlag.Name),
+		ReportMissDetail:  ctx.GlobalBool(ReportMissDetailFlag.Name),
 		GethCacheSizeInMB: ctx.GlobalInt(CacheFlag.Name),
 	}
 
-
+	if ctx.GlobalIsSet(FindAllStateFrom.Name) {
+		cfg.MSRAVMSettings.FindAllStateFrom = ctx.GlobalUint64(FindAllStateFrom.Name)
+	}
 
 	if ctx.GlobalIsSet(CmpReuseLogDirFlag.Name) {
 		cfg.MSRAVMSettings.CmpReuseLoggingDir = ctx.GlobalString(CmpReuseLogDirFlag.Name)
