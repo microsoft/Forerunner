@@ -1,3 +1,5 @@
+Currently, the release of Forerunner source code is still in review. We will release them as soon as possible.
+
 ## How to build:  
 
 The following is building steps. Users can also reference the build method of go-ethereum(https://github.com/ethereum/go-ethereum/blob/master/README.md) 
@@ -38,7 +40,7 @@ To emulate on a given workload, use the basic flags and:
 --emulatordir <workload dir path> --emulatefile <workload file name>  --emulatefrom <start blocknumber of emulation> 
 ```
 
-### Examples TODO: Table 2 
+### Examples: 
 
 The following example command line is how we set the flags which are compatible with go-ethereum v1.9.9 in our SOSP paper for `Baseline` results 
 
@@ -55,7 +57,6 @@ $projectDir/build/bin/geth --datadir <geth data dir> --datadir.ancient  <geth an
 ```
 
 # Todo  
-## workload data and ethereum data
 
 ## How to evaluate Forerunner 
 
