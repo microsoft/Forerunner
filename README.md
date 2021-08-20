@@ -4,11 +4,11 @@ Currently, the release of Forerunner source code is still in review. We will rel
 
 The following is building steps. Users can also reference the build method of go-ethereum(https://github.com/ethereum/go-ethereum/blob/master/README.md) 
 
-Install golang : https://golang.org/doc/install  (v1.13 or later) 
+1. Install golang : https://golang.org/doc/install  (v1.13 or later) 
 
-Install dependencies, including a C compiler: For ubuntu machines, you can run `sudo apt-get install build-essential` 
+2. Install dependencies, including a C compiler: For ubuntu machines, you can run `sudo apt-get install build-essential` 
 
-In the folder of source code, run `make geth`.  
+3. In the folder of source code, run `make geth`.  
 
 Then, you can find the binary `geth` in the path `$projectDir/build/bin`. 
 
@@ -48,22 +48,10 @@ The following example command line is how we set the flags which are compatible 
 $projectDir/build/bin/geth --datadir <geth data dir> --datadir.ancient  <geth ancient data dir> --nousb --cache=40960  --txpool.accountslots 1024 --txpool.globalslots 8192 --txpool.accountqueue 1024 --txpool.globalqueue 4096 --perflog 
 ```
 
-The following example command line is how we set the flags for `Forerunner` results 
+The following example command line is how we set the flags for `Forerunner` results in our SOSP paper.
 
 ```
-$projectDir/build/bin/geth --datadir <geth data dir> --datadir.ancient  <geth ancient data dir> --nousb --cache=40960  --txpool.accountslots 1024 --txpool.globalslots 8192 --txpool.accountqueue 1024 --txpool.globalqueue 4096 \ 
--perflog \ 
+$projectDir/build/bin/geth --datadir <geth data dir> --datadir.ancient  <geth ancient data dir> --nousb --cache=40960  --txpool.accountslots 1024 --txpool.globalslots 8192 --txpool.accountqueue 1024 --txpool.globalqueue 4096 --perflog \ 
 --preplay --cmpreuse --parallelhasher 16 --parallelbloom --no-overmatching --add-fastpath 
 ```
 
-# Todo  
-
-## How to evaluate Forerunner 
-
-We evaluate Forerunner by running on real live Ethereum mainnet (live mode) and emulation with recorded workload (emulation mode) in our paper. The performance of a period of live workload can not be reproduced in the live mode, so we prefer to use emulation mode to evaluate Forerunner.  
-
-Besides workload data and Forerunner binary, users should also prepare corresponding Ethereum data. 
-
-Note: we prepared well-configured scripts and required data in the given VM mentioned in Bidding Instructions.  
-
- 
