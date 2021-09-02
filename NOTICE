@@ -1,3 +1,7 @@
+NOTICES 
+
+This repository incorporates material as listed below or described in the code.
+
 This project includes software go-ethereum (https://github.com/ethereum/go-ethereum).
 
 The go-ethereum library (i.e. all code outside of the `cmd` directory) is licensed under the

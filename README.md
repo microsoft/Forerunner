@@ -1,4 +1,4 @@
-Currently, the release of Forerunner source code is still in review. We will release them as soon as possible.
+#   Forerunner Ethereum
 
 ## How to build:  
 
@@ -12,11 +12,11 @@ The following is building steps. Users can also reference the build method of go
 
 Then, you can find the binary `geth` in the path `$projectDir/build/bin`. 
 
-## How to execute Forerunner 
+## How to execute Forerunner Ethereum
 
-Basically, Forerunner is compatible with all features of go-ethereum v1.9.9, and Forerunner can be used as the same as go-ethereum v1.9.9.  
+Basically, Forerunner Ethereum is compatible with all features of go-ethereum v1.9.9, and Forerunner Ethereum can be used as the same as go-ethereum v1.9.9.  
 
-To enable features of Forerunner mentioned in the paper and get the best performance, users just need to append a few flags to geth command line: 
+To enable features of Forerunner Ethereum mentioned in the paper and get the best performance, users just need to append a few flags to geth command line: 
 ```
 --preplay --cmpreuse --parallelhasher 16 --parallelbloom --no-overmatching --add-fastpath 
 ``` 
@@ -26,7 +26,7 @@ To log performance of tx processing in the critical path, add this flag:
 --perflog 
 ```
 
-Forerunner has an emulation feature which can log Ethereum network workload and reproduce the workload in emulation mode. 
+Forerunner Ethereum has an emulation feature which can log Ethereum network workload and reproduce the workload in emulation mode. 
 
 To log Ethereum network workload, use the basic flags and : 
 
