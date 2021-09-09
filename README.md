@@ -1,5 +1,7 @@
 #   Forerunner Ethereum
 
+This is the code for reproducing the results of the SOSP 2021 paper **"Forerunner: Constraint-based Speculative Transaction Execution for Ethereum"** by Yang Chen (Microsoft Research), Zhongxin Guo (Microsoft Research), Runhuai Li (Zhejiang University and Microsoft Research), Shuo Chen (Microsoft Research), Lidong Zhou (Microsoft Research), Yajin Zhou (Zhejiang University), and Xian Zhang (Microsoft Research)
+
 ## How to build:  
 
 The following is building steps. Users can also reference the build method of go-ethereum(https://github.com/ethereum/go-ethereum/blob/master/README.md) 
