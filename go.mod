@@ -30,7 +30,7 @@ require (
 	github.com/graph-gophers/graphql-go v0.0.0-20191115155744-f33e81362277
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/huin/goupnp v0.0.0-20161224104101-679507af18f3
-	github.com/influxdata/influxdb v1.2.3-0.20180221223340-01288bdb0883
+	github.com/influxdata/influxdb v1.7.6
 	github.com/ivpusic/grpool v1.0.0
 	github.com/jackpal/go-nat-pmp v1.0.2-0.20160603034137-1fa385a6f458
 	github.com/julienschmidt/httprouter v1.1.1-0.20170430222011-975b5c4c7c21
@@ -54,7 +54,6 @@ require (
 	github.com/steakknife/bloomfilter v0.0.0-20180922174646-6819c0d2a570
 	github.com/steakknife/hamming v0.0.0-20180906055917-c99c65617cd3 // indirect
 	github.com/stretchr/testify v1.4.0
-	github.com/subchen/go-trylock/v2 v2.0.0
 	github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d
 	github.com/tyler-smith/go-bip39 v1.0.1-0.20181017060643-dbb3b84ba2ef
 	github.com/wsddn/go-ecdh v0.0.0-20161211032359-48726bab9208
